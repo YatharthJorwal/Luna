@@ -11,7 +11,7 @@ const MODEL_PATH = "/live2d/Hiyori/Hiyori.model3.json";
 // authored at an arbitrary internal size unrelated to window pixels, so
 // this is a hand-tuned constant rather than derived from model bounds --
 // bump it up/down until she looks right at your window size, then leave it.
-const SCALE = 0.18;
+const SCALE = 0.12;
 
 async function boot(): Promise<void> {
   const canvas = document.getElementById("live2d-canvas") as HTMLCanvasElement;
@@ -36,7 +36,13 @@ async function boot(): Promise<void> {
     model.position.set(app.renderer.width / 2, app.renderer.height - 4);
   }
   layout();
-  window.addEventListener("resize", layout);
+  // Not window.addEventListener("resize", layout) on purpose: PIXI's own
+  // resizeTo:window plugin also listens for window resize and updates
+  // app.renderer.width/height independently, with no guaranteed ordering
+  // against our own listener -- that race is what let a maximize/restore
+  // reposition her using stale dimensions and send her off-window. Running
+  // layout() every tick costs nothing measurable and can't race.
+  app.ticker.add(layout);
 
   // The model idles on its own: Hiyori's model3.json defines an "Idle"
   // motion group, and the motion manager loops whichever group is named

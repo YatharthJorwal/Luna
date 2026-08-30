@@ -19,6 +19,7 @@
         "minWidth": 220,
         "minHeight": 300,
         "resizable": true,
+        "maximizable": false,
         "decorations": false,
         "transparent": true,
         "alwaysOnTop": true,
