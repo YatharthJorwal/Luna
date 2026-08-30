@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Luna</title>
+    <link rel="stylesheet" href="/src/style.css" />
+    <!--
+      Live2D's Cubism Core runtime is proprietary and Live2D's own license
+      terms don't allow third parties to redistribute it -- you grab it
+      yourself and drop it in /public. See public/live2d/README.txt.
+    -->
+    <script src="/live2dcubismcore.min.js"></script>
+  </head>
+  <body>
+    <div id="stage-container">
+      <canvas id="live2d-canvas"></canvas>
+    </div>
+
+    <div id="hud">
+      <div id="status-dot" title="disconnected"></div>
+      <input
+        id="input-box"
+        type="text"
+        placeholder="Say something to Luna…"
+        autocomplete="off"
+        spellcheck="false"
+      />
+    </div>
+
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

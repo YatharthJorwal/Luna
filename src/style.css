@@ -1,0 +1,99 @@
+/* This window IS the overlay -- there's no "page" to design, the Live2D
+   character is the visual centerpiece. Everything here exists to get out of
+   the character's way: fully transparent background, one small glass pill
+   for input, no chrome, no web fonts (keeps this light while a game is
+   running). The status dot doubles as a mood indicator later (its color
+   will track Luna's emotion tag from the persona layer) rather than being a
+   generic connection light. */
+
+:root {
+  color-scheme: dark;
+  --ink: #f4f0ff;
+  --dim: rgba(244, 240, 255, 0.55);
+  --glass: rgba(18, 14, 28, 0.55);
+  --glass-border: rgba(255, 255, 255, 0.12);
+  --accent-idle: #8a7ce8;
+  --accent-listening: #e88ac0;
+  --accent-offline: #55506b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: transparent;
+  overflow: hidden;
+  font-family:
+    -apple-system, "Segoe UI", "Yu Gothic UI", system-ui, sans-serif;
+  user-select: none;
+}
+
+#stage-container {
+  position: absolute;
+  inset: 0;
+  /* Lets the window be dragged by clicking Luna's body, without needing a
+     titlebar. See src-tauri capabilities / window setup. */
+  -webkit-app-region: drag;
+}
+
+#live2d-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+#hud {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  width: min(88%, 280px);
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  -webkit-app-region: no-drag;
+}
+
+#status-dot {
+  flex: none;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent-offline);
+  box-shadow: 0 0 6px currentColor;
+  transition: background-color 200ms ease;
+}
+
+#status-dot.connected {
+  background: var(--accent-idle);
+}
+
+#status-dot.listening {
+  background: var(--accent-listening);
+}
+
+#input-box {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--ink);
+  font-size: 13px;
+  line-height: 1.4;
+}
+
+#input-box::placeholder {
+  color: var(--dim);
+}

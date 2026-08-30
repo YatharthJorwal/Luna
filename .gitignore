@@ -1,0 +1,15 @@
+# Frontend
+node_modules/
+dist/
+
+# Tauri / Rust
+src-tauri/target/
+
+# Python
+orchestrator/venv/
+orchestrator/__pycache__/
+orchestrator/*.pyc
+
+# OS
+.DS_Store
+Thumbs.db
