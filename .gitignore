@@ -13,3 +13,6 @@ orchestrator/*.pyc
 # OS
 .DS_Store
 Thumbs.db
+
+# Proprietary, downloaded manually per README -- never commit this
+public/live2dcubismcore.min.js
