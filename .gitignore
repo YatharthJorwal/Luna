@@ -1,6 +1,6 @@
 # Frontend
 node_modules/
-dist/
+/dist
 
 # Tauri / Rust
 src-tauri/target/
