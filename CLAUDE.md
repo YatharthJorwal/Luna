@@ -17,8 +17,10 @@ machine. This overrides convenience every time.
 
 Phase 1 done and running on the user's machine (Windows, RTX 3060 12GB) —
 shell, tray, Live2D rendering, and the audio pipeline all work end-to-end.
-No real LLM yet (canned replies), placeholder voice (pyttsx3), placeholder
-model (Hiyori). **Phase 2 (wiring up a real local LLM) is next.**
+**Phase 2 (real local LLM, single-pass persona, streamed text → TTS →
+lip-sync, session memory)** is built and verified end-to-end in the
+sandbox, not yet confirmed on the user's machine — real voice is still
+pyttsx3 (unchanged from Phase 1), model still Hiyori (placeholder).
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

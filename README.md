@@ -1,61 +1,46 @@
-# Luna -- Phase 1
+# Luna -- Phase 2
 
-**Update:** if you already have a copy of this project running, read this
-first. The Live2D rendering library originally used here
-(`pixi-live2d-display-lipsyncpatch`) crashes against the Cubism Core version
-Live2D currently ships (6.0.1) -- this is a real, currently-open upstream bug
-(https://github.com/guansss/pixi-live2d-display/issues/177), not anything
-wrong with your setup. This version switches to `omniwaifu/pixi-live2d5`, a
-fork built and tested specifically against Core 6.0.1, and moves PixiJS
-7 -> 8 to match its peer dependency. It also drops the old library's
-`speak()` convenience method (this fork doesn't have one -- confirmed by
-reading its source, the hook is there but commented out), so lipsync is now
-driven manually in `src/lipsync.ts` via a Web Audio AnalyserNode.
-
-**To update an existing copy:** delete `node_modules` and `package-lock.json`,
-replace every file with what's in this archive (the whole project, not just
-the changed files -- `vendor/`, `src/`, `public/cubism5/`, and
-`package.json` all matter), then `npm install` again. Your
-`public/live2dcubismcore.min.js` file doesn't need to change -- it's the
-same Core version this fork wants.
-
-Shell + Live2D + audio pipeline, no brain yet. This proves the plumbing
-works: a transparent always-on-top window with Luna idling on screen, an
-input box, and hitting Enter round-trips through a local WebSocket server
-and comes back as spoken (lip-synced) audio. See `/CLAUDE.md` at the repo
+Shell + Live2D + audio pipeline + a real local LLM brain. Type in the input
+box, she thinks with an actual model (via Ollama or llama.cpp, your choice
+in `orchestrator/config.yaml`), and replies by voice with lip-sync, one
+sentence at a time as she "thinks" of them. See `/CLAUDE.md` at the repo
 root for the full architecture and roadmap.
+
+If you're updating an existing Phase 1 checkout: nothing in the frontend
+build changed except `src/main.ts` (a small addition, not a rewrite), so a
+normal `git pull` / bundle apply + `npm install` is all you need -- no
+`vendor/` or Live2D asset changes this round. The `pixi-live2d5` library
+swap from early Phase 1 is old news at this point; see
+`docs/DECISIONS.md` if you're curious why it happened.
 
 ## What's actually been verified vs. not, honestly
 
-This was built in a Linux sandbox with no GUI and no Rust toolchain, so:
+This was built in a Linux sandbox with no GUI, no Rust toolchain, and no
+GPU, so:
 
-- **Verified for real, in this environment:** the frontend now goes further
-  than a type-check -- `pixi-live2d5` was cloned from source, actually built
-  (`node scripts/build.js`, no errors), and vendored in prebuilt; `npm run
-  build` (full production build, not just `tsc --noEmit`) succeeds against
-  it with zero errors. The exact API used in `lipsync.ts`
-  (`coreModel.addParameterValueById`, `motionManager.lipSyncIds`) was
-  confirmed by reading the fork's actual source, not guessed from docs. The
-  orchestrator (`app.py`/`tts.py`) was actually run -- a live WebSocket
-  client connected, sent a message, and got back a valid WAV payload
-  end-to-end.
-- **Not verified, because I had no way to:** actually seeing pixels. No
-  WebGL, no display server, no browser in this sandbox -- so while the
-  *build* is solid, I can't confirm the model renders, scales, and
-  lip-syncs correctly on screen. `SCALE` in `main.ts` is a guessed starting
-  value; expect to tune it once you can see her. Same caveat as before on
-  the Rust/Tauri side -- no `cargo` here either, though it compiled clean
-  on your machine last time, which is a good sign the API knowledge is
-  solid.
-- **pyttsx3 note:** it uses whatever TTS the OS provides -- SAPI5 on
-  Windows, which is what you'll actually run. I tested it here against
-  Linux's espeak-ng instead since that's what the sandbox had; same code
-  path either way, but SAPI5 itself is untested since I don't have a
-  Windows box here.
+- **Verified for real, in this environment:** the orchestrator's new LLM
+  client (`orchestrator/llm.py`) was run against a hand-written stub server
+  that speaks the exact same OpenAI-compatible streaming protocol Ollama
+  does, driven by a real WebSocket client end-to-end -- sentence chunking
+  (`chunking.py`), session history accumulation across multiple turns,
+  history trimming at the configured cap, a fresh connection getting fresh
+  (not leaked) history, and the in-character fallback line when the LLM
+  server is unreachable all confirmed working, not just read over. The
+  frontend's new `SpeakQueue` in `src/main.ts` passes a full
+  `npm run build` (real `tsc` typecheck + Vite production build, zero
+  errors), the same bar Phase 1 was held to.
+- **Not verified, because I had no way to:** an actual local LLM. The stub
+  server proves the *protocol handling* is correct, but Ollama/llama.cpp
+  themselves, real `qwen3-vl:8b` output quality, and GPU memory/VRAM
+  behavior under load are all unverified until you run it. Same standing
+  caveats as Phase 1 on the visual/audio side -- no display, no WebGL, no
+  Windows box here, so seeing her actually speak in sentence-chunked bursts
+  with correct queueing (not overlapping audio) is still first-run-on-your-
+  machine territory.
 
-Expect to still fix small things on first run -- that's normal for a
-scaffold that's never touched real hardware or a real GPU, not a sign
-something's fundamentally wrong.
+Expect to still fix small things on first run -- normal for anything that's
+never touched a real model server, not a sign something's fundamentally
+wrong.
 
 ## Prerequisites (on your machine)
 
@@ -70,6 +55,16 @@ something's fundamentally wrong.
   `public/live2dcubismcore.min.js` (see `public/live2d/README.txt`). This
   can't be bundled here -- Live2D's own license terms don't allow third
   parties to redistribute it, you have to grab it yourself.
+- **Ollama** -- https://ollama.com/download/windows. After installing,
+  pull the default model:
+  ```
+  ollama pull qwen3-vl:8b
+  ```
+  (~6 GB download; fits comfortably alongside everything else on a 12GB
+  3060 since Ollama loads/unloads the model on demand.) Prefer llama.cpp
+  instead? It works unmodified -- just point `orchestrator/config.yaml`'s
+  `llm.base_url` at your llama.cpp server's OpenAI-compatible endpoint
+  (usually `http://127.0.0.1:8080/v1`) instead of Ollama's.
 
 The Hiyori sample model in `public/live2d/Hiyori/` is already included --
 it's Live2D's own official free sample, licensed for exactly this kind of
@@ -79,9 +74,16 @@ decisions).
 
 ## Run it
 
-Two processes, in two terminals.
+Three things running, in order, in separate terminals.
 
-**Orchestrator:**
+**1. Ollama** (if not already running as a background service -- the
+Windows installer usually sets this up for you; check the system tray
+first):
+```
+ollama serve
+```
+
+**2. Orchestrator:**
 ```
 cd orchestrator
 python -m venv venv
@@ -91,18 +93,42 @@ python app.py
 ```
 You should see `Uvicorn running on http://127.0.0.1:8765`.
 
-**Shell:**
+**3. Shell:**
 ```
 npm install
 npm run tauri dev
 ```
-First run will take a while (Rust compiling all of Tauri's dependencies).
-A transparent window should appear bottom-right of your screen with Hiyori
-idling in it. Type something in the input box and hit Enter -- you should
-hear a canned line (through your default Windows voice, not the real one
-yet) with her mouth moving roughly in sync.
+Type something in the input box and hit Enter. You should hear her reply
+in her own words this time (not a canned line) -- possibly as a few short
+bursts of speech in quick succession as each sentence finishes generating,
+rather than one long clip. That's expected; it's the streaming pipeline
+working, not a bug.
 
 ## If something doesn't work
+
+New in Phase 2:
+
+- **She says "I can't reach my own brain right now":** that's the actual
+  in-character fallback line, not a crash -- it means the orchestrator
+  couldn't reach the LLM server at all. Check `ollama serve` is actually
+  running (`ollama list` in another terminal should work if it is), and
+  that `orchestrator/config.yaml`'s `llm.base_url` matches wherever it's
+  listening.
+- **Long pause, then a wrong-sounding error, or nothing at all:** check the
+  orchestrator terminal for a traceback -- most likely the model name in
+  `config.yaml` (`qwen3-vl:8b` by default) doesn't match what you actually
+  pulled. `ollama list` shows exact tags.
+- **Audio chunks overlap or play out of order:** shouldn't happen --
+  `SpeakQueue` in `src/main.ts` is specifically there to prevent this. If
+  it does, that's a real bug worth reporting back with the console output,
+  not a config issue.
+- **Replies feel slow to start:** the first sentence has to fully generate
+  before anything speaks (TTS needs complete text, not partial tokens) --
+  a short first sentence from the model helps; a very long, run-on first
+  sentence will feel sluggish. This is a known Phase 2 trade-off, not a
+  bug -- see `docs/DECISIONS.md`.
+
+Still applies from Phase 1 -- unchanged this phase:
 
 - **Window never appears / `cargo` errors:** almost certainly a Tauri API
   mismatch in `src-tauri/src/lib.rs` -- see the note at the top of that
@@ -116,14 +142,10 @@ yet) with her mouth moving roughly in sync.
     latter is the manual step above, the most common miss;
   - a 404 under `/cubism5/shaders/` -- this fork loads 13 GLSL files at
     runtime from `public/cubism5/shaders/`, already included, but confirm
-    they made it into your copy if you're updating an existing checkout;
-  - the `doDrawModel`/Cubism Core error from the old library -- if you see
-    this specifically, you're still running old files, see the Update note
-    at the top of this file.
-- **Model appears but is tiny, huge, or off-window:** expected on first
-  run -- `SCALE` in `src/main.ts` is a starting guess, not measured against
-  your actual window size (see "What's been verified" above for why).
-  Adjust the constant and let Vite hot-reload.
+    they made it into your copy if you're updating an existing checkout.
+- **Model appears but is tiny, huge, or off-window:** `SCALE` in
+  `src/main.ts` is a starting guess, not measured against your actual
+  window size. Adjust the constant and let Vite hot-reload.
 - **Model appears but never speaks:** check the orchestrator terminal is
   still running and the status dot in the HUD ever turns solid (means the
   WebSocket connected). If it stays dim, the shell can't reach
@@ -134,9 +156,9 @@ yet) with her mouth moving roughly in sync.
   the input box and hitting Enter should count, but worth confirming) or a
   browser blocking `AudioContext` until user interaction.
 
-## Next: Phase 2
+## Next: Phase 3
 
-Wire a real local LLM in behind `orchestrator/app.py` (replacing
-`CANNED_REPLIES`) and swap `tts.py`'s pyttsx3 call for a GPT-SoVITS request.
-Nothing in the frontend needs to change -- it only knows about the
-`{type: "speak", text, audio_b64, mime}` contract.
+Persistent memory: SQLite facts/episodes, a consolidation job, and recall
+injected into the system prompt each turn -- so she remembers things across
+restarts, not just within one session. Nothing in the frontend needs to
+change again; it's still orchestrator-only work.

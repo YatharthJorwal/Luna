@@ -75,3 +75,75 @@ Zero model download (uses SAPI5 on Windows already), which matters for
 proving the shell/audio pipeline works before spending time on GPT-SoVITS
 setup. Swap it for real TTS in `orchestrator/tts.py` when Phase 2/6 gets to
 voice work — see `docs/MODELS.md`.
+
+## Phase 2: sentence-level chunking, not token-level, for the streaming pipeline
+
+`docs/ARCHITECTURE.md` describes the Phase 2 pipeline as "streamed text →
+TTS → lip-sync." Token-level audio streaming isn't practical with pyttsx3
+(or most local TTS engines — they synthesize a complete utterance, not a
+running stream), so `orchestrator/chunking.py` buffers the LLM's token
+stream and cuts it into sentence-sized pieces instead: each becomes its
+own `speak` message the instant it's ready, rather than waiting for the
+full reply. That's the level "streamed" actually means here.
+
+Two things worth knowing if this looks off:
+- `MIN_CHUNK_CHARS` (40) folds short sentences into the next one before
+  cutting. Without it, pyttsx3's per-call engine re-init (see `tts.py`)
+  fires for every three-word fragment and sounds choppy. The final
+  trailing chunk always flushes regardless of length once the LLM stream
+  ends (`chunking.flush()`), so nothing is ever dropped.
+- The boundary regex isn't real NLP sentence segmentation — it'll misfire
+  on abbreviations ("Mr. Smith" can split mid-name if enough text has
+  already accumulated). Accepted as a known limitation rather than pulling
+  in an NLP dependency for it; revisit only if it's audibly wrong often
+  enough in practice to matter.
+
+## Phase 2: LLM endpoint defaults to Ollama's OpenAI-compat API, not llama.cpp
+
+`docs/MODELS.md` left the choice between Ollama and a llama.cpp server
+open. `orchestrator/llm.py` talks to a plain OpenAI-compatible
+`/chat/completions` endpoint either way — both servers speak that
+protocol — so `config.yaml`'s `llm.base_url` defaults to Ollama's
+(`http://127.0.0.1:11434/v1`) since it's the lower-friction setup (`ollama
+pull qwen3-vl:8b` vs. building/running llama.cpp's server binary
+directly). Switching to llama.cpp later is a one-line `base_url` edit in
+`config.yaml`, not a code change — matches the working agreement in
+`CLAUDE.md`.
+
+## Phase 2: a failed/unreachable LLM turn drops the user's message from history
+
+If `llm.stream_reply()` never yields anything for a turn (server down,
+connection refused, etc.), `app.py` pops that turn's `user` message back
+out of the session history instead of leaving it in context with no
+matching `assistant` reply. Reasoning: an unanswered turn sitting in
+history would get sent back to the LLM on the *next* successful turn,
+which is confusing context for no benefit — there's nothing useful to
+recover from a call that never returned anything. If the stream fails
+*partway through* (some sentences already sent), whatever did come
+through is kept and committed to history as normal; only a fully-empty
+turn gets dropped. The in-character fallback line
+(`LLM_UNREACHABLE_LINE`) is always spoken either way, so the user isn't
+left staring at silence.
+
+## Phase 2: persona pass is a real function call, not just a comment, even though it's a no-op
+
+`CLAUDE.md`'s working agreement says to keep the persona pass separable
+from the core reasoning pass "even while it's collapsed into one prompt
+for now." `orchestrator/persona.py`'s `apply_persona_pass()` is that seam
+made literal: every chunk flows through it in `app.py` before being
+spoken, even though today it just returns its input unchanged (the
+persona is already baked into `SYSTEM_PROMPT`, which is the one LLM call
+Phase 2 makes). When Phase 6 splits this into a real second pass, that
+function is the only thing that changes — `app.py`'s streaming/chunking
+loop doesn't need to move.
+
+## Phase 2: frontend needs a playback queue now that one reply is several `speak` messages
+
+Phase 1's `speak()` in `src/main.ts` assumed one `speak` message per
+reply and played it immediately. Phase 2's sentence-chunked streaming
+means a single reply can arrive as several `speak` messages in quick
+succession — calling `speakWithLipsync()` again while a previous chunk is
+still playing would start a second `Audio`/`AnalyserNode` racing the
+first one, not queue politely. `SpeakQueue` in `src/main.ts` replaces the
+old direct call: it holds pending chunks and only starts the next one
+once the current one's `onFinish` fires.

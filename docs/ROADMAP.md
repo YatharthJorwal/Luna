@@ -37,17 +37,25 @@
 
 ## Phases
 
+(✅ done and confirmed on the user's machine · 🔶 built and sandbox-verified,
+awaiting on-machine confirmation · ⬜ not started)
+
 - ✅ **Phase 0 — Spec.** This doc set.
 - ✅ **Phase 1 — Shell MVP.** Tauri window (transparent, click-through,
   always-on-top, tray), Live2D model idling on screen, input box, a canned
   line plays through the TTS pipeline end-to-end. Shipped with the Hiyori
   placeholder model, a placeholder pyttsx3 voice, and no LLM yet — see
   `docs/DECISIONS.md` for what changed from the original plan while building
-  this (notably: Live2D rendering library swap, manual lipsync).
-- ⬜ **Phase 2 — Brain online.** Wire the local LLM/VLM server in (see
+  this (notably: Live2D rendering library swap, manual lipsync). Confirmed
+  working on the user's machine.
+- 🔶 **Phase 2 — Brain online.** Wire the local LLM/VLM server in (see
   `docs/MODELS.md` for the pick), single-pass tsundere persona prompting,
   streamed text → TTS → lip-sync. Real conversation, session-only memory, no
-  tools yet. *Next up.*
+  tools yet. Built and verified end-to-end in the sandbox (real LLM client
+  against a stub OpenAI-compatible server, sentence chunking, session
+  history, LLM-unreachable fallback, frontend playback queue) — not yet
+  confirmed against a real local LLM on the user's machine. *Next: pull
+  `qwen3-vl:8b` in Ollama and confirm on-machine.*
 - ⬜ **Phase 3 — Persistent memory.** SQLite facts/episodes, consolidation job,
   recall injected into the system prompt each turn.
 - ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
