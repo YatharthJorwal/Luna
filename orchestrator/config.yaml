@@ -1,0 +1,32 @@
+# Luna orchestrator config -- Phase 2+.
+#
+# Everything here is meant to be user-editable without touching Python, per
+# CLAUDE.md's working agreement ("Model/engine choices are config, never
+# hardcoded"). See docs/MODELS.md for background on the model/TTS choices.
+
+llm:
+  # OpenAI-compatible chat-completions endpoint. Works unmodified against
+  # Ollama (default shown here) or a llama.cpp server -- point base_url at
+  # whichever you're running. llama.cpp's `server` binary defaults to
+  # http://127.0.0.1:8080/v1 instead.
+  base_url: "http://127.0.0.1:11434/v1"
+  # Ollama library tag for the locked default in docs/MODELS.md. Pull it
+  # first: `ollama pull qwen3-vl:8b`.
+  model: "qwen3-vl:8b"
+  # Ollama and llama.cpp both ignore this, but the OpenAI request shape
+  # wants a non-empty string -- "ollama" is the placeholder Ollama's own
+  # docs use.
+  api_key: "ollama"
+  temperature: 0.8
+  max_tokens: 512
+
+tts:
+  # Only "pyttsx3" exists right now (Phase 1 placeholder, still true in
+  # Phase 2). Real voice work (GPT-SoVITS) is Phase 6 -- see docs/MODELS.md.
+  engine: "pyttsx3"
+
+session:
+  # How many past (user, assistant) turns to keep in the LLM's context
+  # before dropping the oldest. Session-only -- gone on disconnect. Durable
+  # memory across restarts is Phase 3.
+  max_history_turns: 20
