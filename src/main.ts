@@ -61,9 +61,10 @@ function setupHud(model: Live2DModel): void {
     if (state !== "offline") statusDot.classList.add(state);
   };
 
+  const queue = new SpeakQueue(model);
   const client = new WsClient({
     onStateChange: setState,
-    onSpeak: (msg: SpeakMessage) => speak(model, msg),
+    onSpeak: (msg: SpeakMessage) => queue.push(msg),
   });
   client.connect();
 
@@ -76,17 +77,49 @@ function setupHud(model: Live2DModel): void {
   });
 }
 
-function speak(model: Live2DModel, msg: SpeakMessage): void {
-  const blob = base64ToBlob(msg.audio_b64, msg.mime);
-  const url = URL.createObjectURL(blob);
+// Phase 2's orchestrator sends one reply as several `speak` messages --
+// one per sentence, streamed as the LLM produces them (see
+// orchestrator/app.py / chunking.py) -- instead of Phase 1's one message
+// per reply. Without a queue, a second chunk arriving while the first is
+// still playing would call speakWithLipsync() again on the same model,
+// starting a second Audio element/AnalyserNode racing the first one.
+// This plays each queued chunk to completion before starting the next.
+class SpeakQueue {
+  private model: Live2DModel;
+  private pending: SpeakMessage[] = [];
+  private playing = false;
 
-  // pixi-live2d5 doesn't include a built-in speak()/lipsync helper (the old
-  // library we started with did, but it's incompatible with the Cubism
-  // Core version Live2D currently ships -- see vendor/pixi-live2d5/NOTES.md).
-  // speakWithLipsync() plays the audio and drives the model's LipSync
-  // parameters from it manually.
-  const handle = speakWithLipsync(model, url);
-  handle.onFinish(() => URL.revokeObjectURL(url));
+  constructor(model: Live2DModel) {
+    this.model = model;
+  }
+
+  push(msg: SpeakMessage): void {
+    this.pending.push(msg);
+    if (!this.playing) this.playNext();
+  }
+
+  private playNext(): void {
+    const msg = this.pending.shift();
+    if (!msg) {
+      this.playing = false;
+      return;
+    }
+    this.playing = true;
+
+    const blob = base64ToBlob(msg.audio_b64, msg.mime);
+    const url = URL.createObjectURL(blob);
+
+    // pixi-live2d5 doesn't include a built-in speak()/lipsync helper (the
+    // old library we started with did, but it's incompatible with the
+    // Cubism Core version Live2D currently ships -- see
+    // vendor/pixi-live2d5/NOTES.md). speakWithLipsync() plays the audio
+    // and drives the model's LipSync parameters from it manually.
+    const handle = speakWithLipsync(this.model, url);
+    handle.onFinish(() => {
+      URL.revokeObjectURL(url);
+      this.playNext();
+    });
+  }
 }
 
 function base64ToBlob(base64: string, mime: string): Blob {
