@@ -89,6 +89,15 @@ class SpeakQueue {
   private pending: SpeakMessage[] = [];
   private playing = false;
 
+  // A short pause between chunks, not zero. Two back-to-back HTMLAudioElements
+  // chained on "ended" can have a few ms of overlap at the boundary (the next
+  // element's play() has its own startup latency, and audio already queued in
+  // the previous element's Web Audio routing can trail slightly past "ended")
+  // -- this masks that, and as a side effect makes the sentence-by-sentence
+  // delivery sound like natural pauses between sentences rather than abrupt
+  // bursts.
+  private static readonly GAP_MS = 150;
+
   constructor(model: Live2DModel) {
     this.model = model;
   }
@@ -117,7 +126,7 @@ class SpeakQueue {
     const handle = speakWithLipsync(this.model, url);
     handle.onFinish(() => {
       URL.revokeObjectURL(url);
-      this.playNext();
+      window.setTimeout(() => this.playNext(), SpeakQueue.GAP_MS);
     });
   }
 }
