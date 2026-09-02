@@ -147,3 +147,71 @@ still playing would start a second `Audio`/`AnalyserNode` racing the
 first one, not queue politely. `SpeakQueue` in `src/main.ts` replaces the
 old direct call: it holds pending chunks and only starts the next one
 once the current one's `onFinish` fires.
+
+## First real-hardware test: mouth never moved — `src/lipsync.ts` was hooking the wrong update cycle
+
+Audio played correctly on the first Windows test, but the model's mouth
+never moved at all — 100% of the time, not intermittently. Root cause,
+found by cloning the actual fork source
+(`github.com/omniwaifu/pixi-live2d5`, not just the vendored prebuilt
+`dist/`) and reading `Cubism5InternalModel.ts`'s `update()` directly:
+
+Every frame, that method calls `model.loadParameters()` *first* to
+restore Cubism parameters to the snapshot taken right after the motion
+system last ran (`model.saveParameters()`, called partway through the
+same function), then does the actual deformation/render-prep in
+`model.update()` at the very *end* of that same synchronous call. The
+original `src/lipsync.ts` called `addParameterValueById()` from its own
+independent `requestAnimationFrame` loop — completely uncoordinated with
+that cycle. Whichever order the two rAF callbacks happened to fire in
+during a given browser frame, the result was the same: run before the
+model's own update and the addition gets wiped by that frame's
+`loadParameters()` restore; run after and it modifies parameters *after*
+that frame's deformation was already computed from the old values. There
+is no timing where an external caller lands inside the window that
+actually reaches the render. Not a rare race — structurally guaranteed to
+never work, which is exactly what showed up.
+
+Fix: `InternalModel` (which `Cubism5InternalModel` extends) is a
+`pixi.js` `EventEmitter` and emits `"beforeModelUpdate"` from inside that
+exact window — after motion/physics/pose, right before `model.update()`.
+`src/lipsync.ts` now calls `internalModel.on("beforeModelUpdate", ...)`
+instead of running its own animation loop; `src/types/pixi-live2d5.d.ts`
+gained `on()`/`off()` on the `InternalModel` shim to type it. Confirmed
+the `EventEmitter` semantics this relies on (that `on`/`off`/`emit`
+behave like a standard emitter) by exercising `pixi.js`'s actual
+`EventEmitter` class directly, not just reading its type signature.
+
+Still genuinely unverified: whether the mouth *visibly* opens and closes
+in a way that looks right, since that needs eyes on a running window.
+The fix addresses the confirmed structural bug (parameters never reaching
+a render at all); `MOUTH_GAIN` in `lipsync.ts` is still an untested guess
+and may need retuning once it's actually visible.
+
+## First real-hardware test: chunks played with a slight audio overlap — added a deliberate inter-chunk gap
+
+Reported alongside the lipsync bug above. Read through `SpeakQueue`
+(`src/main.ts`), `speakWithLipsync` (`src/lipsync.ts`), the WebSocket
+message handler (`src/ws-client.ts`), and the backend's TTS call
+sequencing (`orchestrator/tts.py`, `orchestrator/app.py`) looking for a
+structural cause — a queue race, concurrent `pyttsx3` synthesis producing
+a corrupted file, anything that would cause literal overlap — and didn't
+find one: `SpeakQueue.push()`/`playNext()` has no `await` in it so two
+messages can't interleave, the WebSocket `message` handler is fully
+synchronous before calling `onSpeak`, and each backend `synthesize()`
+call is awaited to completion (via `asyncio.to_thread`) before the next
+chunk's LLM tokens are even processed, so there's no concurrent pyttsx3
+usage either.
+
+Best remaining explanation, not confirmed: chaining separate
+`HTMLAudioElement`s back-to-back on the `"ended"` event can have a few ms
+of boundary overlap in practice — the next element's `.play()` has its
+own startup latency, and audio already queued in the previous element's
+Web Audio routing (through the `AnalyserNode`) can trail slightly past
+when `"ended"` fires. `SpeakQueue` now waits `GAP_MS` (150ms) after one
+chunk finishes before starting the next, which should mask that and also
+makes the sentence-by-sentence delivery sound like natural pauses instead
+of abrupt bursts. If overlap is still audible after this, it's a real bug
+worth digging into further with actual console/audio output from a
+running session, since static reading of the code didn't turn up a
+structural cause.
