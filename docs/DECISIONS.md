@@ -319,3 +319,37 @@ fallback *line*) because TTS failure doesn't lose the actual reply
 content the way an unreachable LLM does — there's still a real sentence
 to speak, just via the placeholder voice instead of the cloned one for
 that turn.
+
+## First real config edit: a Windows path in `config.yaml` silently killed the whole orchestrator
+
+The user filled in `gpt_sovits.ref_audio_path` with a real Windows path
+in double quotes — `"C:\Users\User\Downloads\...\.wav"` — and the
+orchestrator stopped starting at all: no crash message they could easily
+connect to the symptom, just "she doesn't speak" and the frontend's
+connection-status dot never lighting up.
+
+Root cause, confirmed by reproducing it with the user's exact file
+content: YAML double-quoted strings process backslashes as C-style escape
+codes (`\n`, `\t`, `\uXXXX`, `\UXXXXXXXX`, etc.), so `\Users` isn't the
+literal text it looks like — PyYAML sees `\U` and tries to read the next
+8 characters as a hex-digit unicode escape, fails, and raises a
+`ScannerError`. Because `config.py`'s `CONFIG = load_config()` runs at
+*module import time*, that exception happens the instant `app.py` tries
+to `import config` — before the process ever binds the WebSocket port.
+Nothing was listening on 8765, so the frontend's connection attempt just
+failed silently with no orchestrator-side log the user was looking at yet
+to explain why.
+
+Immediate fix for the user: single-quoted YAML strings don't process
+escapes at all, so `'C:\Users\...'` (single quotes) is the correct way to
+write a literal Windows path here — same fix as forward slashes, pick
+whichever's easier to read.
+
+Fix in the codebase, so this doesn't repeat silently: `load_config()` now
+catches `yaml.YAMLError` specifically and re-raises with a message that
+names the Windows-path-in-double-quotes gotcha directly (this is by far
+the single most likely real-world cause of a YAML error in this file, so
+worth naming explicitly rather than leaving someone to decode a raw
+`ScannerError` trace) — plus a warning comment right on
+`ref_audio_path` in `config.yaml` itself, so the mistake is less likely
+on the *next* edit too, not just easier to diagnose after the fact.

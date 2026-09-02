@@ -53,6 +53,10 @@ tts:
     # fill these in; synthesize() only calls gpt_sovits when engine above
     # is actually set to it, so leaving these blank while engine stays
     # "pyttsx3" is harmless.
+    # WINDOWS PATH GOTCHA: use single quotes for this, e.g.
+    # 'C:\Users\you\ref.wav' -- double quotes treat backslashes as escape
+    # codes and will fail to parse (see config.py's load_config() for the
+    # full explanation if you hit this).
     ref_audio_path: ""
     prompt_text: ""
     prompt_lang: "en"
