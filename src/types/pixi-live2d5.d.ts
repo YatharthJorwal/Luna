@@ -22,6 +22,13 @@ declare module "pixi-live2d5" {
     motionManager: MotionManager;
     width: number;
     height: number;
+    // InternalModel extends pixi.js's EventEmitter (see
+    // cubism-common/InternalModel.ts in the library's source) and emits
+    // "beforeModelUpdate" from inside its per-frame update() -- the only
+    // place external code can add to a Cubism parameter and have it
+    // actually affect that frame's render. See src/lipsync.ts for why.
+    on(event: string, fn: () => void): void;
+    off(event: string, fn: () => void): void;
   }
 
   export class Live2DModel extends Container {
