@@ -215,3 +215,83 @@ of abrupt bursts. If overlap is still audible after this, it's a real bug
 worth digging into further with actual console/audio output from a
 running session, since static reading of the code didn't turn up a
 structural cause.
+
+## Model re-pick: `qwen3-vl:8b` → `qwen3.5:9b`, and why `llm.py` now speaks two protocols
+
+Requested directly, from a list of models already pulled locally. Worth
+recording why this wasn't just a one-line `model:` edit.
+
+`qwen3.5:9b` is a real step up over the original pick — natively
+multimodal (Qwen3.5 was trained multimodal from the start; Qwen3-VL is
+the earlier generation's vision-bolted-onto-a-text-model approach) and
+benchmarks put it ahead of Qwen3-VL even at larger sizes. Similar VRAM
+footprint (Q4_K_M ~6.6GB vs. the original ~6GB), so the sizing story in
+`docs/MODELS.md` still holds.
+
+The complication: Qwen3.5 is a *hybrid-thinking* model — it can emit a
+reasoning phase before its actual reply, and left enabled that's reported
+to add 5-10x latency per response. Terrible trade for a companion that's
+built around replying in quick, streamed sentence bursts. The obvious fix
+— send `think: false` — turned out to not be reliably obvious at all:
+searched current (dated within the last several months, some within
+days) Ollama GitHub issues and found the OpenAI-compatible
+`/v1/chat/completions` endpoint — what `llm.py` exclusively talked to
+before this change — unreliably forwards *any* thinking-control field for
+several model families (`think`, `reasoning_effort`, and
+`chat_template_kwargs.enable_thinking` all have open reports of being
+silently ignored or, worse, of breaking the response entirely for some
+models — Gemma 4 was found to dump its whole reply into a `reasoning`
+field instead of `content` over `/v1` regardless of any flag, making it
+outright unusable over that endpoint). Ollama's *native* `/api/chat`
+endpoint is confirmed (via Ollama's own docs) to honor `think` correctly
+— the bug is specifically in the OpenAI-compatibility shim, not the
+underlying thinking control itself.
+
+Fix: `llm.py` now speaks two wire protocols, picked by
+`config.yaml`'s new `llm.api_style`:
+- `"ollama_native"` (the new default) — Ollama's own `/api/chat`, NDJSON
+  streaming (one JSON object per line, `"done": true` on the last one
+  instead of an SSE `[DONE]` sentinel). `llm.think: false` is only sent,
+  and only reliably honored, in this mode.
+- `"openai"` (the original Phase 2 behavior, kept for llama.cpp or any
+  non-thinking model where the distinction doesn't matter) — unchanged
+  SSE parsing of `/v1/chat/completions`.
+
+This does narrow the "just edit `base_url` to switch between Ollama and
+llama.cpp" story from Phase 2 slightly — llama.cpp doesn't implement
+Ollama's native `/api/chat` shape, so a llama.cpp switch now also needs
+`api_style: "openai"` alongside the `base_url` edit, not just the URL.
+Judged worth it: reliable thinking-control beats a slightly simpler
+config surface, especially since the alternative (staying on `/v1` and
+hoping `think: false` gets respected) is a real, current, and apparently
+still-open reliability gap, not a solved problem.
+
+Also added a second, independent layer of protection that doesn't rely on
+the flag working at all: `_extract_ollama_native_delta()` only ever reads
+`message.content`, never `message.thinking` — so even a model that
+completely ignores `think: false` and leaks reasoning into the stream
+regardless can't get that reasoning spoken aloud. Verified this
+specifically: a stub chunk containing both `content` and `thinking` in
+the same object correctly yields only the `content` half.
+
+## STT/TTS pulled forward to Phase 2.5, ahead of the original Phase 6 slot
+
+`docs/ROADMAP.md`'s original v1 spec put real voice (GPT-SoVITS) at
+Phase 6 and explicitly scoped STT *out* of v1 entirely ("input is the
+text box; add later if wanted"). Requested directly, now that a usable
+voice reference sample is available — pulling this forward doesn't
+conflict with anything Phase 3-5 builds (persistent memory, vision tools,
+Task Guide Mode are all independent of how audio gets in/out), so there's
+no real ordering cost to doing it now instead of later.
+
+Concrete API shapes for both were confirmed by reading a real, working
+reference implementation rather than assumed from general knowledge of
+the two projects — `rayenfeng/riko_project` on GitHub (MIT-licensed,
+credits `RVC-Boss/GPT-SoVITS` and `SYSTRAN/faster-whisper`, the same two
+picks `docs/MODELS.md` already had queued up as the "if added later"
+answer even before this session). Full details in `docs/MODELS.md`'s
+TTS/STT sections. Not yet implemented in code — that's the next chunk of
+work, gated on the user getting GPT-SoVITS's own API server running
+locally, since there's no way to meaningfully stub/test real voice
+cloning quality the way the LLM client's protocol handling could be
+stubbed.

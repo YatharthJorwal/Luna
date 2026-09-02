@@ -15,12 +15,19 @@ machine. This overrides convenience every time.
 
 ## Current status
 
-Phase 1 done and running on the user's machine (Windows, RTX 3060 12GB) —
-shell, tray, Live2D rendering, and the audio pipeline all work end-to-end.
-**Phase 2 (real local LLM, single-pass persona, streamed text → TTS →
-lip-sync, session memory)** is built and verified end-to-end in the
-sandbox, not yet confirmed on the user's machine — real voice is still
-pyttsx3 (unchanged from Phase 1), model still Hiyori (placeholder).
+Phase 1 and Phase 2 both confirmed running on the user's machine (Windows,
+RTX 3060 12GB) — shell, tray, Live2D rendering, audio pipeline, and a real
+local LLM brain all work end-to-end. Two real bugs surfaced on first
+real-hardware testing of Phase 2 (lipsync never moved, slight audio
+overlap between sentence chunks) and are fixed — see `docs/DECISIONS.md`
+for both.
+
+**In progress: Phase 2.5**, pulled forward from the original Phase 6 slot
+— swapping the LLM to `qwen3.5:9b` (from the original `qwen3-vl:8b` pick;
+see `docs/DECISIONS.md` for why, including a non-obvious protocol change
+this forced in `orchestrator/llm.py`), plus real voice (GPT-SoVITS) and
+STT (faster-whisper) once the user's GPT-SoVITS API server is running.
+Real voice/STT integration code isn't written yet — model swap is.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

@@ -22,11 +22,13 @@
 - Vision tools, invoked on demand by the model, not a continuous stream:
   screen capture, clipboard read, OCR fallback, camera capture.
 - Coding-help and gaming-help as the two flagship use cases.
+- **STT (voice input from the user)**, via faster-whisper — added mid-build
+  (was explicitly out of scope in the original Phase 0 spec below; see
+  Phase 2.5 and `docs/DECISIONS.md` for when/why this changed).
 
 ### Explicitly out of scope (v1)
 - No continuous/always-on camera or screen streaming into context.
 - No cloud fallback mode.
-- No STT / voice input from the user (input is the text box; add later if wanted).
 - No elaborate avatar customization, marketplace, monetization, or multi-character
   support. One character, done well.
 - No auto-playing games or taking control of input devices — she can *see* and
@@ -53,9 +55,20 @@ awaiting on-machine confirmation · ⬜ not started)
   streamed text → TTS → lip-sync. Real conversation, session-only memory, no
   tools yet. Built and verified end-to-end in the sandbox (real LLM client
   against a stub OpenAI-compatible server, sentence chunking, session
-  history, LLM-unreachable fallback, frontend playback queue) — not yet
-  confirmed against a real local LLM on the user's machine. *Next: pull
-  `qwen3-vl:8b` in Ollama and confirm on-machine.*
+  history, LLM-unreachable fallback, frontend playback queue) — confirmed
+  running on the user's machine against a real local LLM (`qwen3-vl:8b`
+  initially); two real bugs found on that first run (lipsync never moved,
+  slight audio overlap between chunks) and fixed — see `docs/DECISIONS.md`.
+- ⬜ **Phase 2.5 — Voice input/output upgrade.** Pulled forward from Phase 6
+  mid-build once a usable voice reference sample was in hand: swap
+  `orchestrator/tts.py`'s placeholder pyttsx3 voice for real GPT-SoVITS
+  cloning, add STT via faster-whisper (mic capture in the frontend →
+  transcription in the orchestrator → same `user_text` path the input box
+  already uses). See `docs/MODELS.md` for the concrete API shapes (sourced
+  from reading a real reference implementation) and `docs/DECISIONS.md` for
+  why this jumped the queue. Also folds in the model swap to `qwen3.5:9b`
+  (see `docs/DECISIONS.md`), done as part of this same push since it
+  surfaced from the same real-hardware testing round.
 - ⬜ **Phase 3 — Persistent memory.** SQLite facts/episodes, consolidation job,
   recall injected into the system prompt each turn.
 - ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
@@ -67,17 +80,24 @@ awaiting on-machine confirmation · ⬜ not started)
   game-context awareness (e.g. active-window detection), expression/emotion
   mapping refined.
 - ⬜ **Phase 6 — Personality & perf pass.** Optional split into two-pass
-  planner/persona, voice tuning, memory quality tuning, profile resource usage
+  planner/persona, voice tuning (refining the GPT-SoVITS voice integrated in
+  Phase 2.5 — retraining/re-recording reference audio, emotional range —
+  not integrating it fresh), memory quality tuning, profile resource usage
   with a game running to confirm she doesn't cost FPS.
 
 ## Open decisions
 
 Resolved:
-- GPU/VRAM: RTX 3060 12GB, i5-14400F, 32GB DDR5-4800 → Qwen3-VL-8B locked
-  default (`docs/MODELS.md`).
+- GPU/VRAM: RTX 3060 12GB, i5-14400F, 32GB DDR5-4800 → Qwen3.5-9B (re-picked
+  from the original Qwen3-VL-8B once Qwen3.5 shipped — `docs/MODELS.md`,
+  `docs/DECISIONS.md`).
 - Name: **Luna**.
 - OS: **Windows**, confirmed during Phase 1 build.
 - Live2D rendering library: `pixi-live2d5` (vendored), see `docs/DECISIONS.md`.
+- Voice reference source for TTS cloning: user has a sample in hand. Rights
+  to it are on the user to confirm — not something this doc can verify.
+- STT: in scope after all, via faster-whisper (Phase 2.5) — see the scope
+  section above.
 
 Still open:
 - Task Guide Mode tuning: screenshot interval while a task is active, and how
@@ -85,4 +105,3 @@ Still open:
   down when they're not in the mood to be chided).
 - Live2D model source for anything beyond local prototyping (free sample vs.
   purchased vs. commissioned) and its license terms.
-- Voice reference source for TTS cloning, and its rights.
