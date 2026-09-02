@@ -28,8 +28,18 @@ class LLMConfig:
 
 
 @dataclass(frozen=True)
+class GPTSoVITSConfig:
+    api_url: str
+    ref_audio_path: str
+    prompt_text: str
+    prompt_lang: str
+    text_lang: str
+
+
+@dataclass(frozen=True)
 class TTSConfig:
     engine: str
+    gpt_sovits: GPTSoVITSConfig
 
 
 @dataclass(frozen=True)
@@ -48,9 +58,12 @@ def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
     with open(path, "r", encoding="utf-8") as f:
         raw: dict[str, Any] = yaml.safe_load(f)
 
+    raw_tts = dict(raw["tts"])
+    raw_tts["gpt_sovits"] = GPTSoVITSConfig(**raw_tts["gpt_sovits"])
+
     return Config(
         llm=LLMConfig(**raw["llm"]),
-        tts=TTSConfig(**raw["tts"]),
+        tts=TTSConfig(**raw_tts),
         session=SessionConfig(**raw["session"]),
     )
 

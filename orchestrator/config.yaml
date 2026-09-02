@@ -39,9 +39,24 @@ llm:
   think: false
 
 tts:
-  # Only "pyttsx3" exists right now (Phase 1 placeholder, still true in
-  # Phase 2). Real voice work (GPT-SoVITS) is next -- see docs/MODELS.md.
+  # "pyttsx3" (current active default) or "gpt_sovits" (flip this once your
+  # GPT-SoVITS API server is running and the block below points at your
+  # real reference clip -- see docs/MODELS.md for how to get there).
   engine: "pyttsx3"
+  gpt_sovits:
+    # GPT-SoVITS's own API server (a separate process you run yourself --
+    # not something the orchestrator launches). Default port per its docs.
+    api_url: "http://127.0.0.1:9880/tts"
+    # Wherever your reference WAV lives on disk, and an *exact* transcript
+    # of what's said in it -- GPT-SoVITS uses the transcript as part of
+    # the voice-cloning conditioning, not just a label. Empty until you
+    # fill these in; synthesize() only calls gpt_sovits when engine above
+    # is actually set to it, so leaving these blank while engine stays
+    # "pyttsx3" is harmless.
+    ref_audio_path: ""
+    prompt_text: ""
+    prompt_lang: "en"
+    text_lang: "en"
 
 session:
   # How many past (user, assistant) turns to keep in the LLM's context
