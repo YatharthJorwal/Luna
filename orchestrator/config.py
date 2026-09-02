@@ -23,6 +23,8 @@ class LLMConfig:
     api_key: str
     temperature: float
     max_tokens: int
+    api_style: str  # "ollama_native" | "openai"
+    think: bool | None
 
 
 @dataclass(frozen=True)
