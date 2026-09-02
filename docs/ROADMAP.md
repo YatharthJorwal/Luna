@@ -59,12 +59,16 @@ awaiting on-machine confirmation · ⬜ not started)
   running on the user's machine against a real local LLM (`qwen3-vl:8b`
   initially); two real bugs found on that first run (lipsync never moved,
   slight audio overlap between chunks) and fixed — see `docs/DECISIONS.md`.
-- ⬜ **Phase 2.5 — Voice input/output upgrade.** Pulled forward from Phase 6
-  mid-build once a usable voice reference sample was in hand: swap
-  `orchestrator/tts.py`'s placeholder pyttsx3 voice for real GPT-SoVITS
-  cloning, add STT via faster-whisper (mic capture in the frontend →
-  transcription in the orchestrator → same `user_text` path the input box
-  already uses). See `docs/MODELS.md` for the concrete API shapes (sourced
+- 🔶 **Phase 2.5 — Voice input/output upgrade.** Pulled forward from Phase 6
+  mid-build once a usable voice reference sample was in hand. GPT-SoVITS
+  backend in `orchestrator/tts.py` is built and verified against a stub
+  server matching the real API contract, with an automatic fallback to
+  pyttsx3 if the server's unreachable — still inert (`tts.engine` defaults
+  to `"pyttsx3"`) until the user has GPT-SoVITS's own API server running
+  and fills in a real `ref_audio_path`/`prompt_text`. STT via
+  faster-whisper (mic capture in the frontend → transcription in the
+  orchestrator → same `user_text` path the input box already uses) is
+  still unbuilt. See `docs/MODELS.md` for the concrete API shapes (sourced
   from reading a real reference implementation) and `docs/DECISIONS.md` for
   why this jumped the queue. Also folds in the model swap to `qwen3.5:9b`
   (see `docs/DECISIONS.md`), done as part of this same push since it

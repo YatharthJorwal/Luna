@@ -290,8 +290,32 @@ the two projects — `rayenfeng/riko_project` on GitHub (MIT-licensed,
 credits `RVC-Boss/GPT-SoVITS` and `SYSTRAN/faster-whisper`, the same two
 picks `docs/MODELS.md` already had queued up as the "if added later"
 answer even before this session). Full details in `docs/MODELS.md`'s
-TTS/STT sections. Not yet implemented in code — that's the next chunk of
-work, gated on the user getting GPT-SoVITS's own API server running
-locally, since there's no way to meaningfully stub/test real voice
-cloning quality the way the LLM client's protocol handling could be
-stubbed.
+TTS/STT sections. GPT-SoVITS's `orchestrator/tts.py` backend is
+implemented as of the next entry below; STT (faster-whisper, plus mic
+capture in the frontend) is still the next chunk of work.
+
+## `orchestrator/tts.py` gained a GPT-SoVITS backend, engine-selected like the LLM
+
+Implemented as soon as the API contract was confirmed (see the entry
+above) rather than waiting for the user's GPT-SoVITS server to exist,
+since the contract doesn't depend on whether the underlying voice was
+zero-shot or fine-tuned — same `ref_audio_path`/`prompt_text` fields
+either way. Verified against a stub server matching the real contract
+exactly (`POST /tts`, that exact field set, raw WAV back).
+
+`config.yaml`'s `tts.engine` still defaults to `"pyttsx3"` — not flipped
+to `"gpt_sovits"` automatically, since that requires the user to actually
+have the API server running and `ref_audio_path`/`prompt_text` filled in
+with real values, neither of which is true yet at time of writing. The
+`gpt_sovits` config block ships with those two fields empty so it's
+inert until deliberately turned on.
+
+One addition beyond a straight port of the LLM's config-driven-backend
+pattern: if `engine` is `"gpt_sovits"` but the server can't be reached,
+`synthesize()` catches that itself and falls back to `pyttsx3` for that
+one line, rather than the turn going silent or crashing. This is
+different from the LLM's unreachable-server handling (an in-character
+fallback *line*) because TTS failure doesn't lose the actual reply
+content the way an unreachable LLM does — there's still a real sentence
+to speak, just via the placeholder voice instead of the cloned one for
+that turn.
