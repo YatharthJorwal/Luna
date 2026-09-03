@@ -16,3 +16,8 @@ Thumbs.db
 
 # Proprietary, downloaded manually per README -- never commit this
 public/live2dcubismcore.min.js
+
+# Personal launcher scripts -- hardcode machine-specific absolute paths
+# (your GPT-SoVITS install location, etc.), so these stay local-only, same
+# as config.yaml's real ref_audio_path/prompt_text values.
+start-luna.bat

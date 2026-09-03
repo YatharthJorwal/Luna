@@ -74,7 +74,11 @@ decisions).
 
 ## Run it
 
-Three things running, in order, in separate terminals.
+Three things running, in order, in separate terminals -- or write yourself a
+`start-luna.bat` that launches all of them (it's gitignored, since it'll
+have your machine's actual absolute paths in it -- GPT-SoVITS's folder,
+this repo's folder -- baked in, same reasoning as why
+`config.yaml`'s real `ref_audio_path` stays local-only too).
 
 **1. Ollama** (if not already running as a background service -- the
 Windows installer usually sets this up for you; check the system tray
