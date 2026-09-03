@@ -1,7 +1,8 @@
 import * as PIXI from "pixi.js";
 import { Live2DModel } from "pixi-live2d5";
-import { WsClient, type ConnectionState, type SpeakMessage } from "./ws-client";
+import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage } from "./ws-client";
 import { speakWithLipsync } from "./lipsync";
+import { MicInput, blobToBase64 } from "./mic";
 
 // Required so pixi-live2d5 can reach window.PIXI.Ticker to auto-update models.
 (window as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
@@ -54,6 +55,7 @@ async function boot(): Promise<void> {
 function setupHud(model: Live2DModel): void {
   const input = document.getElementById("input-box") as HTMLInputElement;
   const statusDot = document.getElementById("status-dot") as HTMLDivElement;
+  const micButton = document.getElementById("mic-button") as HTMLButtonElement;
 
   const setState = (state: ConnectionState) => {
     statusDot.classList.remove("connected", "listening");
@@ -65,6 +67,7 @@ function setupHud(model: Live2DModel): void {
   const client = new WsClient({
     onStateChange: setState,
     onSpeak: (msg: SpeakMessage) => queue.push(msg),
+    onTranscript: (msg: TranscriptMessage) => showTranscript(msg.text),
   });
   client.connect();
 
@@ -74,6 +77,42 @@ function setupHud(model: Live2DModel): void {
     if (!text) return;
     client.sendUserText(text);
     input.value = "";
+  });
+
+  // Briefly shows what the orchestrator heard in the input box's own
+  // placeholder rather than its value -- the transcript has already been
+  // sent and is on its way to the LLM by the time this arrives (see
+  // ws-client.ts), so putting it in `value` would look like something
+  // still waiting to be submitted. Reverts to the normal placeholder after
+  // a few seconds either way.
+  const defaultPlaceholder = input.placeholder;
+  let transcriptTimer: number | undefined;
+  function showTranscript(text: string): void {
+    window.clearTimeout(transcriptTimer);
+    input.placeholder = text ? `Heard: "${text}"` : "Didn't catch that -- try again?";
+    transcriptTimer = window.setTimeout(() => {
+      input.placeholder = defaultPlaceholder;
+    }, 4000);
+  }
+
+  const mic = new MicInput({
+    onRecordingChange: (recording) => {
+      micButton.classList.toggle("recording", recording);
+      micButton.setAttribute("aria-pressed", String(recording));
+    },
+    onClip: async (blob) => {
+      const audioB64 = await blobToBase64(blob);
+      client.sendUserAudio(audioB64);
+    },
+    onError: (err) => {
+      // Most likely mic permission denied, or no input device -- nothing
+      // client-side to recover from beyond logging; the user can grant
+      // permission (or plug in a mic) and click again.
+      console.error("[luna] mic capture failed -- check mic permission", err);
+    },
+  });
+  micButton.addEventListener("click", () => {
+    mic.toggle();
   });
 }
 

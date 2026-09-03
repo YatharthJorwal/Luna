@@ -353,3 +353,94 @@ worth naming explicitly rather than leaving someone to decode a raw
 `ScannerError` trace) — plus a warning comment right on
 `ref_audio_path` in `config.yaml` itself, so the mistake is less likely
 on the *next* edit too, not just easier to diagnose after the fact.
+
+## STT: `faster-whisper` on CPU by default, model loaded lazily not at import time
+
+`orchestrator/stt.py` is the last piece of Phase 2.5. `WhisperModel(model_size,
+device, compute_type)` + `.transcribe()` returning segments to join was
+already confirmed against `riko_project` (see the Phase 2.5 entry above and
+`docs/MODELS.md`) — what's recorded here are the two real choices made
+implementing it.
+
+**Device defaults to `"cpu"`, not `"cuda"`.** Same reasoning `docs/MODELS.md`
+already gives for running GPT-SoVITS on CPU: the 3060's 12GB is already
+carrying `qwen3.5:9b` (~6.6GB) and has to share with a game during Task
+Guide Mode, so a third thing competing for VRAM on every single utterance
+is a bad trade against a few hundred ms of CPU latency for a short spoken
+clip. `stt.model_size` ("small") and `stt.compute_type` ("int8") are both
+config, not hardcoded, so this is a one-line edit if CPU transcription
+turns out to feel sluggish on the user's actual hardware — untested for
+real the same way GPT-SoVITS's first real config edit was (see above),
+since there's no way to load real model weights in this sandbox (no
+network path to Hugging Face here — see README's honesty section).
+
+**Model loads lazily, on the first `transcribe()` call, not at import
+time.** Unlike `config.py`'s `CONFIG = load_config()` (cheap, always
+needed), constructing a `WhisperModel` pulls weights from Hugging Face on
+a first-ever run and takes a real moment to load onto CPU/GPU after
+that — paying that cost at orchestrator startup would slow down every
+launch (including pure-typed-text sessions that never touch the mic) for
+a feature that isn't guaranteed to be used that session. `stt._model` is a
+module-level singleton, constructed once on first use and reused after.
+
+Verified in the sandbox against a stubbed `WhisperModel` (segment-joining,
+empty-transcript handling, language passthrough, lazy-singleton
+construction reading the right config values) and via a real WebSocket
+connection through `app.py`'s new `user_audio` handling end-to-end (stt/
+llm/tts all stubbed, same methodology as Phase 2's LLM verification) —
+not against real model weights or real audio, for the reason above.
+
+## `user_audio` transcription always echoes a `transcript` message back, even when empty
+
+`app.py`'s `user_audio` handler sends `{"type": "transcript", "text": ...}`
+to the frontend right after transcribing, *before* deciding whether to run
+a turn on it — including when the text comes back empty (silence, noise,
+nothing intelligible). Two reasons this isn't just a debug nicety:
+
+- The frontend needs *some* signal that the mic clip was received and
+  processed, distinct from "orchestrator never got the message at all" —
+  without this, an empty transcription and a dropped WebSocket message
+  look identical from the UI's side (nothing happens).
+- `src/main.ts` uses the transcript text to briefly show what Luna heard
+  in the input box's placeholder, including a "didn't catch that" message
+  for the empty case, since misheard/unheard voice input is otherwise
+  invisible — unlike typing, where the user can see exactly what they
+  entered before hitting Enter.
+
+An empty transcript still doesn't run `_run_turn()` or touch history —
+there's nothing to reply to, and adding an empty turn would just be noise
+in the LLM's context for no benefit, consistent with how an unreachable-LLM
+turn already gets dropped rather than kept (see the Phase 2 entry above).
+
+## Frontend mic capture: toggle-to-record, not push-to-talk; plain Web APIs, no Tauri mic plugin
+
+`src/mic.ts` records via the browser's own `getUserMedia`/`MediaRecorder`
+APIs directly — no `@tauri-apps/plugin-*` mic dependency needed, since
+WebView2 (the webview Tauri uses on Windows) is Chromium-based and
+supports these natively, same reasoning as `lipsync.ts` driving audio
+output through plain Web Audio instead of a Tauri-specific API.
+
+**Toggle (click to start, click to stop), not press-and-hold.** Luna's
+window is small, draggable, transparent, and always-on-top — a
+press-and-hold gesture risks losing the `mouseup` event entirely if the
+cursor drifts off the tiny HUD before releasing, which would leave the mic
+stuck recording with no on-screen way to stop it. A plain click/click
+toggle can't get stuck that way. A `MAX_RECORDING_MS` (30s) safety net is
+still there as a backstop in case the user forgets to click stop and walks
+away, going through the exact same `stopInternal()` → `"stop"` event path
+a manual click does, so there's only one code path to get right, not two.
+
+**No `mime` field sent in the `user_audio` message,** unlike `speak`
+messages going the other direction (which do carry `mime`, since the
+frontend needs it to construct a `Blob` for playback). `stt.py`'s
+`decode_audio` sniffs the container/codec from the audio bytes themselves
+(via PyAV/ffmpeg) rather than trusting a caller-supplied label, so there
+was nothing for the backend to do with it — left out rather than carried
+along unused.
+
+Not yet verified on real hardware: whether WebView2's mic permission
+prompt behaves the way Chrome's does (same open "first real run" caveat
+as Phase 1/2's audio-autoplay-policy note in README's "If something
+doesn't work" section) — `mic.ts`'s `onError` callback logs to the
+console either way rather than failing silently, so a denial is at least
+diagnosable on first real run.

@@ -62,6 +62,29 @@ tts:
     prompt_lang: "en"
     text_lang: "en"
 
+stt:
+  # faster-whisper model size. "small" is a good accuracy/speed balance for
+  # short spoken utterances (a sentence or two at a time, not dictation) --
+  # step down to "base" if transcription feels slow, up to "medium" if you
+  # flip device to "cuda" below and have VRAM to spare.
+  model_size: "small"
+  # Runs on CPU by default, on purpose -- same reasoning as GPT-SoVITS
+  # running on CPU (see docs/MODELS.md): keeps the full 3060 free for the
+  # LLM, and whatever game is in the foreground during Task Guide Mode.
+  # A few seconds of speech transcribes in well under a second on CPU at
+  # this model size on modern hardware, so the latency trade is worth it.
+  # Flip to "cuda" if you'd rather spend some VRAM for faster transcription.
+  device: "cpu"
+  # int8 quantization -- fastest CPU option, accuracy hit is negligible for
+  # short conversational utterances. Use "int8_float16" instead if device
+  # is "cuda".
+  compute_type: "int8"
+  # Force a language instead of auto-detecting (e.g. "en") -- auto-detect
+  # costs a little extra latency on very short clips and can occasionally
+  # guess wrong on a one- or two-word utterance. Set to null to let
+  # faster-whisper auto-detect instead.
+  language: "en"
+
 session:
   # How many past (user, assistant) turns to keep in the LLM's context
   # before dropping the oldest. Session-only -- gone on disconnect. Durable

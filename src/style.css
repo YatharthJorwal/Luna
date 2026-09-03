@@ -97,3 +97,43 @@ body {
 #input-box::placeholder {
   color: var(--dim);
 }
+
+#mic-button {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: color 150ms ease;
+}
+
+#mic-button svg {
+  width: 16px;
+  height: 16px;
+  fill: currentColor;
+}
+
+#mic-button:hover {
+  color: var(--ink);
+}
+
+#mic-button.recording {
+  color: var(--accent-listening);
+  animation: mic-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes mic-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
+}

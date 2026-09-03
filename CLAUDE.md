@@ -25,9 +25,13 @@ for both.
 **In progress: Phase 2.5**, pulled forward from the original Phase 6 slot
 — swapping the LLM to `qwen3.5:9b` (from the original `qwen3-vl:8b` pick;
 see `docs/DECISIONS.md` for why, including a non-obvious protocol change
-this forced in `orchestrator/llm.py`), plus real voice (GPT-SoVITS) and
-STT (faster-whisper) once the user's GPT-SoVITS API server is running.
-Real voice/STT integration code isn't written yet — model swap is.
+this forced in `orchestrator/llm.py`), plus real voice (GPT-SoVITS,
+confirmed working end-to-end on the user's machine) and STT
+(faster-whisper: mic capture in `src/mic.ts` → `user_audio` WebSocket
+message → transcription in `orchestrator/stt.py` → the same turn-handling
+path `user_text` already used). STT is built and sandbox-verified but not
+yet confirmed on the user's actual hardware/mic — see `docs/DECISIONS.md`
+for the device/lazy-load/toggle-to-record choices made building it.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

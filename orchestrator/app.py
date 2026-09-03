@@ -14,6 +14,11 @@ Memory is session-only: history lives in a plain Python list tied to the
 websocket connection and is gone when it disconnects. Durable memory
 across restarts is Phase 3 -- no tools yet either, that's Phase 4.
 
+Phase 2.5 adds voice input: a `user_audio` message (base64 WAV/WebM bytes
+from the frontend's MediaRecorder) is transcribed via faster-whisper
+(stt.py) and fed into the exact same turn-handling path as `user_text` --
+see `_run_turn()` below, shared by both message types.
+
 Binds to 127.0.0.1 only, on purpose -- never expose this beyond localhost,
 per the project's local-only, non-negotiable constraint (see CLAUDE.md).
 """
@@ -23,6 +28,7 @@ import base64
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 import llm
+import stt
 from chunking import extract_ready_chunks, flush
 from config import CONFIG
 from persona import SYSTEM_PROMPT, apply_persona_pass
@@ -65,6 +71,42 @@ def _trim_history(history: list[dict[str, str]]) -> None:
     history[:] = [system] + turns
 
 
+async def _run_turn(
+    websocket: WebSocket, history: list[dict[str, str]], user_text: str
+) -> None:
+    """The actual agent turn: append user_text to history, stream the LLM
+    reply, speak each sentence chunk as it's ready, commit (or roll back)
+    history. Shared by both `user_text` (typed) and `user_audio`
+    (transcribed) messages -- by the time this runs, there's no difference
+    between the two."""
+    history.append({"role": "user", "content": user_text})
+
+    buffer = ""
+    reply_parts: list[str] = []
+    try:
+        async for delta in llm.stream_reply(history):
+            buffer += delta
+            chunks, buffer = extract_ready_chunks(buffer)
+            for chunk in chunks:
+                reply_parts.append(chunk)
+                await _send_speak(websocket, apply_persona_pass(chunk))
+        for chunk in flush(buffer):
+            reply_parts.append(chunk)
+            await _send_speak(websocket, apply_persona_pass(chunk))
+    except llm.LLMUnreachableError:
+        await _send_speak(websocket, LLM_UNREACHABLE_LINE)
+
+    if reply_parts:
+        history.append({"role": "assistant", "content": " ".join(reply_parts)})
+    else:
+        # Nothing usable came back (LLM unreachable, or a genuinely
+        # empty response) -- drop the dangling user turn rather than
+        # leave a one-sided exchange in context for next time.
+        history.pop()
+
+    _trim_history(history)
+
+
 @app.websocket("/ws")
 async def ws_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
@@ -73,38 +115,36 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     try:
         while True:
             data = await websocket.receive_json()
-            if data.get("type") != "user_text":
-                continue
-            user_text = (data.get("text") or "").strip()
-            if not user_text:
-                continue
+            msg_type = data.get("type")
 
-            history.append({"role": "user", "content": user_text})
+            if msg_type == "user_text":
+                user_text = (data.get("text") or "").strip()
+                if not user_text:
+                    continue
+                await _run_turn(websocket, history, user_text)
 
-            buffer = ""
-            reply_parts: list[str] = []
-            try:
-                async for delta in llm.stream_reply(history):
-                    buffer += delta
-                    chunks, buffer = extract_ready_chunks(buffer)
-                    for chunk in chunks:
-                        reply_parts.append(chunk)
-                        await _send_speak(websocket, apply_persona_pass(chunk))
-                for chunk in flush(buffer):
-                    reply_parts.append(chunk)
-                    await _send_speak(websocket, apply_persona_pass(chunk))
-            except llm.LLMUnreachableError:
-                await _send_speak(websocket, LLM_UNREACHABLE_LINE)
+            elif msg_type == "user_audio":
+                audio_b64 = data.get("audio_b64") or ""
+                if not audio_b64:
+                    continue
+                try:
+                    audio_bytes = base64.b64decode(audio_b64)
+                except ValueError:
+                    # Malformed base64 -- nothing recoverable, drop it.
+                    continue
 
-            if reply_parts:
-                history.append({"role": "assistant", "content": " ".join(reply_parts)})
+                user_text = (await stt.transcribe(audio_bytes)).strip()
+                # Always echo the transcript back, even empty, so the
+                # frontend can clear its "listening" indicator either way.
+                await websocket.send_json({"type": "transcript", "text": user_text})
+                if not user_text:
+                    # Silence, noise, or nothing intelligible -- nothing to
+                    # reply to, and nothing worth adding to history.
+                    continue
+                await _run_turn(websocket, history, user_text)
+
             else:
-                # Nothing usable came back (LLM unreachable, or a genuinely
-                # empty response) -- drop the dangling user turn rather than
-                # leave a one-sided exchange in context for next time.
-                history.pop()
-
-            _trim_history(history)
+                continue
     except WebSocketDisconnect:
         pass
 

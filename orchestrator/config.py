@@ -43,6 +43,14 @@ class TTSConfig:
 
 
 @dataclass(frozen=True)
+class STTConfig:
+    model_size: str
+    device: str
+    compute_type: str
+    language: str | None
+
+
+@dataclass(frozen=True)
 class SessionConfig:
     max_history_turns: int
 
@@ -51,6 +59,7 @@ class SessionConfig:
 class Config:
     llm: LLMConfig
     tts: TTSConfig
+    stt: STTConfig
     session: SessionConfig
 
 
@@ -87,6 +96,7 @@ def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
     return Config(
         llm=LLMConfig(**raw["llm"]),
         tts=TTSConfig(**raw_tts),
+        stt=STTConfig(**raw["stt"]),
         session=SessionConfig(**raw["session"]),
     )
 

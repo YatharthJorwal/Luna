@@ -24,7 +24,8 @@
 - Coding-help and gaming-help as the two flagship use cases.
 - **STT (voice input from the user)**, via faster-whisper — added mid-build
   (was explicitly out of scope in the original Phase 0 spec below; see
-  Phase 2.5 and `docs/DECISIONS.md` for when/why this changed).
+  Phase 2.5 and `docs/DECISIONS.md` for when/why this changed). Built and
+  sandbox-verified as of Phase 2.5; awaiting on-machine confirmation.
 
 ### Explicitly out of scope (v1)
 - No continuous/always-on camera or screen streaming into context.
@@ -61,18 +62,26 @@ awaiting on-machine confirmation · ⬜ not started)
   slight audio overlap between chunks) and fixed — see `docs/DECISIONS.md`.
 - 🔶 **Phase 2.5 — Voice input/output upgrade.** Pulled forward from Phase 6
   mid-build once a usable voice reference sample was in hand. GPT-SoVITS
-  backend in `orchestrator/tts.py` is built and verified against a stub
-  server matching the real API contract, with an automatic fallback to
-  pyttsx3 if the server's unreachable — still inert (`tts.engine` defaults
-  to `"pyttsx3"`) until the user has GPT-SoVITS's own API server running
-  and fills in a real `ref_audio_path`/`prompt_text`. STT via
-  faster-whisper (mic capture in the frontend → transcription in the
-  orchestrator → same `user_text` path the input box already uses) is
-  still unbuilt. See `docs/MODELS.md` for the concrete API shapes (sourced
-  from reading a real reference implementation) and `docs/DECISIONS.md` for
-  why this jumped the queue. Also folds in the model swap to `qwen3.5:9b`
-  (see `docs/DECISIONS.md`), done as part of this same push since it
-  surfaced from the same real-hardware testing round.
+  backend in `orchestrator/tts.py` is built, verified against a stub server
+  matching the real API contract, and confirmed working end-to-end on the
+  user's machine (`tts.engine: "gpt_sovits"`, real `ref_audio_path`/
+  `prompt_text` filled in) — falls back to pyttsx3 automatically if the
+  server's unreachable. STT via faster-whisper is built: mic capture in the
+  frontend (`src/mic.ts`, toggle-to-record via `MediaRecorder`) sends audio
+  to the orchestrator (`orchestrator/stt.py`) over a new `user_audio`
+  WebSocket message, which transcribes it and feeds the text into the exact
+  same turn-handling path `user_text` already used (`app.py`'s `_run_turn()`).
+  Sandbox-verified (config wiring, segment-joining/empty-audio handling,
+  and a real WebSocket connection driven through `app.py`'s new message
+  type end-to-end with stt/llm/tts stubbed, plus a clean `tsc`+Vite
+  production build) — not yet run against real model weights, a real mic,
+  or WebView2's mic permission prompt, since none of those exist in this
+  sandbox. See `docs/MODELS.md` for the concrete API shapes (sourced from
+  reading a real reference implementation) and `docs/DECISIONS.md` for the
+  device/lazy-load/toggle-vs-push-to-talk choices made building it. Also
+  folds in the model swap to `qwen3.5:9b` (see `docs/DECISIONS.md`), done
+  as part of this same push since it surfaced from the same real-hardware
+  testing round.
 - ⬜ **Phase 3 — Persistent memory.** SQLite facts/episodes, consolidation job,
   recall injected into the system prompt each turn.
 - ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
