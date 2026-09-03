@@ -56,7 +56,30 @@ class Config:
 
 def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
     with open(path, "r", encoding="utf-8") as f:
-        raw: dict[str, Any] = yaml.safe_load(f)
+        raw_text = f.read()
+
+    try:
+        raw: dict[str, Any] = yaml.safe_load(raw_text)
+    except yaml.YAMLError as exc:
+        # The single most likely cause by far: a Windows path pasted into a
+        # double-quoted YAML string. YAML double-quotes treat backslashes as
+        # C-style escapes (\U, \D, etc. all mean something), so
+        # "C:\Users\..." silently isn't the literal string it looks like --
+        # PyYAML errors trying to parse \U as a hex escape. Single-quoted
+        # strings don't have this problem at all (no escape processing), so
+        # that's the fix: change any "C:\..." path in this file to
+        # 'C:\...' (single quotes) instead. Surfacing that here rather than
+        # just letting the ScannerError trace speak for itself, since this
+        # exact mistake reproduced on the very first real config edit.
+        raise RuntimeError(
+            f"{path} failed to parse as YAML: {exc}\n\n"
+            "If this mentions an 'escape sequence' and you have a Windows "
+            "path (like C:\\Users\\...) in this file: double-quoted YAML "
+            "strings treat backslashes as escape codes, so that path isn't "
+            "literal. Switch it to single quotes instead -- "
+            "'C:\\Users\\...' -- which don't have this problem, or use "
+            "forward slashes."
+        ) from exc
 
     raw_tts = dict(raw["tts"])
     raw_tts["gpt_sovits"] = GPTSoVITSConfig(**raw_tts["gpt_sovits"])
