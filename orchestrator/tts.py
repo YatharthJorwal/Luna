@@ -7,8 +7,10 @@ tts.engine, same pattern as the LLM's config-driven backend choice.
   already has (SAPI5 on Windows) -- no model download, works immediately,
   sounds robotic. Also used as an automatic fallback if the configured
   engine is "gpt_sovits" but its API server can't be reached, so a
-  turn never goes silent just because that server isn't running --
-  see _synthesize_gpt_sovits's caller in synthesize() below.
+  turn never goes silent just because that server isn't running -- the
+  real error is printed to the orchestrator's terminal when this happens,
+  so "wrong voice came out" is diagnosable instead of a silent mystery --
+  see synthesize() below.
 - "gpt_sovits": real cloned voice, via GPT-SoVITS's own API server
   (https://github.com/RVC-Boss/GPT-SoVITS) running as a separate local
   process -- not embedded here. Request/response shape confirmed by
@@ -22,6 +24,7 @@ tts.engine, same pattern as the LLM's config-driven backend choice.
 
 import asyncio
 import os
+import sys
 import tempfile
 
 import httpx
@@ -87,11 +90,13 @@ async def synthesize(text: str) -> bytes:
     if CONFIG.tts.engine == "gpt_sovits":
         try:
             return await _synthesize_gpt_sovits(text)
-        except TTSUnreachableError:
+        except TTSUnreachableError as exc:
             # Fall back to pyttsx3 for this one line rather than letting the
             # turn go silent -- she still says the actual reply, just in the
-            # placeholder voice for that line. Not logged specially here;
-            # a real logging pass is a Phase 6 perf-pass concern, not this.
-            pass
+            # placeholder voice for that line. This WAS silent before, which
+            # meant "wrong voice came out" had no visible cause anywhere --
+            # printing it here is the whole difference between "check the
+            # terminal" and "guess blindly."
+            print(f"[luna] gpt_sovits unreachable, falling back to pyttsx3: {exc}", file=sys.stderr)
 
     return await asyncio.to_thread(_synthesize_pyttsx3_sync, text)
