@@ -1,10 +1,9 @@
-// NOTE: this sandbox has no Rust toolchain, so this file has been written
-// carefully against the Tauri v2 API as I know it but has NOT been run
-// through `cargo check` anywhere. Do that first thing after `npm install`.
-// The spots most likely to need a small fix if the API has moved since my
-// knowledge cutoff (Jan 2026) are marked below -- Tauri's compiler errors
-// are usually specific enough to fix directly from the message. The
-// global-shortcut plugin block is new and unverified the same way.
+// NOTE: this sandbox has no Rust toolchain, so this file was originally
+// written against the Tauri v2 API from memory and unverified. The
+// global-shortcut block below has since been through a real `cargo build`
+// on the user's machine and fixed once (see docs/DECISIONS.md for the
+// E0277 error and fix) -- everything else in this file is still unverified
+// the same way it always has been.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -77,7 +76,7 @@ fn anchor_bottom_right(window: &tauri::WebviewWindow) {
 /// frontend (src/mic.ts, wired up in src/main.ts) does the actual recording
 /// start/stop, same as a mic-button click -- this function's only job is
 /// turning a raw key event into that event.
-fn register_push_to_talk_hotkey(app: &tauri::App) -> tauri::Result<()> {
+fn register_push_to_talk_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     let window = app
         .get_webview_window("main")
         .expect("main window must exist -- check the label in tauri.conf.json");

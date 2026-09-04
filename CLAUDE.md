@@ -31,13 +31,11 @@ confirmed working end-to-end on the user's machine) and STT
 F9 global push-to-talk via `tauri-plugin-global-shortcut` — → `user_audio`
 WebSocket message → transcription in `orchestrator/stt.py` → the same
 turn-handling path `user_text` already used). Confirmed on the user's
-machine: mic button + permission prompt. Not yet confirmed: an actual
-transcribed turn completing (first attempt hit a missing-dependency
-startup crash, being retried) and CUDA init on their 3060 (untestable in
-this sandbox, no GPU here). See `docs/DECISIONS.md` for the device/
-lazy-load/hotkey/CUDA choices made building it, including one open
-question about the new `src-tauri/src/lib.rs` global-shortcut code that
-can only be resolved by an actual `cargo build` on Windows.
+machine: mic button + permission prompt, and the global-shortcut Rust
+code now compiles clean (one real error found and fixed on first
+`cargo build` — see `docs/DECISIONS.md`). Not yet confirmed: an actual
+transcribed turn completing end-to-end, and whether CUDA init succeeds
+on their 3060 — both awaiting the next real run.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

@@ -506,3 +506,44 @@ sandbox (no GPU here either) — the config change and the reasoning behind
 it are solid, whether it loads cleanly on the user's actual Windows/3060
 setup is a first-real-run question like everything else GPU-related in
 this project so far.
+
+## First real `cargo build`: E0277 on `register_push_to_talk_hotkey`
+
+Predicted this file's global-shortcut block was the least-verified new code
+in the STT push (see the note at the top of `lib.rs` and the entry above) —
+first real `cargo build` on the user's machine confirmed exactly one error
+there, nothing else:
+
+```
+error[E0277]: `?` couldn't convert the error to `tauri::Error`
+    app.global_shortcut().register(push_to_talk)?;
+    the trait `From<tauri_plugin_global_shortcut::Error>` is not
+    implemented for `tauri::Error`
+```
+
+Root cause: `register_push_to_talk_hotkey()`'s signature declared
+`tauri::Result<()>` (i.e. `Result<(), tauri::Error>`), but `.register()`
+returns `Result<(), tauri_plugin_global_shortcut::Error>` — two different
+crates' error types, and `tauri::Error` has no `From` conversion for the
+plugin's own error type, so `?` had nothing to convert through.
+`build_tray()` right below it never hit this because everything it calls
+already returns `tauri::Error` directly (or something `tauri::Error` does
+have a conversion for) — it was never mixing two unrelated crates' error
+types in one function.
+
+Fix: changed `register_push_to_talk_hotkey`'s return type to
+`Result<(), Box<dyn std::error::Error>>` instead of `tauri::Result<()>`.
+`Box<dyn Error>` has a blanket `From<E>` for *any* `E: std::error::Error`,
+so both the `tauri::Error` from `.plugin(...)?` and the
+`tauri_plugin_global_shortcut::Error` from `.register(...)?` convert into
+it without needing a specific `From` impl between the two crates. This
+also matches what the `.setup()` closure itself already expects at the
+call site (`register_push_to_talk_hotkey(app)?;` needed no further
+conversion after the fix) — confirmed by `build_tray(app)?` already
+working there beforehand via the same blanket boxing.
+
+General lesson worth keeping in mind for any future function that mixes
+calls into more than one plugin/crate in the same `?`-chain: reach for
+`Result<(), Box<dyn std::error::Error>>` rather than a specific crate's
+`Result` alias, unless every fallible call in the function is guaranteed
+to return that same crate's error type.
