@@ -1,5 +1,6 @@
 import * as PIXI from "pixi.js";
 import { Live2DModel } from "pixi-live2d5";
+import { listen } from "@tauri-apps/api/event";
 import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage } from "./ws-client";
 import { speakWithLipsync } from "./lipsync";
 import { MicInput, blobToBase64 } from "./mic";
@@ -113,6 +114,20 @@ function setupHud(model: Live2DModel): void {
   });
   micButton.addEventListener("click", () => {
     mic.toggle();
+  });
+
+  // F9 push-to-talk, works even when Luna's window isn't focused -- the
+  // actual global shortcut registration lives in src-tauri/src/lib.rs
+  // (Rust), which just emits this event; all the recording logic stays
+  // here in one place, same start()/stop() the mic button itself uses.
+  listen<string>("hotkey-talk", (event) => {
+    if (event.payload === "pressed") {
+      mic.start();
+    } else if (event.payload === "released") {
+      mic.stop();
+    }
+  }).catch((err) => {
+    console.error("[luna] couldn't attach F9 push-to-talk listener", err);
   });
 }
 

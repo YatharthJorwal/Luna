@@ -66,22 +66,25 @@ awaiting on-machine confirmation · ⬜ not started)
   matching the real API contract, and confirmed working end-to-end on the
   user's machine (`tts.engine: "gpt_sovits"`, real `ref_audio_path`/
   `prompt_text` filled in) — falls back to pyttsx3 automatically if the
-  server's unreachable. STT via faster-whisper is built: mic capture in the
-  frontend (`src/mic.ts`, toggle-to-record via `MediaRecorder`) sends audio
-  to the orchestrator (`orchestrator/stt.py`) over a new `user_audio`
-  WebSocket message, which transcribes it and feeds the text into the exact
-  same turn-handling path `user_text` already used (`app.py`'s `_run_turn()`).
-  Sandbox-verified (config wiring, segment-joining/empty-audio handling,
-  and a real WebSocket connection driven through `app.py`'s new message
-  type end-to-end with stt/llm/tts stubbed, plus a clean `tsc`+Vite
-  production build) — not yet run against real model weights, a real mic,
-  or WebView2's mic permission prompt, since none of those exist in this
-  sandbox. See `docs/MODELS.md` for the concrete API shapes (sourced from
-  reading a real reference implementation) and `docs/DECISIONS.md` for the
-  device/lazy-load/toggle-vs-push-to-talk choices made building it. Also
-  folds in the model swap to `qwen3.5:9b` (see `docs/DECISIONS.md`), done
-  as part of this same push since it surfaced from the same real-hardware
-  testing round.
+  server's unreachable. STT via faster-whisper is built and running on
+  CUDA (`stt.device: "cuda"`, the user's 3060): mic capture in the
+  frontend (`src/mic.ts`, click-to-toggle via the mic button *or* an F9
+  global push-to-talk hotkey — `tauri-plugin-global-shortcut` in
+  `src-tauri/src/lib.rs`, works regardless of which window has focus)
+  sends audio to the orchestrator (`orchestrator/stt.py`) over a new
+  `user_audio` WebSocket message, which transcribes it and feeds the text
+  into the exact same turn-handling path `user_text` already used
+  (`app.py`'s `_run_turn()`). Confirmed on the user's machine: mic button
+  renders and the permission prompt fires correctly. Not yet confirmed:
+  an actual transcribed turn completing end-to-end (the first attempt hit
+  a missing-dependency crash — `pip install -r requirements.txt` wasn't
+  re-run after pulling the bundle — and CUDA init itself is unverified
+  since this was built in a sandbox with no GPU). See `docs/MODELS.md` for
+  the concrete API shapes (sourced from reading a real reference
+  implementation) and `docs/DECISIONS.md` for the device/lazy-load/
+  hotkey/CUDA choices made building it. Also folds in the model swap to
+  `qwen3.5:9b` (see `docs/DECISIONS.md`), done as part of this same push
+  since it surfaced from the same real-hardware testing round.
 - ⬜ **Phase 3 — Persistent memory.** SQLite facts/episodes, consolidation job,
   recall injected into the system prompt each turn.
 - ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +

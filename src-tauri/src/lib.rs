@@ -1,17 +1,19 @@
 // NOTE: this sandbox has no Rust toolchain, so this file has been written
 // carefully against the Tauri v2 API as I know it but has NOT been run
 // through `cargo check` anywhere. Do that first thing after `npm install`.
-// The two spots most likely to need a small fix if the API has moved since
-// my knowledge cutoff (Jan 2026) are marked below -- Tauri's compiler errors
-// are usually specific enough to fix directly from the message.
+// The spots most likely to need a small fix if the API has moved since my
+// knowledge cutoff (Jan 2026) are marked below -- Tauri's compiler errors
+// are usually specific enough to fix directly from the message. The
+// global-shortcut plugin block is new and unverified the same way.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
-    Manager, PhysicalPosition, Position, WindowEvent,
+    Emitter, Manager, PhysicalPosition, Position, WindowEvent,
 };
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
 
 /// Exposed to the frontend for later phases (e.g. a keyboard shortcut or a
 /// HUD button) even though only the tray menu drives it in Phase 1.
@@ -32,6 +34,7 @@ pub fn run() {
 
             anchor_bottom_right(&window);
             build_tray(app)?;
+            register_push_to_talk_hotkey(app)?;
 
             Ok(())
         })
@@ -63,6 +66,43 @@ fn anchor_bottom_right(window: &tauri::WebviewWindow) {
     let y = screen.height as i32 - win_size.height as i32 - margin;
 
     let _ = window.set_position(Position::Physical(PhysicalPosition { x, y }));
+}
+
+/// F9 push-to-talk: registered as an OS-level global shortcut, so it works
+/// regardless of which window has focus (a game, a browser, whatever) --
+/// unlike a plain keydown listener in the frontend, which only fires while
+/// Luna's own window is focused, defeating the point of an always-on-top
+/// desktop companion you talk to while doing something else. Emits a
+/// "hotkey-talk" event with "pressed"/"released" as the payload; the
+/// frontend (src/mic.ts, wired up in src/main.ts) does the actual recording
+/// start/stop, same as a mic-button click -- this function's only job is
+/// turning a raw key event into that event.
+fn register_push_to_talk_hotkey(app: &tauri::App) -> tauri::Result<()> {
+    let window = app
+        .get_webview_window("main")
+        .expect("main window must exist -- check the label in tauri.conf.json");
+
+    let push_to_talk = Shortcut::new(None, Code::F9);
+    let shortcut_for_handler = push_to_talk.clone();
+
+    app.handle().plugin(
+        tauri_plugin_global_shortcut::Builder::new()
+            .with_handler(move |_app, scut, event| {
+                if scut != &shortcut_for_handler {
+                    return;
+                }
+                let state = match event.state() {
+                    ShortcutState::Pressed => "pressed",
+                    ShortcutState::Released => "released",
+                };
+                let _ = window.emit("hotkey-talk", state);
+            })
+            .build(),
+    )?;
+
+    app.global_shortcut().register(push_to_talk)?;
+
+    Ok(())
 }
 
 /// Tray icon + menu: Show/Hide, Toggle Click-through, Quit.

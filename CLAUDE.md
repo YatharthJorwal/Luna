@@ -27,11 +27,17 @@ for both.
 see `docs/DECISIONS.md` for why, including a non-obvious protocol change
 this forced in `orchestrator/llm.py`), plus real voice (GPT-SoVITS,
 confirmed working end-to-end on the user's machine) and STT
-(faster-whisper: mic capture in `src/mic.ts` → `user_audio` WebSocket
-message → transcription in `orchestrator/stt.py` → the same turn-handling
-path `user_text` already used). STT is built and sandbox-verified but not
-yet confirmed on the user's actual hardware/mic — see `docs/DECISIONS.md`
-for the device/lazy-load/toggle-to-record choices made building it.
+(faster-whisper on CUDA: mic capture in `src/mic.ts` — click-to-toggle or
+F9 global push-to-talk via `tauri-plugin-global-shortcut` — → `user_audio`
+WebSocket message → transcription in `orchestrator/stt.py` → the same
+turn-handling path `user_text` already used). Confirmed on the user's
+machine: mic button + permission prompt. Not yet confirmed: an actual
+transcribed turn completing (first attempt hit a missing-dependency
+startup crash, being retried) and CUDA init on their 3060 (untestable in
+this sandbox, no GPU here). See `docs/DECISIONS.md` for the device/
+lazy-load/hotkey/CUDA choices made building it, including one open
+question about the new `src-tauri/src/lib.rs` global-shortcut code that
+can only be resolved by an actual `cargo build` on Windows.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

@@ -8,12 +8,28 @@ lip-sync, one sentence at a time as she "thinks" of them. See `/CLAUDE.md`
 at the repo root for the full architecture and roadmap.
 
 If you're updating an existing Phase 2 checkout: `orchestrator/stt.py` is
-new (STT), `src/mic.ts` is new (mic capture), and `src/ws-client.ts` /
-`src/main.ts` / `index.html` / `src/style.css` all picked up small
-voice-input additions -- no `vendor/` or Live2D asset changes this round.
-Run `pip install -r requirements.txt` again in your orchestrator venv
-(picks up `faster-whisper`) and `npm install` (no new frontend deps, just
-new files).
+new (STT), `src/mic.ts` is new (mic capture, both a mic-button toggle and
+an F9 global push-to-talk hotkey), and `src/ws-client.ts` / `src/main.ts`
+/ `index.html` / `src/style.css` all picked up small voice-input
+additions -- no `vendor/` or Live2D asset changes this round.
+
+**Three things to redo after pulling this bundle, not just `git pull`:**
+1. `pip install -r requirements.txt` again in your orchestrator venv --
+   picks up `faster-whisper`. If the orchestrator crashes on startup with
+   `ModuleNotFoundError: No module named 'faster_whisper'`, this is why;
+   it's not an STT-specific failure, the whole orchestrator (including
+   typed chat) won't start until this is run, since `stt.py` is imported
+   at the top of `app.py`.
+2. `npm install` -- `@tauri-apps/api` moved from a dev to a real
+   dependency (it's now actually used, for the F9 hotkey listener), no
+   new packages otherwise.
+3. The F9 hotkey needed a small Rust change (`src-tauri/Cargo.toml` and
+   `src-tauri/src/lib.rs`, a new `tauri-plugin-global-shortcut`
+   dependency) -- `npm run tauri dev` (or `cargo build` directly) will
+   pull and compile it automatically, updating `src-tauri/Cargo.lock` in
+   the process. That Rust code has never been through `cargo check`
+   anywhere (no Rust toolchain in the sandbox this was built in) -- see
+   "What's actually been verified" below before you run it.
 
 ## What's actually been verified vs. not, honestly
 
@@ -34,18 +50,24 @@ live), so:
   above. The frontend (`src/mic.ts`, `src/ws-client.ts`, `src/main.ts`)
   passes a full `npm run build` (real `tsc` typecheck + Vite production
   build, zero errors), the same bar every phase has been held to.
+- **Confirmed on the user's actual machine:** the mic button renders and
+  is clickable, and clicking it correctly triggers WebView2's microphone
+  permission prompt.
 - **Not verified, because I had no way to:** actual faster-whisper model
-  weights (no Hugging Face access from this sandbox -- the *code path* is
-  verified, the *transcription quality* isn't), a real microphone, and
-  whether WebView2's mic permission prompt behaves the way Chrome's does.
-  Same standing caveats as before on the visual/audio side -- no display,
-  no WebGL, no Windows box here, so seeing/hearing all of this actually
-  work together (mic click → she visibly hears you → she replies in her
-  cloned voice) is still first-run-on-your-machine territory.
+  weights or CUDA execution (no GPU, no Hugging Face access from this
+  sandbox -- the *code path* is verified, transcription quality and
+  whether CUDA init even succeeds on the user's 3060 aren't), a real
+  microphone actually capturing intelligible audio, and the new
+  `src-tauri/src/lib.rs` global-shortcut Rust code (no Rust toolchain
+  here at all -- see the note at the top of that file). Same standing
+  caveats as before on the visual/audio side otherwise -- no display, no
+  WebGL here, so seeing/hearing all of this actually work together (mic
+  click or F9 → she visibly hears you → she replies in her cloned voice)
+  is still first-run-on-your-machine territory.
 
 Expect to still fix small things on first run -- normal for anything that's
-never touched real model weights or a real mic, not a sign something's
-fundamentally wrong.
+never touched real model weights, a real mic, or a real Rust compiler, not
+a sign something's fundamentally wrong.
 
 ## Prerequisites (on your machine)
 
@@ -84,6 +106,18 @@ fundamentally wrong.
   configured model size (`"small"` by default, `orchestrator/config.yaml`'s
   `stt` block) from Hugging Face automatically and caches it locally. Needs
   an internet connection for that one first download; fully offline after.
+- **CUDA for STT** -- `stt.device` defaults to `"cuda"` (your 3060), which
+  needs cuBLAS/cuDNN DLLs on `PATH` that `pip install faster-whisper` does
+  **not** install for you. If Ollama/PyTorch/some other GPU tool is
+  already on this machine, you may already have them. If mic input fails
+  with something like `cudnn_ops64_9.dll not found` (check the
+  orchestrator terminal), try `pip install nvidia-cudnn-cu12
+  nvidia-cublas-cu12` in the orchestrator venv first -- if that specific
+  package name doesn't match what your ctranslate2 version wants, its
+  error message plus a search for that exact DLL name should get you the
+  rest of the way. If it's more trouble than it's worth, `stt.device:
+  "cpu"` with `stt.compute_type: "int8"` in `config.yaml` works with zero
+  extra setup, just slower.
 
 The Hiyori sample model in `public/live2d/Hiyori/` is already included --
 it's Live2D's own official free sample, licensed for exactly this kind of
@@ -128,24 +162,49 @@ npm install
 npm run tauri dev
 ```
 Type something in the input box and hit Enter -- or click the mic button
-and talk, then click it again to stop (it's a toggle, not
-press-and-hold). Either way you should hear her reply in her own words
-(not a canned line), possibly as a few short bursts of speech in quick
-succession as each sentence finishes generating rather than one long
-clip -- that's expected, it's the streaming pipeline working, not a bug.
-The first time you click the mic, Windows/WebView2 will prompt for
-microphone permission; allow it.
+and talk, then click it again to stop (it's a toggle, not press-and-hold)
+-- or just hold F9 and talk, release when you're done (this one *is*
+press-and-hold, and works globally: you don't need Luna's window focused,
+so you can hold F9 while a game or anything else has focus). Either way
+you should hear her reply in her own words (not a canned line), possibly
+as a few short bursts of speech in quick succession as each sentence
+finishes generating rather than one long clip -- that's expected, it's
+the streaming pipeline working, not a bug. The first time you use the
+mic (button or F9), Windows/WebView2 will prompt for microphone
+permission; allow it.
 
 ## If something doesn't work
 
 New in Phase 2.5:
 
-- **Orchestrator won't start at all / no traceback you can make sense
+- **Orchestrator won't start at all, `ModuleNotFoundError: No module
+  named 'faster_whisper'`:** run `pip install -r requirements.txt` again
+  in your orchestrator venv -- this isn't STT-specific, `stt.py` is
+  imported at the top of `app.py`, so the whole orchestrator (typed chat
+  included) won't start until this dependency is actually installed.
+- **Orchestrator won't start / no traceback you can make sense
   of:** if you just edited `tts.gpt_sovits.ref_audio_path` (or any other
   Windows path in `config.yaml`), check you used single quotes
   (`'C:\Users\...'`) not double -- double-quoted YAML strings treat
   backslashes as escape codes, so `"C:\Users\..."` fails to parse. See
   `docs/DECISIONS.md` for the full story.
+- **Mic input fails with a `.dll not found` error (something like
+  `cudnn_ops64_9.dll`):** CUDA's cuBLAS/cuDNN DLLs aren't on `PATH`. Try
+  `pip install nvidia-cudnn-cu12 nvidia-cublas-cu12` in the orchestrator
+  venv; if the exact package name doesn't match what your `ctranslate2`
+  version wants, its own error plus a search for that DLL name will get
+  you the rest of the way. Or just set `stt.device: "cpu"` /
+  `stt.compute_type: "int8"` in `config.yaml` and skip CUDA for STT
+  entirely -- slower, but zero extra setup.
+- **F9 doesn't do anything:** check the orchestrator/Tauri dev console for
+  a Rust error on startup -- the global-shortcut registration
+  (`src-tauri/src/lib.rs`) is new code that's never been run through a
+  real Rust compiler (see README's verification section above), so a
+  first-run compile error here is more likely than with the rest of the
+  Rust side. If it compiled fine but F9 still does nothing, another app
+  may already have that hotkey registered system-wide (some games and
+  overlay tools grab function keys) -- try a different key in `lib.rs`'s
+  `Shortcut::new(None, Code::F9)` line.
 - **Clicking the mic does nothing, or the console shows a permission
   error:** Windows/WebView2 should prompt for mic access the first time --
   if you clicked "block" by accident, or it never prompted, check
@@ -164,6 +223,7 @@ New in Phase 2.5:
   couldn't reach the LLM server at all. Check `ollama serve` is actually
   running (`ollama list` in another terminal should work if it is), and
   that `orchestrator/config.yaml`'s `llm.base_url` matches wherever it's
+
   listening.
 - **Long pause, then a wrong-sounding error, or nothing at all:** check the
   orchestrator terminal for a traceback -- most likely the model name in

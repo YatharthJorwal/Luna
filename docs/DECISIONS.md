@@ -412,7 +412,7 @@ there's nothing to reply to, and adding an empty turn would just be noise
 in the LLM's context for no benefit, consistent with how an unreachable-LLM
 turn already gets dropped rather than kept (see the Phase 2 entry above).
 
-## Frontend mic capture: toggle-to-record, not push-to-talk; plain Web APIs, no Tauri mic plugin
+## Frontend mic capture: mouse toggle + F9 push-to-talk, both through one start()/stop(); plain Web APIs, no Tauri mic plugin
 
 `src/mic.ts` records via the browser's own `getUserMedia`/`MediaRecorder`
 APIs directly — no `@tauri-apps/plugin-*` mic dependency needed, since
@@ -420,15 +420,34 @@ WebView2 (the webview Tauri uses on Windows) is Chromium-based and
 supports these natively, same reasoning as `lipsync.ts` driving audio
 output through plain Web Audio instead of a Tauri-specific API.
 
-**Toggle (click to start, click to stop), not press-and-hold.** Luna's
+**Mouse: click to start, click to stop, not press-and-hold.** Luna's
 window is small, draggable, transparent, and always-on-top — a
-press-and-hold gesture risks losing the `mouseup` event entirely if the
-cursor drifts off the tiny HUD before releasing, which would leave the mic
-stuck recording with no on-screen way to stop it. A plain click/click
-toggle can't get stuck that way. A `MAX_RECORDING_MS` (30s) safety net is
-still there as a backstop in case the user forgets to click stop and walks
-away, going through the exact same `stopInternal()` → `"stop"` event path
-a manual click does, so there's only one code path to get right, not two.
+press-and-hold *mouse* gesture risks losing the `mouseup` event entirely
+if the cursor drifts off the tiny HUD before releasing, which would leave
+the mic stuck recording with no on-screen way to stop it. A plain
+click/click toggle can't get stuck that way.
+
+**Keyboard: F9 push-to-talk, added on request.** A physical key doesn't
+have the mouse's lost-mouseup problem — `keyup` fires wherever the cursor
+ends up — so press-and-hold is safe for a hotkey even though it isn't for
+the mouse, and it's the more natural gesture for "hold this and talk."
+More importantly, it's registered as an OS-level *global* shortcut
+(`tauri-plugin-global-shortcut`, `src-tauri/src/lib.rs`) rather than a
+frontend `keydown` listener, so it fires regardless of which window has
+focus — a plain in-page listener would only work while Luna's own window
+was focused, which defeats the point for a companion you're talking to
+while a game or something else is in the foreground. Rust owns the raw
+key event and only relays a `"hotkey-talk"` Tauri event with a
+`"pressed"`/`"released"` payload; `src/main.ts` listens for it and calls
+the exact same `mic.start()`/`mic.stop()` the click handler calls, so
+there's one recording state machine, not two, and both entry points are
+idempotent against each other (holding F9 while also clicking the mic
+button, or vice versa, can't get the recorder into a stuck or
+double-started state).
+
+A `MAX_RECORDING_MS` (30s) safety net still exists as a backstop against
+either input method being left "on" (forgetting to click stop, or a stuck
+key state) — routed through the same `stop()` every other path uses.
 
 **No `mime` field sent in the `user_audio` message,** unlike `speak`
 messages going the other direction (which do carry `mime`, since the
@@ -438,9 +457,52 @@ frontend needs it to construct a `Blob` for playback). `stt.py`'s
 was nothing for the backend to do with it — left out rather than carried
 along unused.
 
-Not yet verified on real hardware: whether WebView2's mic permission
-prompt behaves the way Chrome's does (same open "first real run" caveat
-as Phase 1/2's audio-autoplay-policy note in README's "If something
-doesn't work" section) — `mic.ts`'s `onError` callback logs to the
-console either way rather than failing silently, so a denial is at least
-diagnosable on first real run.
+Not yet verified on real hardware, for two different reasons:
+
+- WebView2's mic permission prompt behaves the way Chrome's does (same
+  open "first real run" caveat as Phase 1/2's audio-autoplay-policy note
+  in README's "If something doesn't work" section) — `mic.ts`'s `onError`
+  callback logs to the console either way rather than failing silently,
+  so a denial is at least diagnosable. **Update:** the user confirmed the
+  permission prompt itself worked on first real run.
+- The `lib.rs` global-shortcut block (Cargo.toml dependency,
+  `register_push_to_talk_hotkey()`, the `Emitter` trait import it needed)
+  is written against the Tauri v2 / `tauri-plugin-global-shortcut` v2 API
+  as I know it, but this sandbox has no Rust toolchain at all — it's never
+  been through `cargo check`, let alone actually pressed F9 on Windows.
+  Same standing caveat the rest of `lib.rs` already carries (see the note
+  at the top of the file) applied to genuinely new Rust code this time,
+  not just genuinely new *config* for already-verified code. If `cargo
+  build`/`npm run tauri dev` errors out on this block, Tauri's compiler
+  errors are usually specific enough to fix directly from the message; the
+  `Shortcut` type needing `Clone`/`PartialEq` (used to compare the pressed
+  shortcut against the registered one inside the handler closure) and
+  `app.handle().plugin(...)` being callable from inside `.setup()` (rather
+  than only chained on `Builder` before `.run()`) are the two API surface
+  assumptions most likely to have moved since my knowledge cutoff.
+
+## STT: flipped from CPU to CUDA on request
+
+The CPU-by-default choice recorded above wasn't a claim that
+`faster-whisper` lacks GPU support — it's CTranslate2-backed and has full
+CUDA support — it was a starting default favoring VRAM headroom over
+transcription speed. The user has a 3060 and asked for CUDA specifically,
+so `stt.device` is now `"cuda"` and `stt.compute_type` is
+`"int8_float16"` (CTranslate2's recommended CUDA pairing — int8-quantized
+weights, float16 compute). `qwen3.5:9b` (~6.6GB) plus a `"small"` Whisper
+model at this quantization (~1GB) both fit in 12GB with room to spare, so
+the original VRAM-contention worry doesn't actually bind here in
+practice once you do the arithmetic on the specific models in play.
+
+Real, common gotcha worth naming directly rather than leaving to a cryptic
+error: CTranslate2's CUDA path needs cuBLAS/cuDNN DLLs on `PATH`, and
+`pip install faster-whisper` does **not** pull those in for you (confirmed
+by checking `ctranslate2`'s own declared pip dependencies — no
+`nvidia-cudnn-*`/`nvidia-cublas-*` packages listed). If CUDA init fails,
+it typically surfaces as a `cudnn_ops64_9.dll` (or similar) not-found
+error rather than a clear "CUDA unavailable" message — see README's
+troubleshooting section for what to try. Not verified end-to-end in this
+sandbox (no GPU here either) — the config change and the reasoning behind
+it are solid, whether it loads cleanly on the user's actual Windows/3060
+setup is a first-real-run question like everything else GPU-related in
+this project so far.

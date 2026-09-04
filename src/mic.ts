@@ -6,12 +6,22 @@
 // any Chromium-based browser, so this is plain Web APIs throughout, same
 // spirit as lipsync.ts using plain Web Audio instead of a Tauri audio API.
 
-// Toggle-to-record, not push-to-talk: this is a small, draggable,
-// always-on-top overlay window, not a full-screen app -- a press-and-hold
-// gesture is easy to lose (releasing the mouse button off-window loses the
-// mouseup event entirely) which would leave the mic stuck recording with no
-// way to stop it from the UI. Click once to start, click again to stop is
-// robust regardless of where the mouse ends up.
+// Toggle-to-record (mouse) and push-to-talk (F9 hotkey, wired up in
+// main.ts via a Tauri global-shortcut event -- see src-tauri/src/lib.rs)
+// both drive the same start()/stop() pair below, so there's one recording
+// state machine to get right, not two. Toggle is the click-friendly default
+// for the mic button; push-to-talk exists because holding a key while
+// talking to a small, draggable, always-on-top overlay is easier than
+// aiming a click at it, especially with another window (a game) focused --
+// F9 works globally regardless of which window has focus.
+//
+// The mic button itself is still click-to-start/click-to-stop rather than
+// press-and-hold: a *mouse* press-and-hold on this tiny window risks losing
+// the mouseup entirely if the cursor drifts off it before releasing, which
+// would leave the mic stuck recording with no way to stop it from the UI.
+// A physical key doesn't have that failure mode -- keyup fires wherever the
+// cursor is -- so push-to-talk is safe for the hotkey even though it isn't
+// for the mouse.
 const MAX_RECORDING_MS = 30_000; // safety net if the user forgets to click stop
 
 // Chromium (WebView2's engine) supports opus-in-webm; fall back gracefully
@@ -48,19 +58,18 @@ export class MicInput {
     return this.recorder?.state === "recording";
   }
 
-  /** Starts recording if idle, stops (and flushes the clip) if recording. */
-  async toggle(): Promise<void> {
-    if (this.isRecording) {
-      this.stopInternal();
-      return;
-    }
+  /** Starts recording if idle; no-op if already recording -- safe to call
+   * from both the mic button and the F9 hotkey without them fighting each
+   * other, and safe against a stray duplicate "pressed" event. */
+  async start(): Promise<void> {
+    if (this.isRecording) return;
 
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true });
     } catch (err) {
       // Most likely mic permission denied, or no input device present --
       // nothing to recover from here; the user can grant permission (or
-      // plug in a mic) and click again.
+      // plug in a mic) and try again.
       this.opts.onError(err);
       return;
     }
@@ -74,22 +83,33 @@ export class MicInput {
     this.recorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) this.chunks.push(event.data);
     });
-    // Both the manual toggle()-driven stop and the max-duration safety net
-    // below go through recorder.stop() -> this "stop" event, not a direct
-    // call -- MediaRecorder can still have a last "dataavailable" pending
-    // right up to that event, so reading this.chunks any earlier could miss
-    // the tail of the clip.
+    // Both stop() below and the max-duration safety net go through
+    // recorder.stop() -> this "stop" event, not a direct call --
+    // MediaRecorder can still have a last "dataavailable" pending right up
+    // to that event, so reading this.chunks any earlier could miss the
+    // tail of the clip.
     this.recorder.addEventListener("stop", () => this.handleStopped());
 
     this.recorder.start();
     this.opts.onRecordingChange(true);
-    this.maxDurationTimer = window.setTimeout(() => this.stopInternal(), MAX_RECORDING_MS);
+    this.maxDurationTimer = window.setTimeout(() => this.stop(), MAX_RECORDING_MS);
   }
 
-  private stopInternal(): void {
+  /** Stops recording if active; no-op if already idle -- same reasoning
+   * as start() above. */
+  stop(): void {
     window.clearTimeout(this.maxDurationTimer);
     if (this.recorder && this.recorder.state !== "inactive") {
       this.recorder.stop();
+    }
+  }
+
+  /** Click-to-start/click-to-stop for the mouse: mic button. */
+  async toggle(): Promise<void> {
+    if (this.isRecording) {
+      this.stop();
+    } else {
+      await this.start();
     }
   }
 
