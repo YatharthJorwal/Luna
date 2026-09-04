@@ -21,6 +21,11 @@ public/live2dcubismcore.min.js
 # (your GPT-SoVITS install location, etc.), so these stay local-only, same
 # as config.yaml's real ref_audio_path/prompt_text values.
 start-luna.bat
+src-tauri/launcher.local.txt
 src-tauri/gen/
+
+# Output of spawn_backend_processes() in src-tauri/src/lib.rs -- generated
+# every run, not source.
+/logs/
  
  

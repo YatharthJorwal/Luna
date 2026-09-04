@@ -24,6 +24,7 @@ per the project's local-only, non-negotiable constraint (see CLAUDE.md).
 """
 
 import base64
+import sys
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
@@ -45,6 +46,17 @@ PORT = 8765
 LLM_UNREACHABLE_LINE = (
     "H-hey -- I can't reach my own brain right now. Is the model server "
     "even running? Check the orchestrator terminal and try again."
+)
+
+# Said if STT itself throws -- most likely stt.device: "cuda" in
+# config.yaml but the CUDA cuBLAS/cuDNN DLLs aren't on PATH (see README's
+# troubleshooting section), or a corrupted first-time model download.
+# Without this, a failure here used to kill the websocket connection
+# outright with nothing visible on the user's side at all -- see
+# stt.STTError's docstring.
+STT_UNREACHABLE_LINE = (
+    "I-I can't hear anything right now, something's wrong with my ears. "
+    "Check the orchestrator terminal?"
 )
 
 
@@ -133,7 +145,14 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # Malformed base64 -- nothing recoverable, drop it.
                     continue
 
-                user_text = (await stt.transcribe(audio_bytes)).strip()
+                try:
+                    user_text = (await stt.transcribe(audio_bytes)).strip()
+                except stt.STTError as exc:
+                    print(f"[luna] STT failed: {exc}", file=sys.stderr)
+                    await websocket.send_json({"type": "transcript", "text": ""})
+                    await _send_speak(websocket, apply_persona_pass(STT_UNREACHABLE_LINE))
+                    continue
+
                 # Always echo the transcript back, even empty, so the
                 # frontend can clear its "listening" indicator either way.
                 await websocket.send_json({"type": "transcript", "text": user_text})
@@ -142,7 +161,6 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # reply to, and nothing worth adding to history.
                     continue
                 await _run_turn(websocket, history, user_text)
-
             else:
                 continue
     except WebSocketDisconnect:

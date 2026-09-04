@@ -41,29 +41,38 @@ live), so:
   client (`orchestrator/llm.py`) was run against hand-written stub servers
   matching both the OpenAI-compatible and Ollama-native streaming
   protocols; `orchestrator/stt.py`'s transcription logic (segment-joining,
-  empty-audio handling, config passthrough, lazy model construction) was
-  verified against a stubbed `WhisperModel`; and `app.py`'s new
+  empty-audio handling, config passthrough, lazy model construction, and
+  now `STTError` wrapping so a backend failure gets surfaced instead of
+  silently killing the connection) was verified against a stubbed
+  `WhisperModel`/a stubbed failing `transcribe()`; and `app.py`'s
   `user_audio` WebSocket handling was driven end-to-end through a real
   WebSocket connection (transcript echoed back, turn runs on a non-empty
-  result, silence/malformed-audio handled without dropping the connection)
-  with stt/llm/tts all stubbed -- same methodology as the LLM verification
-  above. The frontend (`src/mic.ts`, `src/ws-client.ts`, `src/main.ts`)
-  passes a full `npm run build` (real `tsc` typecheck + Vite production
-  build, zero errors), the same bar every phase has been held to.
+  result, silence/malformed-audio/STT-failure all handled without dropping
+  the connection) with stt/llm/tts all stubbed -- same methodology as the
+  LLM verification above. The frontend passes a full `npm run build` (real
+  `tsc` typecheck + Vite production build, zero errors), the same bar
+  every phase has been held to.
 - **Confirmed on the user's actual machine:** the mic button renders and
-  is clickable, and clicking it correctly triggers WebView2's microphone
-  permission prompt.
+  is clickable and correctly triggers WebView2's microphone permission
+  prompt; F9 push-to-talk and the process-spawning global-shortcut Rust
+  code both compile clean after one real fix each (E0277 on the hotkey
+  code -- see `docs/DECISIONS.md`); the STT silent-failure bug above was
+  found from this exact symptom on the user's real machine, not predicted
+  in advance.
 - **Not verified, because I had no way to:** actual faster-whisper model
   weights or CUDA execution (no GPU, no Hugging Face access from this
   sandbox -- the *code path* is verified, transcription quality and
   whether CUDA init even succeeds on the user's 3060 aren't), a real
-  microphone actually capturing intelligible audio, and the new
-  `src-tauri/src/lib.rs` global-shortcut Rust code (no Rust toolchain
-  here at all -- see the note at the top of that file). Same standing
-  caveats as before on the visual/audio side otherwise -- no display, no
-  WebGL here, so seeing/hearing all of this actually work together (mic
-  click or F9 → she visibly hears you → she replies in her cloned voice)
-  is still first-run-on-your-machine territory.
+  microphone actually capturing intelligible audio start-to-finish through
+  a completed voice turn, and the new `spawn_backend_processes()` process-
+  supervision Rust code (no Rust toolchain here at all -- see the note at
+  the top of `src-tauri/src/lib.rs`; given the hotkey code needed a real
+  fix despite similar care, expect this to need at least one too). Same
+  standing caveats as before on the visual/audio side otherwise -- no
+  display, no WebGL here, so seeing/hearing all of this actually work
+  together (mic click or F9 → she visibly hears you → she replies in her
+  cloned voice, all auto-started by one command) is still
+  first-run-on-your-machine territory.
 
 Expect to still fix small things on first run -- normal for anything that's
 never touched real model weights, a real mic, or a real Rust compiler, not
@@ -127,11 +136,29 @@ decisions).
 
 ## Run it
 
-Three things running, in order, in separate terminals -- or write yourself a
-`start-luna.bat` that launches all of them (it's gitignored, since it'll
-have your machine's actual absolute paths in it -- GPT-SoVITS's folder,
-this repo's folder -- baked in, same reasoning as why
-`config.yaml`'s real `ref_audio_path` stays local-only too).
+Down to two manual steps now -- GPT-SoVITS and the orchestrator both get
+started automatically when the Tauri app launches (see
+`src-tauri/src/lib.rs`'s `spawn_backend_processes()` and
+`docs/DECISIONS.md` for how). `start-luna.bat`'s three separate terminal
+windows aren't needed anymore; keep it around only as a manual fallback if
+something about the auto-start ever doesn't work for you.
+
+**One-time setup, before your first run:**
+```
+cd orchestrator
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
+```
+And copy `src-tauri\launcher.local.txt.example` to
+`src-tauri\launcher.local.txt`, filling in your real GPT-SoVITS install
+path (gitignored -- machine-specific, same reasoning `config.yaml`'s real
+`ref_audio_path` and the old `start-luna.bat` stayed local-only). Skip
+this file entirely if you're fine with the `pyttsx3` fallback voice --
+GPT-SoVITS auto-start is just skipped if it's missing, nothing else
+breaks.
+
+**Every time after that:**
 
 **1. Ollama** (if not already running as a background service -- the
 Windows installer usually sets this up for you; check the system tray
@@ -140,27 +167,17 @@ first):
 ollama serve
 ```
 
-**2. GPT-SoVITS API server** (optional -- skip if you're fine with the
-`pyttsx3` fallback voice). Start it however its own docs say to for your
-setup; the orchestrator just needs it reachable at whatever URL
-`orchestrator/config.yaml`'s `tts.gpt_sovits.base_url` points to before
-step 3 starts.
-
-**3. Orchestrator:**
-```
-cd orchestrator
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-python app.py
-```
-You should see `Uvicorn running on http://127.0.0.1:8765`.
-
-**4. Shell:**
+**2. Everything else, in one command:**
 ```
 npm install
 npm run tauri dev
 ```
+This starts GPT-SoVITS and the orchestrator itself, hidden -- give it a
+few seconds (GPT-SoVITS loading the model is the slow part) before
+talking to her. If you want to watch what they're doing, `logs/gpt_sovits.log`
+and `logs/orchestrator.log` (repo root, gitignored, created on first run)
+have exactly what the old visible terminal windows used to show you.
+
 Type something in the input box and hit Enter -- or click the mic button
 and talk, then click it again to stop (it's a toggle, not press-and-hold)
 -- or just hold F9 and talk, release when you're done (this one *is*
@@ -173,15 +190,39 @@ the streaming pipeline working, not a bug. The first time you use the
 mic (button or F9), Windows/WebView2 will prompt for microphone
 permission; allow it.
 
+**Quitting:** use the tray icon's Quit item, not just closing the window
+(closing just hides it -- Luna's meant to live in the tray). Quit is also
+what actually stops the GPT-SoVITS/orchestrator processes it started; if
+you ever kill the app a harder way (Task Manager, etc.), check Task
+Manager for orphaned `python.exe` processes afterward.
+
 ## If something doesn't work
 
-New in Phase 2.5:
 
+
+New in this round:
+
+- **GPT-SoVITS/orchestrator don't seem to start at all when you launch the
+  app:** check `src-tauri/launcher.local.txt` exists and has the right
+  `GPT_SOVITS_DIR` (copy from `.example` if you haven't yet), and check
+  `logs/gpt_sovits.log` / `logs/orchestrator.log` for what actually
+  happened -- these replace the old visible terminal windows' output.
+- **Mic blinks/reacts to F9 or the button, but she never hears or
+  responds at all:** this was a real bug -- `stt.py` had no error handling,
+  so a failure there (most likely the CUDA DLL issue two bullets down)
+  used to kill the WebSocket connection silently, with nothing visible
+  anywhere. Fixed: check `logs/orchestrator.log` (or the terminal, if
+  you're running `python app.py` manually) for a `[luna] STT failed: ...`
+  line -- that's the actual underlying error now, instead of nothing.
 - **Orchestrator won't start at all, `ModuleNotFoundError: No module
   named 'faster_whisper'`:** run `pip install -r requirements.txt` again
   in your orchestrator venv -- this isn't STT-specific, `stt.py` is
   imported at the top of `app.py`, so the whole orchestrator (typed chat
   included) won't start until this dependency is actually installed.
+  Double check you're actually running it from inside `orchestrator/`
+  with the venv active (`(venv)` in your prompt) -- running `pip install`
+  from the repo root, or with the venv not activated, silently installs
+  nowhere useful and looks identical to having done it right.
 - **Orchestrator won't start / no traceback you can make sense
   of:** if you just edited `tts.gpt_sovits.ref_audio_path` (or any other
   Windows path in `config.yaml`), check you used single quotes

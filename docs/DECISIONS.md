@@ -547,3 +547,117 @@ calls into more than one plugin/crate in the same `?`-chain: reach for
 `Result<(), Box<dyn std::error::Error>>` rather than a specific crate's
 `Result` alias, unless every fallible call in the function is guaranteed
 to return that same crate's error type.
+
+## STT silently killed the whole connection on failure -- fixed, added error handling everywhere else already had
+
+Real bug, found from the user's actual symptom ("mic blinks/reacts to F9,
+but she never hears or responds"): `stt.py`'s `transcribe()` had no error
+wrapping at all, unlike `llm.py` (`LLMUnreachableError`) and `tts.py`
+(`TTSUnreachableError`), both of which already catch their backend's
+failures and fall back gracefully. If `WhisperModel()` fails to construct
+— the CUDA cuBLAS/cuDNN DLL gap already flagged in README, or a corrupted
+first-time model download, or anything else — that exception was
+propagating straight out of `app.py`'s `user_audio` handler, unhandled,
+which kills the whole WebSocket connection. From the user's side: the mic
+recorded fine (permission already granted, `MediaRecorder` genuinely
+captured audio), the clip got sent, and then... nothing. No `transcript`
+message, no `speak` message, no visible error anywhere -- the frontend's
+own reconnect logic (`ws-client.ts`) just quietly reconnects a moment
+later, so it doesn't even look like a crash, just an unresponsive mic.
+
+Fix: `stt.py` now has an `STTError` wrapper (same pattern as the other two
+backends), and `app.py`'s `user_audio` handler catches it, prints the real
+exception to the orchestrator terminal (`file=sys.stderr`, so it's
+actually visible without needing to add logging config), and speaks an
+in-character fallback line (`STT_UNREACHABLE_LINE`) instead of dying.
+Verified in the sandbox with a stubbed `STTError`-raising `transcribe()`:
+the fallback line gets spoken, the connection survives, and typed input
+still works immediately after.
+
+This was a real gap in the original STT implementation, not a config or
+environment issue on the user's end -- every other backend in this project
+already had this kind of defensive handling from day one; STT should have
+gotten it too and didn't. Worth remembering for any future backend
+integration: wrap it the same way from the start, don't wait for a user to
+find the silent-failure case.
+
+## Launcher rework: Rust spawns GPT-SoVITS + orchestrator itself, hidden, on request
+
+The three-separate-terminal-windows `start-luna.bat` was working, but
+felt clunky enough that the user asked for a single-launch alternative.
+Moved process supervision into `src-tauri/src/lib.rs`
+(`spawn_backend_processes()`, called from `.setup()`): GPT-SoVITS's
+`runtime\python.exe api_v2.py` and the orchestrator's venv `python.exe
+app.py` both get spawned as hidden child processes (no console window --
+`CREATE_NO_WINDOW`) the moment the Tauri app itself launches. `npm run
+tauri dev` (or the packaged `.exe`, later) is now the one command that
+starts everything; Ollama is still separate on purpose, since it's meant
+to run as a standing background service, not something this app should be
+starting and stopping.
+
+**Real interpreter processes, not `cmd /C` wrappers.** Both children are
+spawned by invoking the actual `python.exe` directly with `current_dir()`
+set, rather than routing through `cmd /C cd /d ... && ...` the way the old
+`.bat` file did. This isn't just simpler -- it matters for cleanup: a
+`Child` handle for a `cmd.exe` wrapper only lets you kill `cmd.exe`
+itself, not the real process it spawned underneath, which would leave
+Python running orphaned in the background. Spawning the real interpreter
+directly means the stored `Child` *is* the real process, so `.kill()` (now
+wired into the tray menu's "Quit" handler) actually stops it. This was a
+deliberate correctness fix over spawning hidden processes and never
+cleaning them up, which would've been worse than the old visible-terminal
+setup, not better -- invisible orphans instead of windows you can at least
+see and close.
+
+**GPT-SoVITS's install path is config, not hardcoded.** It lives outside
+this repo at an arbitrary user-chosen location, same category of
+machine-specific detail `start-luna.bat` and `config.yaml`'s real
+`ref_audio_path` already are. Rather than repeat the mistake into new
+*Rust source* this time, it's read from `src-tauri/launcher.local.txt`
+(gitignored, one `KEY=value` per line, no new parsing dependency needed
+for something this small) with `launcher.local.txt.example` committed to
+document the format. Missing file -> GPT-SoVITS auto-start is silently
+skipped (a printed note, not an error) -- `tts.py`'s existing per-turn
+pyttsx3 fallback already covers that case gracefully, so this isn't a hard
+requirement to get the app running at all.
+
+**Orchestrator waits for GPT-SoVITS's port, doesn't guess a delay.** The
+old `.bat` file's `timeout /t 8` was a blind guess at how long GPT-SoVITS
+takes to load. `wait_for_port()` polls a raw TCP connect to `127.0.0.1:9880`
+every 500ms for up to 60s before starting the orchestrator, on a background
+thread so it doesn't hold up the window actually appearing. Explicitly a
+"port is listening" check, not an HTTP-level readiness check -- api_v2.py
+might bind the port slightly before it's actually finished loading weights
+onto the GPU, so this is a reasonable proxy, not a guarantee. Didn't add an
+HTTP client crate (e.g. `reqwest`) to do this more precisely, on the same
+minimize-new-dependencies reasoning as the launcher config format above --
+worth revisiting if the TCP check proves too eager in practice.
+
+Not verified in this sandbox (no Rust toolchain, no Windows, no actual
+GPT-SoVITS/orchestrator to spawn) -- same standing caveat as the
+global-shortcut block when it was new, and given that block needed one
+real fix on first `cargo build` despite similar care, this one should be
+treated with at least as much suspicion on its first real compile.
+
+## Packaging: not yet, and it's a separate question from the git bundle handoff
+
+Asked whether the app can be packaged (a real Windows installer via
+`npm run tauri build`) right now, and whether that changes how updates get
+handed over. Two different questions:
+
+**Packaging itself:** technically `tauri build` would produce *something*
+even today, but not recommended yet -- a release build hides console
+output by design (no visible terminal, and stdout/stderr aren't printed
+anywhere obvious), which is exactly the wrong time to switch to that, given
+STT only just started actually completing full voice turns and the new
+process-spawning Rust code hasn't been through a real build yet either.
+Packaging is genuinely a good idea once both of those are confirmed solid
+-- it's just premature while there's still active first-run debugging
+happening, since it would make that debugging harder, not easier.
+
+**The git bundle workflow doesn't change either way.** Git bundles hand
+over *source changes* for the ongoing dev workflow (`npm run tauri dev`);
+`tauri build` is a separate, later, optional step that produces a
+distributable installer from whatever source is currently checked out.
+Packaging becoming relevant someday doesn't require changing how source
+gets handed over between sessions now -- those are orthogonal concerns.

@@ -30,12 +30,19 @@ confirmed working end-to-end on the user's machine) and STT
 (faster-whisper on CUDA: mic capture in `src/mic.ts` — click-to-toggle or
 F9 global push-to-talk via `tauri-plugin-global-shortcut` — → `user_audio`
 WebSocket message → transcription in `orchestrator/stt.py` → the same
-turn-handling path `user_text` already used). Confirmed on the user's
-machine: mic button + permission prompt, and the global-shortcut Rust
-code now compiles clean (one real error found and fixed on first
-`cargo build` — see `docs/DECISIONS.md`). Not yet confirmed: an actual
-transcribed turn completing end-to-end, and whether CUDA init succeeds
-on their 3060 — both awaiting the next real run.
+turn-handling path `user_text` already used). A real bug found on the
+user's machine (mic recorded fine, nothing ever came back — no error
+visible anywhere) is fixed: `stt.py` had no error handling, unlike
+`llm.py`/`tts.py`, so a backend failure was silently killing the
+connection; now wrapped in `STTError`, caught and spoken as an
+in-character fallback line. Launching also got reworked on request:
+`src-tauri/src/lib.rs`'s `spawn_backend_processes()` now starts GPT-SoVITS
+and the orchestrator itself, hidden, when the Tauri app launches — `npm
+run tauri dev` replaces the old three-terminal `start-luna.bat`. That
+block hasn't been through a real `cargo build` yet (the F9 hotkey code
+needed one real fix on its first — see `docs/DECISIONS.md` — expect
+similar here). Not yet confirmed: this new process-spawning code
+compiling, and a full voice turn completing end-to-end on CUDA.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

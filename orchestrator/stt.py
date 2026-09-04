@@ -26,6 +26,19 @@ from config import CONFIG
 _model: WhisperModel | None = None
 
 
+class STTError(Exception):
+    """Wraps any failure from model construction or transcription -- a
+    missing CUDA DLL (cuBLAS/cuDNN), a corrupted/incomplete first-time
+    model download, or anything else faster-whisper/CTranslate2 can throw.
+    One exception type for app.py to catch, same pattern llm.py's
+    LLMUnreachableError and tts.py's TTSUnreachableError already use.
+    Without this, an exception here was propagating all the way up through
+    the websocket's receive loop in app.py and killing the connection
+    outright -- silently, from the user's side: the mic would record fine,
+    nothing would come back, and there was no error anywhere they'd
+    actually see it."""
+
+
 def _get_model() -> WhisperModel:
     global _model
     if _model is None:
@@ -55,5 +68,10 @@ async def transcribe(audio_bytes: bytes) -> str:
     """Runs faster-whisper's blocking transcribe() in a thread so it doesn't
     stall the websocket event loop -- same pattern as tts.py's pyttsx3
     path. Returns "" (not an error) for silence/unintelligible audio --
-    there's nothing wrong, just nothing to reply to."""
-    return await asyncio.to_thread(_transcribe_sync, audio_bytes)
+    there's nothing wrong, just nothing to reply to. Raises STTError (not
+    the raw underlying exception) for anything that actually went wrong,
+    e.g. the model failing to load at all."""
+    try:
+        return await asyncio.to_thread(_transcribe_sync, audio_bytes)
+    except Exception as exc:
+        raise STTError(str(exc)) from exc

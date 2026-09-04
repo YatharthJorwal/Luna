@@ -1,18 +1,40 @@
 // NOTE: this sandbox has no Rust toolchain, so this file was originally
 // written against the Tauri v2 API from memory and unverified. The
-// global-shortcut block below has since been through a real `cargo build`
-// on the user's machine and fixed once (see docs/DECISIONS.md for the
-// E0277 error and fix) -- everything else in this file is still unverified
-// the same way it always has been.
+// global-shortcut block has since been through a real `cargo build` on the
+// user's machine and fixed once (see docs/DECISIONS.md for the E0277
+// error and fix). The process-spawning block (spawn_backend_processes and
+// everything it calls) is new and has NOT been through a real build yet --
+// same unverified status the global-shortcut block started in, treat with
+// the same suspicion on first compile.
 
+use std::collections::HashMap;
+use std::net::{SocketAddr, TcpStream};
+use std::os::windows::process::CommandExt;
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::TrayIconBuilder,
     Emitter, Manager, PhysicalPosition, Position, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
+
+/// No visible console window for a spawned child process. Same numeric
+/// flag Windows' own CreateProcess API uses -- there's no named constant
+/// for it in std, so it's a bare literal (0x08000000, CREATE_NO_WINDOW,
+/// per the Win32 docs).
+const CREATE_NO_WINDOW: u32 = 0x08000000;
+
+/// Handles to every child process Luna spawned itself (GPT-SoVITS, the
+/// orchestrator), stored as Tauri-managed state so the tray menu's "quit"
+/// handler can kill them before actually exiting -- spawning them hidden
+/// and then never cleaning them up would leave them running invisibly in
+/// the background forever, which is worse than the old visible-terminal
+/// setup, not better.
+struct ManagedChildren(Arc<Mutex<Vec<Child>>>);
 
 /// Exposed to the frontend for later phases (e.g. a keyboard shortcut or a
 /// HUD button) even though only the tray menu drives it in Phase 1.
@@ -34,6 +56,10 @@ pub fn run() {
             anchor_bottom_right(&window);
             build_tray(app)?;
             register_push_to_talk_hotkey(app)?;
+
+            let managed_children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(Vec::new()));
+            spawn_backend_processes(managed_children.clone());
+            app.manage(ManagedChildren(managed_children));
 
             Ok(())
         })
@@ -104,6 +130,169 @@ fn register_push_to_talk_hotkey(app: &tauri::App) -> Result<(), Box<dyn std::err
     Ok(())
 }
 
+/// Reads src-tauri/launcher.local.txt (gitignored -- see
+/// launcher.local.txt.example next to it) for machine-specific paths this
+/// repo can't hardcode, the same reason start-luna.bat itself stayed
+/// gitignored -- one "KEY=value" per line, "#" comments and blank lines
+/// ignored. Returns an empty map, not an error, if the file doesn't exist
+/// yet -- GPT-SoVITS auto-start is just skipped in that case (tts.py's
+/// existing pyttsx3 fallback still covers voice output either way), same
+/// non-fatal spirit as the old .bat file simply not being filled in.
+fn read_launcher_config() -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let Ok(contents) = std::fs::read_to_string("launcher.local.txt") else {
+        return map;
+    };
+    for line in contents.lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=') {
+            map.insert(key.trim().to_string(), value.trim().to_string());
+        }
+    }
+    map
+}
+
+/// Spawns GPT-SoVITS's API server and Luna's own orchestrator as hidden
+/// background processes -- `npm run tauri dev` (or the packaged .exe
+/// later) becomes the one thing you run, replacing the old
+/// start-luna.bat's three separate visible terminal windows. Output goes
+/// to logs/*.log instead of a console, since a hidden process obviously
+/// can't show one -- open those files if something's not responding, same
+/// information the old terminals gave you, just not in a popup window.
+///
+/// Working directories below are relative to src-tauri/ (this binary's
+/// cwd in `cargo run`/`tauri dev`) -- ../orchestrator and ../logs both
+/// resolve to the repo root's orchestrator/ and logs/ as intended from
+/// there. Not verified for a packaged release build, where the cwd may
+/// differ -- worth rechecking when packaging is actually on the table.
+fn spawn_backend_processes(children: Arc<Mutex<Vec<Child>>>) {
+    let logs_dir = PathBuf::from("../logs");
+    let _ = std::fs::create_dir_all(&logs_dir);
+
+    let config = read_launcher_config();
+
+    if let Some(sovits_dir) = config.get("GPT_SOVITS_DIR") {
+        // Spawning runtime\python.exe directly, not through `cmd /C`, is
+        // deliberate -- see the quit handler's comment on why that matters
+        // for being able to actually kill it later.
+        let python_exe = Path::new(sovits_dir.as_str()).join("runtime").join("python.exe");
+        let mut cmd = Command::new(&python_exe);
+        cmd.arg("api_v2.py").current_dir(sovits_dir);
+        spawn_logged("GPT-SoVITS", &mut cmd, &logs_dir.join("gpt_sovits.log"), &children);
+    } else {
+        eprintln!(
+            "[luna] GPT_SOVITS_DIR not set in src-tauri/launcher.local.txt -- \
+             skipping GPT-SoVITS auto-start, voice will fall back to pyttsx3 \
+             (see launcher.local.txt.example)."
+        );
+    }
+
+    // The orchestrator waits for GPT-SoVITS's port to actually be
+    // listening before starting -- same problem the old .bat file's blind
+    // `timeout /t 8` was working around, except this polls for the real
+    // signal instead of guessing a fixed delay, and still gives up after a
+    // bounded wait rather than blocking forever if GPT-SoVITS never comes
+    // up (tts.py's own per-turn pyttsx3 fallback covers that case, so
+    // starting the orchestrator anyway afterward is still the right call,
+    // not a hard failure). Runs on its own thread so it doesn't hold up
+    // window creation -- the frontend's own WebSocket reconnect loop
+    // already covers "the orchestrator isn't up yet," so there's nothing
+    // else here that needs to wait on it either.
+    let orchestrator_children = children;
+    std::thread::spawn(move || {
+        wait_for_port(9880, Duration::from_secs(60));
+
+        let python = PathBuf::from("../orchestrator/venv/Scripts/python.exe");
+        if !python.exists() {
+            eprintln!(
+                "[luna] {} not found -- orchestrator venv not set up yet? \
+                 Run `pip install -r requirements.txt` in orchestrator/venv \
+                 first (see README).",
+                python.display()
+            );
+            return;
+        }
+
+        let mut cmd = Command::new(&python);
+        cmd.arg("app.py").current_dir("../orchestrator");
+        spawn_logged(
+            "orchestrator",
+            &mut cmd,
+            &logs_dir.join("orchestrator.log"),
+            &orchestrator_children,
+        );
+    });
+}
+
+/// Polls 127.0.0.1:<port> until something's listening, or gives up after
+/// `max_wait`. A bare TCP connect, not an HTTP-level readiness check --
+/// GPT-SoVITS's api_v2.py might bind the port slightly before it's
+/// actually finished loading the model onto the GPU, so this is a
+/// reasonable proxy for "probably ready," not a guarantee. Better than a
+/// blind fixed timeout either way; upgrade to an actual HTTP health check
+/// later if this proves too eager in practice.
+fn wait_for_port(port: u16, max_wait: Duration) {
+    let addr: SocketAddr = format!("127.0.0.1:{port}")
+        .parse()
+        .expect("hardcoded loopback address is always valid");
+    let start = Instant::now();
+    while start.elapsed() < max_wait {
+        if TcpStream::connect_timeout(&addr, Duration::from_millis(500)).is_ok() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(500));
+    }
+    eprintln!(
+        "[luna] nothing answered on port {port} within {}s -- starting the \
+         orchestrator anyway.",
+        max_wait.as_secs()
+    );
+}
+
+/// Spawns `command` hidden (no console window), with both stdout and
+/// stderr going to `log_path`, and records the resulting Child in
+/// `children` so it can be killed on quit. `command` should invoke the
+/// real interpreter directly, not through a shell -- see the quit
+/// handler's comment for why.
+fn spawn_logged(
+    label: &str,
+    command: &mut Command,
+    log_path: &std::path::Path,
+    children: &Arc<Mutex<Vec<Child>>>,
+) {
+    let stdout_file = match std::fs::File::create(log_path) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[luna] couldn't open {}: {e}", log_path.display());
+            return;
+        }
+    };
+    let stderr_file = match stdout_file.try_clone() {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("[luna] couldn't duplicate the log handle for {label}: {e}");
+            return;
+        }
+    };
+
+    match command
+        .creation_flags(CREATE_NO_WINDOW)
+        .stdout(Stdio::from(stdout_file))
+        .stderr(Stdio::from(stderr_file))
+        .spawn()
+    {
+        Ok(child) => {
+            if let Ok(mut children) = children.lock() {
+                children.push(child);
+            }
+        }
+        Err(e) => eprintln!("[luna] failed to start {label}: {e}"),
+    }
+}
+
 /// Tray icon + menu: Show/Hide, Toggle Click-through, Quit.
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     let show_hide = MenuItem::with_id(app, "show_hide", "Show/Hide Luna", true, None::<&str>)?;
@@ -139,7 +328,25 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     click_through_state.store(now_ignoring, Ordering::Relaxed);
                     let _ = window.set_ignore_cursor_events(now_ignoring);
                 }
-                "quit" => app.exit(0),
+                "quit" => {
+                    // Kill anything we spawned ourselves before actually
+                    // exiting -- see ManagedChildren's doc comment on why
+                    // this matters (orphaned background processes are
+                    // worse than the old visible-terminal setup, not
+                    // better). Each Child here is the real interpreter
+                    // process directly (spawn_logged() never goes through
+                    // a cmd.exe wrapper), so .kill() reliably stops it --
+                    // no grandchild process left behind the way killing a
+                    // shell wrapper around the real process would risk.
+                    if let Some(state) = app.try_state::<ManagedChildren>() {
+                        if let Ok(mut children) = state.0.lock() {
+                            for child in children.iter_mut() {
+                                let _ = child.kill();
+                            }
+                        }
+                    }
+                    app.exit(0)
+                }
                 _ => {}
             }
         })

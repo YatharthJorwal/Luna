@@ -70,21 +70,29 @@ awaiting on-machine confirmation · ⬜ not started)
   CUDA (`stt.device: "cuda"`, the user's 3060): mic capture in the
   frontend (`src/mic.ts`, click-to-toggle via the mic button *or* an F9
   global push-to-talk hotkey — `tauri-plugin-global-shortcut` in
-  `src-tauri/src/lib.rs`, works regardless of which window has focus)
-  sends audio to the orchestrator (`orchestrator/stt.py`) over a new
-  `user_audio` WebSocket message, which transcribes it and feeds the text
-  into the exact same turn-handling path `user_text` already used
-  (`app.py`'s `_run_turn()`). Confirmed on the user's machine: mic button
-  renders and the permission prompt fires correctly. Not yet confirmed:
-  an actual transcribed turn completing end-to-end (the first attempt hit
-  a missing-dependency crash — `pip install -r requirements.txt` wasn't
-  re-run after pulling the bundle — and CUDA init itself is unverified
-  since this was built in a sandbox with no GPU). See `docs/MODELS.md` for
-  the concrete API shapes (sourced from reading a real reference
-  implementation) and `docs/DECISIONS.md` for the device/lazy-load/
-  hotkey/CUDA choices made building it. Also folds in the model swap to
-  `qwen3.5:9b` (see `docs/DECISIONS.md`), done as part of this same push
-  since it surfaced from the same real-hardware testing round.
+  `src-tauri/src/lib.rs`, one real compile error found and fixed on first
+  `cargo build`, see `docs/DECISIONS.md`) sends audio to the orchestrator
+  (`orchestrator/stt.py`) over a `user_audio` WebSocket message,
+  transcribed and fed into the same turn-handling path `user_text`
+  already used. A real bug found from an actual on-machine symptom (mic
+  recorded fine, nothing ever came back — no error, just silence) is
+  fixed: `stt.py` had no error handling at all, unlike `llm.py`/`tts.py`,
+  so a backend failure (most likely the CUDA cuBLAS/cuDNN DLL gap) was
+  silently killing the WebSocket connection. Now wrapped in `STTError`,
+  caught in `app.py`, logged to the orchestrator terminal and spoken as an
+  in-character fallback line instead. Also reworked how everything
+  launches: `spawn_backend_processes()` in `lib.rs` now spawns GPT-SoVITS
+  and the orchestrator itself as hidden child processes when the Tauri app
+  starts (TCP-polls GPT-SoVITS's port instead of a blind timeout, kills
+  both on tray Quit), replacing the old three-terminal `start-luna.bat`
+  with a single `npm run tauri dev`. That block hasn't been through a real
+  `cargo build` yet — next real-machine round is confirming it compiles
+  and that a full voice turn actually completes end-to-end. See
+  `docs/MODELS.md` for the STT API shapes and `docs/DECISIONS.md` for the
+  device/lazy-load/hotkey/CUDA/launcher choices made building all of this.
+  Also folds in the model swap to `qwen3.5:9b` (see `docs/DECISIONS.md`),
+  done as part of this same push since it surfaced from the same
+  real-hardware testing round.
 - ⬜ **Phase 3 — Persistent memory.** SQLite facts/episodes, consolidation job,
   recall injected into the system prompt each turn.
 - ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
