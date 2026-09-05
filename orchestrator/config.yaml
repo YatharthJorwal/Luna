@@ -68,21 +68,23 @@ stt:
   # step down to "base" if transcription feels slow, up to "medium" if you
   # flip device to "cuda" below and have VRAM to spare.
   model_size: "small"
-  # Runs on the 3060 via CUDA. faster-whisper (via its CTranslate2 backend)
-  # has full CUDA support -- this isn't a CPU-only library, "cpu" was just
-  # the original starting default for VRAM headroom (see docs/DECISIONS.md
-  # for the reversal). qwen3.5:9b (~6.6GB) + a "small" Whisper model in
-  # float16 (~1GB) both fit comfortably in 12GB with room to spare.
-  # Windows gotcha: CTranslate2's CUDA path needs cuBLAS/cuDNN DLLs on
-  # PATH, which faster-whisper does NOT install for you via pip -- if you
-  # hit a "cudnn_ops64_9.dll not found" (or similar) error on first mic
-  # use, see README's troubleshooting section.
-  device: "cuda"
-  # int8_float16 quantization -- CTranslate2's recommended pairing for CUDA
-  # (float16 compute, int8-quantized weights): meaningfully faster and
-  # lower-VRAM than plain float16 with negligible accuracy loss. Use "int8"
-  # instead if device is "cpu".
-  compute_type: "int8_float16"
+  # Runs on CPU, for now -- reverted from CUDA after confirming the exact
+  # missing-DLL error on the user's real machine ("Library cublas64_12.dll
+  # is not found or cannot be loaded"). faster-whisper/CTranslate2 does
+  # have full CUDA support and this can be revisited -- either installing
+  # the NVIDIA cuBLAS/cuDNN redistributables system-wide, or via the
+  # `nvidia-cublas-cu12`/`nvidia-cudnn-cu12` pip wheels (which likely also
+  # need their DLL directory added to PATH or via os.add_dll_directory()
+  # for CTranslate2 to actually find them -- unverified, worth confirming
+  # before assuming pip install alone is enough) -- but CPU with a "small"
+  # model is fast enough for short conversational clips on modern
+  # hardware, and it works with zero extra setup right now. See
+  # docs/DECISIONS.md for the full back-and-forth on this.
+  device: "cpu"
+  # int8 quantization -- fastest CPU option, accuracy hit is negligible for
+  # short conversational utterances. Use "int8_float16" instead if device
+  # is "cuda".
+  compute_type: "int8"
   # Force a language instead of auto-detecting (e.g. "en") -- auto-detect
   # costs a little extra latency on very short clips and can occasionally
   # guess wrong on a one- or two-word utterance. Set to null to let

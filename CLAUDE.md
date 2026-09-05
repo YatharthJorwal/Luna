@@ -27,22 +27,26 @@ for both.
 see `docs/DECISIONS.md` for why, including a non-obvious protocol change
 this forced in `orchestrator/llm.py`), plus real voice (GPT-SoVITS,
 confirmed working end-to-end on the user's machine) and STT
-(faster-whisper on CUDA: mic capture in `src/mic.ts` — click-to-toggle or
-F9 global push-to-talk via `tauri-plugin-global-shortcut` — → `user_audio`
-WebSocket message → transcription in `orchestrator/stt.py` → the same
-turn-handling path `user_text` already used). A real bug found on the
-user's machine (mic recorded fine, nothing ever came back — no error
-visible anywhere) is fixed: `stt.py` had no error handling, unlike
-`llm.py`/`tts.py`, so a backend failure was silently killing the
-connection; now wrapped in `STTError`, caught and spoken as an
-in-character fallback line. Launching also got reworked on request:
-`src-tauri/src/lib.rs`'s `spawn_backend_processes()` now starts GPT-SoVITS
-and the orchestrator itself, hidden, when the Tauri app launches — `npm
-run tauri dev` replaces the old three-terminal `start-luna.bat`. That
-block hasn't been through a real `cargo build` yet (the F9 hotkey code
-needed one real fix on its first — see `docs/DECISIONS.md` — expect
-similar here). Not yet confirmed: this new process-spawning code
-compiling, and a full voice turn completing end-to-end on CUDA.
+(faster-whisper, currently on CPU: mic capture in `src/mic.ts` —
+click-to-toggle or F9 global push-to-talk via
+`tauri-plugin-global-shortcut`, confirmed compiling and working on the
+user's machine — → `user_audio` WebSocket message → transcription in
+`orchestrator/stt.py` → the same turn-handling path `user_text` already
+used). Two real bugs found on the user's machine and fixed: `stt.py` had
+no error handling at all (now wrapped in `STTError`, spoken as an
+in-character fallback line), and underneath that, a missing CUDA DLL
+(`cublas64_12.dll`) plus a subtler bug where the failed model object
+stayed cached and hung on reuse instead of failing cleanly again — fixed
+by dropping the cached model on any failure, and by reverting
+`stt.device` to `"cpu"` for now (CUDA is a documented, revisitable
+optimization, not a blocker). Launching also got reworked on request:
+`src-tauri/src/lib.rs`'s `spawn_backend_processes()` starts GPT-SoVITS and
+the orchestrator itself, hidden, when the Tauri app launches — `npm run
+tauri dev` replaces the old three-terminal `start-luna.bat`, confirmed
+compiling and running end-to-end (needed a `PYTHONIOENCODING`/
+`PYTHONUTF8` fix the user found themselves for a Windows console-encoding
+crash). Not yet confirmed: a full voice turn actually completing now that
+STT is on CPU with the model-reuse bug fixed — next real-machine round.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

@@ -117,20 +117,34 @@ async def transcribe(audio_bytes: bytes) -> str:
     there's nothing wrong, just nothing to reply to. Raises STTError (not
     the raw underlying exception) for anything that actually went wrong,
     e.g. the model failing to load at all, or a hang against
-    _TIMEOUT_SECONDS."""
+    _TIMEOUT_SECONDS.
+
+    On ANY failure, drops the cached model (see _get_model()) so the next
+    attempt builds a fresh one instead of reusing this one -- found from a
+    real case where a first transcription failed cleanly with a missing
+    CUDA DLL error, and every attempt after that (still reusing the same
+    now-once-failed model object) hung for the full timeout instead of
+    failing the same clean way. A native library that's already thrown
+    once mid-inference is in an unknown state; nothing about it is worth
+    trusting for a second call."""
+    global _model
     try:
         return await asyncio.wait_for(
             asyncio.to_thread(_transcribe_sync, audio_bytes),
             timeout=_TIMEOUT_SECONDS,
         )
     except asyncio.TimeoutError as exc:
+        _model = None
         raise STTError(
             f"model loading and/or transcription didn't finish within "
             f"{_TIMEOUT_SECONDS}s. Check the log lines right above this "
             "one: if 'loading faster-whisper model' never printed, the "
             "problem is upstream of stt.py entirely; if it printed but "
             "'faster-whisper model loaded' or 'transcribe() finished' "
-            "never did, that pinpoints which of the two actually hung."
+            "never did, that pinpoints which of the two actually hung. "
+            "Dropping the cached model either way -- next attempt starts "
+            "fresh rather than risk reusing one that just hung."
         ) from exc
     except Exception as exc:
+        _model = None
         raise STTError(str(exc)) from exc

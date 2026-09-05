@@ -65,34 +65,42 @@ awaiting on-machine confirmation · ⬜ not started)
   backend in `orchestrator/tts.py` is built, verified against a stub server
   matching the real API contract, and confirmed working end-to-end on the
   user's machine (`tts.engine: "gpt_sovits"`, real `ref_audio_path`/
-  `prompt_text` filled in) — falls back to pyttsx3 automatically if the
-  server's unreachable. STT via faster-whisper is built and running on
-  CUDA (`stt.device: "cuda"`, the user's 3060): mic capture in the
+  `prompt_text` filled in, response validation added after the user found
+  a real gap in it) — falls back to pyttsx3 automatically if the server's
+  unreachable. STT via faster-whisper is built: mic capture in the
   frontend (`src/mic.ts`, click-to-toggle via the mic button *or* an F9
   global push-to-talk hotkey — `tauri-plugin-global-shortcut` in
   `src-tauri/src/lib.rs`, one real compile error found and fixed on first
   `cargo build`, see `docs/DECISIONS.md`) sends audio to the orchestrator
   (`orchestrator/stt.py`) over a `user_audio` WebSocket message,
   transcribed and fed into the same turn-handling path `user_text`
-  already used. A real bug found from an actual on-machine symptom (mic
-  recorded fine, nothing ever came back — no error, just silence) is
-  fixed: `stt.py` had no error handling at all, unlike `llm.py`/`tts.py`,
-  so a backend failure (most likely the CUDA cuBLAS/cuDNN DLL gap) was
-  silently killing the WebSocket connection. Now wrapped in `STTError`,
-  caught in `app.py`, logged to the orchestrator terminal and spoken as an
-  in-character fallback line instead. Also reworked how everything
-  launches: `spawn_backend_processes()` in `lib.rs` now spawns GPT-SoVITS
-  and the orchestrator itself as hidden child processes when the Tauri app
-  starts (TCP-polls GPT-SoVITS's port instead of a blind timeout, kills
-  both on tray Quit), replacing the old three-terminal `start-luna.bat`
-  with a single `npm run tauri dev`. That block hasn't been through a real
-  `cargo build` yet — next real-machine round is confirming it compiles
-  and that a full voice turn actually completes end-to-end. See
-  `docs/MODELS.md` for the STT API shapes and `docs/DECISIONS.md` for the
-  device/lazy-load/hotkey/CUDA/launcher choices made building all of this.
-  Also folds in the model swap to `qwen3.5:9b` (see `docs/DECISIONS.md`),
-  done as part of this same push since it surfaced from the same
-  real-hardware testing round.
+  already used. Two real bugs found from actual on-machine testing and
+  fixed: (1) `stt.py` had no error handling at all, unlike `llm.py`/
+  `tts.py`, so a backend failure was silently killing the WebSocket
+  connection — now wrapped in `STTError`, caught in `app.py`, logged and
+  spoken as an in-character fallback line; (2) the real error underneath
+  that turned out to be a missing CUDA DLL
+  (`cublas64_12.dll not found`), and — the subtler bug — the failed model
+  object was staying cached and getting reused on every later attempt,
+  hanging instead of failing the same clean way each time. Fixed by
+  dropping the cached model on any failure, and by reverting `stt.device`
+  from `"cuda"` back to `"cpu"` (works with zero extra setup; CUDA is a
+  documented, revisitable optimization, not a blocker — see
+  `docs/DECISIONS.md`). Also reworked how everything launches:
+  `spawn_backend_processes()` in `lib.rs` now spawns GPT-SoVITS and the
+  orchestrator itself as hidden child processes when the Tauri app starts
+  (TCP-polls GPT-SoVITS's port instead of a blind timeout, kills both on
+  tray Quit, needed a `PYTHONIOENCODING`/`PYTHONUTF8` fix the user found
+  themselves for a Windows console-encoding crash), replacing the old
+  three-terminal `start-luna.bat` with a single `npm run tauri dev` —
+  confirmed compiling and running end-to-end on the user's machine. Not
+  yet confirmed: a full voice turn actually completing on CPU after all
+  of the above — next real-machine round.
+  See `docs/MODELS.md` for the STT API shapes and `docs/DECISIONS.md` for
+  the device/lazy-load/hotkey/CUDA/launcher choices and the full bug
+  trail. Also folds in the model swap to `qwen3.5:9b` (see
+  `docs/DECISIONS.md`), done as part of this same push since it surfaced
+  from the same real-hardware testing round.
 - ⬜ **Phase 3 — Persistent memory.** SQLite facts/episodes, consolidation job,
   recall injected into the system prompt each turn.
 - ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +

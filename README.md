@@ -115,18 +115,17 @@ a sign something's fundamentally wrong.
   configured model size (`"small"` by default, `orchestrator/config.yaml`'s
   `stt` block) from Hugging Face automatically and caches it locally. Needs
   an internet connection for that one first download; fully offline after.
-- **CUDA for STT** -- `stt.device` defaults to `"cuda"` (your 3060), which
-  needs cuBLAS/cuDNN DLLs on `PATH` that `pip install faster-whisper` does
-  **not** install for you. If Ollama/PyTorch/some other GPU tool is
-  already on this machine, you may already have them. If mic input fails
-  with something like `cudnn_ops64_9.dll not found` (check the
-  orchestrator terminal), try `pip install nvidia-cudnn-cu12
-  nvidia-cublas-cu12` in the orchestrator venv first -- if that specific
-  package name doesn't match what your ctranslate2 version wants, its
-  error message plus a search for that exact DLL name should get you the
-  rest of the way. If it's more trouble than it's worth, `stt.device:
-  "cpu"` with `stt.compute_type: "int8"` in `config.yaml` works with zero
-  extra setup, just slower.
+- **CUDA for STT** -- runs on CPU by default now (`stt.device: "cpu"`),
+  after confirming the exact missing-DLL error
+  (`Library cublas64_12.dll is not found or cannot be loaded`) on the
+  first real attempt. faster-whisper/CTranslate2 does fully support CUDA,
+  and this is worth revisiting later on your 3060 -- either a system-wide
+  cuBLAS/cuDNN install, or the `nvidia-cublas-cu12`/`nvidia-cudnn-cu12`
+  pip wheels (these likely also need their DLL folder added to `PATH` or
+  via `os.add_dll_directory()` for CTranslate2 to find them -- not
+  confirmed either way yet) -- but CPU with the `"small"` model works with
+  zero extra setup and is fast enough for short conversational clips. See
+  `docs/DECISIONS.md` for the full trail if you want to chase CUDA later.
 
 The Hiyori sample model in `public/live2d/Hiyori/` is already included --
 it's Live2D's own official free sample, licensed for exactly this kind of
@@ -208,21 +207,19 @@ New in this round:
   `logs/gpt_sovits.log` / `logs/orchestrator.log` for what actually
   happened -- these replace the old visible terminal windows' output.
 - **Mic blinks/reacts to F9 or the button, but she never hears or
-  responds, and typed chat stops working right after too:** check
+  responds, and typed chat stops working right after too:** this was a
+  real, now-fixed bug -- a model that failed once (e.g. the missing CUDA
+  DLL case below, back when `stt.device` was `"cuda"`) was getting reused
+  on every later attempt instead of rebuilt fresh, which could hang
+  instead of failing the same clean way. Fixed by dropping the cached
+  model on any STT failure. If it still happens, check
   `logs/orchestrator.log` for `[luna] received N bytes of audio`,
   `[luna] loading faster-whisper model...`, and `[luna] transcribing...`
-  lines -- whichever of these is the *last* one to print tells you which
-  stage it's stuck in (never reached stt.py at all / hung loading the
-  model / hung during actual transcription). After 90s it'll time out and
-  recover on its own either way (chat should work again after that), but
-  the log tells you what actually happened. If you never even see
-  "received N bytes," the audio isn't reaching the orchestrator at all --
-  that's a different problem than STT itself.
-- **Mic/F9 records fine but nothing ever comes back, no timeout, no error
-  at all:** this used to be a real bug -- `stt.py` had no error handling,
-  so a failure there (most likely the CUDA DLL issue below) used to kill
-  the WebSocket connection silently. Fixed: check for a
-  `[luna] STT failed: ...` line in the log now instead of nothing.
+  lines -- whichever is the *last* one to print pinpoints the stuck stage.
+  After 90s it times out and recovers either way.
+- **Mic/F9 records fine but nothing ever comes back, no error at
+  all:** check for a `[luna] STT failed: ...` line in the log -- that's
+  the actual underlying error, printed instead of failing silently.
 - **Orchestrator won't start at all, `ModuleNotFoundError: No module
   named 'faster_whisper'`:** run `pip install -r requirements.txt` again
   in your orchestrator venv -- this isn't STT-specific, `stt.py` is
@@ -238,14 +235,16 @@ New in this round:
   (`'C:\Users\...'`) not double -- double-quoted YAML strings treat
   backslashes as escape codes, so `"C:\Users\..."` fails to parse. See
   `docs/DECISIONS.md` for the full story.
-- **Mic input fails with a `.dll not found` error (something like
-  `cudnn_ops64_9.dll`):** CUDA's cuBLAS/cuDNN DLLs aren't on `PATH`. Try
-  `pip install nvidia-cudnn-cu12 nvidia-cublas-cu12` in the orchestrator
-  venv; if the exact package name doesn't match what your `ctranslate2`
-  version wants, its own error plus a search for that DLL name will get
-  you the rest of the way. Or just set `stt.device: "cpu"` /
-  `stt.compute_type: "int8"` in `config.yaml` and skip CUDA for STT
-  entirely -- slower, but zero extra setup.
+- **`[luna] STT failed: Library cublas64_12.dll is not found or cannot be
+  loaded`** (or a similar `cudnn_*.dll`/`cublas*.dll` message):** confirmed
+  real on this project -- `stt.device: "cuda"` needs cuBLAS/cuDNN DLLs on
+  `PATH` that `pip install faster-whisper` does not provide. `stt.device`
+  defaults to `"cpu"` now for exactly this reason (see
+  `docs/DECISIONS.md`); if you've switched it back to `"cuda"` and hit
+  this, either revert that, or try `pip install nvidia-cudnn-cu12
+  nvidia-cublas-cu12` in the orchestrator venv (may also need that
+  package's DLL folder added to `PATH` -- not confirmed working end to
+  end yet).
 - **F9 doesn't do anything:** check the orchestrator/Tauri dev console for
   a Rust error on startup -- the global-shortcut registration
   (`src-tauri/src/lib.rs`) is new code that's never been run through a

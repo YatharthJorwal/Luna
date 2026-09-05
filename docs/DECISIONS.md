@@ -741,3 +741,55 @@ than picked one:
 Not resolved yet, on purpose -- this instrumentation is what determines
 which of the two candidates it actually is; the next real-machine run's
 log output is the next real piece of evidence, not another guess.
+
+## STT hang, resolved: missing cuBLAS DLL, then reusing a model that had already failed
+
+The instrumentation above did its job -- the real log from the user's
+machine gave a definitive answer, no more guessing needed:
+
+```
+[luna] STT failed: Library cublas64_12.dll is not found or cannot be loaded
+```
+
+Exactly the CUDA DLL gap flagged (as a hypothetical) back when `stt.device`
+was first flipped to `"cuda"`. `WhisperModel()` construction succeeded
+(logged "loaded in 2.9s") -- the missing DLL only bites once CTranslate2
+actually tries to run a CUDA kernel, which happens inside the real
+`.transcribe()` call, not at construction.
+
+But that wasn't the whole story: every attempt *after* that first clean
+failure hung for the full 90s timeout instead of failing the same clean
+way. Root cause: `_model` is a module-level singleton, cached once and
+reused (`_get_model()`) -- and it stayed cached even after a call on it
+had already thrown a native-library error. A CTranslate2/CUDA object
+that's already failed mid-inference is in an unknown state; reusing it
+for a second call apparently doesn't reliably reproduce the same clean
+exception, it can just hang instead (a native/CUDA-level issue, not
+something Python-level exception handling alone can guarantee against).
+
+Two fixes:
+1. `transcribe()` now sets `_model = None` in its `except` block, for
+   *any* exception (timeout or otherwise) -- so the very next call
+   constructs a fresh `WhisperModel` from scratch rather than trusting a
+   once-failed one. Verified in sandbox with a model stub that fails
+   cleanly once then hangs if reused: confirms the model gets rebuilt
+   (construction count increments) and the second attempt fails the same
+   clean, fast way instead of hanging.
+2. `stt.device` reverted from `"cuda"` back to `"cpu"` (`compute_type:
+   "int8"`) in `config.yaml`. This is the pragmatic call, not a claim that
+   CUDA is unfixable -- the actual fix (get `cublas64_12.dll`/cuDNN onto
+   PATH, whether via a system CUDA/cuDNN install or the
+   `nvidia-cublas-cu12`/`nvidia-cudnn-cu12` pip wheels plus likely a
+   PATH/`os.add_dll_directory()` step CTranslate2 doesn't do
+   automatically) is real but has already consumed several rounds of
+   back-and-forth without a GPU in this sandbox to verify any of it
+   directly. CPU with a `"small"` model is fast enough for short
+   conversational clips on the user's i5-14400F and works with zero
+   further setup -- reasonable to revisit CUDA later as a speed
+   optimization once STT is confirmed solid on CPU, not as a blocker to
+   getting it working at all.
+
+Also worth correcting for the record: the user's closing report described
+"the tts fumbling," but the actual log shows GPT-SoVITS responding `200,
+content-type='audio/wav'` successfully on every single request across the
+whole session -- TTS was never the problem here, only STT was.
