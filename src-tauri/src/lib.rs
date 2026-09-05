@@ -180,7 +180,16 @@ fn spawn_backend_processes(children: Arc<Mutex<Vec<Child>>>) {
         // for being able to actually kill it later.
         let python_exe = Path::new(sovits_dir.as_str()).join("runtime").join("python.exe");
         let mut cmd = Command::new(&python_exe);
-        cmd.arg("api_v2.py").current_dir(sovits_dir);
+        cmd.arg("api_v2.py")
+            .current_dir(sovits_dir)
+            // Windows' default console codepage (cp1252) doesn't cover
+            // whatever non-ASCII output api_v2.py produces, which raised
+            // UnicodeEncodeError and killed the process outright once its
+            // stdout/stderr were redirected to a log file instead of a
+            // real console (spawn_logged() below) -- found on the user's
+            // actual machine, not predicted in advance.
+            .env("PYTHONIOENCODING", "utf-8")
+            .env("PYTHONUTF8", "1");
         spawn_logged("GPT-SoVITS", &mut cmd, &logs_dir.join("gpt_sovits.log"), &children);
     } else {
         eprintln!(

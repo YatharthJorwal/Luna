@@ -661,3 +661,83 @@ over *source changes* for the ongoing dev workflow (`npm run tauri dev`);
 distributable installer from whatever source is currently checked out.
 Packaging becoming relevant someday doesn't require changing how source
 gets handed over between sessions now -- those are orthogonal concerns.
+
+## User-found fix: GPT-SoVITS needs PYTHONIOENCODING/PYTHONUTF8 set
+
+Found by the user while debugging why GPT-SoVITS wasn't catching under
+the new spawn-it-from-Rust launcher: Windows' default console codepage
+(cp1252) doesn't cover whatever non-ASCII output `api_v2.py` was
+producing, causing a `UnicodeEncodeError` that killed the process. Fixed
+by setting `PYTHONIOENCODING=utf-8` and `PYTHONUTF8=1` as environment
+variables on the spawned `Command` in `spawn_backend_processes()` (the
+GPT-SoVITS one specifically) before `.spawn()`. Real Windows gotcha,
+specific to this project's redirect-stdout-to-a-log-file design
+(`spawn_logged()`) -- a normal visible console window (the old `.bat`
+file's approach) apparently tolerates this better than a redirected file
+handle does, or the specific output that triggers it just hadn't been hit
+yet. Confirmed fixed on the user's actual machine.
+
+## User-found fix: `tts.py` needed to validate GPT-SoVITS's HTTP response, not just check the status code
+
+Also found while debugging the same launcher change: added logging (HTTP
+status, `Content-Type`, response byte count) and explicit checks for a
+non-audio `Content-Type` or an empty body, raising `TTSUnreachableError`
+(the existing exception type, not a new one) so the already-working
+pyttsx3 fallback handles it the same way an unreachable server does. This
+closes a real gap -- a response that returns HTTP 200 but isn't actually
+valid audio (an error message with the wrong status code, or a truncated
+body) would previously have been handed to the frontend as if it were
+real audio. GPT-SoVITS is confirmed working as the primary backend on the
+user's machine now, with this validation in place alongside it, not
+instead of it.
+
+## STT hang: instrumented instead of guessed at
+
+New symptom after the two fixes above: mic/F9 use left the connection
+stuck (pink status dot never clearing) *and* broke typed chat on that same
+connection afterward -- worse than the earlier silent-disconnect bug,
+because the connection wasn't dying, it was hanging. The combination is
+the tell: `app.py`'s websocket handling is a single `while True:
+receive_json()` loop per connection, so an `await` that never returns
+(never raises, just blocks forever) stalls every subsequent message on
+that connection, typed or spoken alike -- consistent with a hang inside
+`await stt.transcribe(...)` specifically, not a crash anywhere else.
+
+Explicitly did not guess a fix without evidence (per the user's own
+instruction). Two real candidates existed -- a genuine CUDA/driver hang
+during model construction or inference, or a legitimately slow first-time
+model download/load that simply had zero visibility (nothing was ever
+printed for it) and so looked identical to a hang. Instrumented rather
+than picked one:
+
+- `stt.py`: `_get_model()` now prints before and after constructing
+  `WhisperModel()`, timed. `_transcribe_sync()` prints before and after
+  the actual transcribe-and-join, timed. `app.py` prints the instant audio
+  bytes arrive, before `stt.transcribe()` is even called. Together these
+  three checkpoints (received -> model loading -> transcribing) pinpoint
+  exactly which stage a hang is in from the log alone, rather than
+  needing another back-and-forth to add logging after the fact.
+- `transcribe()` now wraps the work in `asyncio.wait_for(...,
+  timeout=90)`. This was the one non-diagnostic change, and it's a safety
+  net that's correct regardless of root cause, not a guess at the root
+  cause itself: whatever is or isn't causing the underlying slowness, a
+  websocket connection should never be able to hang forever on one
+  message. Verified in the sandbox reproducing the user's exact reported
+  symptom end-to-end (a `transcribe()` stub that sleeps past the timeout,
+  driven through a real websocket connection): the timeout fires, the
+  fallback line gets spoken, and -- the actual regression being fixed --
+  typed chat on that same connection works again immediately after,
+  instead of staying stuck.
+- Real, honest limitation worth remembering when reading the log:
+  `asyncio.wait_for` cancels the *awaiting coroutine*, not the underlying
+  OS thread doing the work (`asyncio.to_thread` uses a real thread pool,
+  and Python threads aren't preemptible) -- so if the true cause turns out
+  to be "just slow, not hung," the `"transcribe() finished in Ns"` log
+  line can still show up *after* the timeout fallback already fired. That
+  outcome is actually informative, not a bug: it means the connection
+  recovered correctly (the actual regression), and the model is now
+  warm/cached for next time.
+
+Not resolved yet, on purpose -- this instrumentation is what determines
+which of the two candidates it actually is; the next real-machine run's
+log output is the next real piece of evidence, not another guess.

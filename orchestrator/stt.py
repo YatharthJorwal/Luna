@@ -18,12 +18,26 @@ from __future__ import annotations
 
 import asyncio
 import io
+import sys
+import time
 
 from faster_whisper import WhisperModel
 
 from config import CONFIG
 
 _model: WhisperModel | None = None
+
+# Ceiling on how long a single transcription attempt (including a
+# first-ever model load, which downloads from Hugging Face) is allowed to
+# take before we give up and report it as a failure instead of blocking
+# the connection's whole message loop forever. Diagnostic instrumentation,
+# not a guessed fix -- added after a real report of the mic (and, because
+# this blocks the same connection's receive loop, subsequently typed chat
+# too) hanging indefinitely with nothing in the log. This turns "hangs
+# forever, no idea why" into either a clean, loggable timeout, or -- if
+# the prints below show up but transcription is just slow -- clear
+# evidence it's not a true hang at all.
+_TIMEOUT_SECONDS = 90
 
 
 class STTError(Exception):
@@ -43,7 +57,27 @@ def _get_model() -> WhisperModel:
     global _model
     if _model is None:
         cfg = CONFIG.stt
+        # Prints unconditionally (not just on error) so a slow first load
+        # is visible in the log as it's happening, not just inferred after
+        # the fact from a timeout. If this line never appears despite
+        # actually recording something, the problem is upstream of stt.py
+        # entirely (audio never reached the backend) -- see app.py's own
+        # "received N bytes" log line right before this gets called.
+        print(
+            f"[luna] loading faster-whisper model '{cfg.model_size}' on "
+            f"{cfg.device} ({cfg.compute_type}) -- first mic use this run "
+            "only. Downloads from Hugging Face on a genuinely first-ever "
+            "run, which can take a while depending on your connection.",
+            file=sys.stderr,
+            flush=True,
+        )
+        start = time.monotonic()
         _model = WhisperModel(cfg.model_size, device=cfg.device, compute_type=cfg.compute_type)
+        print(
+            f"[luna] faster-whisper model loaded in {time.monotonic() - start:.1f}s",
+            file=sys.stderr,
+            flush=True,
+        )
     return _model
 
 
@@ -54,6 +88,12 @@ def _transcribe_sync(audio_bytes: bytes) -> str:
     # and resamples to the 16kHz mono its feature extractor wants, so the
     # WebM/Opus blob MediaRecorder produces in the frontend doesn't need any
     # conversion on this end. No temp file needed either.
+    print(f"[luna] transcribing {len(audio_bytes)} bytes of audio...", file=sys.stderr, flush=True)
+    start = time.monotonic()
+    # model.transcribe() itself returns near-instantly -- `segments` is a
+    # lazy generator, the actual GPU/CPU work happens while iterating it
+    # below (the join). Timing wraps both so a slow join doesn't look like
+    # a fast transcribe() call followed by a mysterious pause.
     segments, _info = model.transcribe(
         io.BytesIO(audio_bytes),
         language=CONFIG.stt.language,
@@ -61,7 +101,13 @@ def _transcribe_sync(audio_bytes: bytes) -> str:
     # segments is a generator; each segment's .text already has its own
     # leading space from faster-whisper's tokenizer, so join without adding
     # more, then collapse the whole thing's outer whitespace once.
-    return "".join(segment.text for segment in segments).strip()
+    result = "".join(segment.text for segment in segments).strip()
+    print(
+        f"[luna] transcribe() finished in {time.monotonic() - start:.1f}s: {result!r}",
+        file=sys.stderr,
+        flush=True,
+    )
+    return result
 
 
 async def transcribe(audio_bytes: bytes) -> str:
@@ -70,8 +116,21 @@ async def transcribe(audio_bytes: bytes) -> str:
     path. Returns "" (not an error) for silence/unintelligible audio --
     there's nothing wrong, just nothing to reply to. Raises STTError (not
     the raw underlying exception) for anything that actually went wrong,
-    e.g. the model failing to load at all."""
+    e.g. the model failing to load at all, or a hang against
+    _TIMEOUT_SECONDS."""
     try:
-        return await asyncio.to_thread(_transcribe_sync, audio_bytes)
+        return await asyncio.wait_for(
+            asyncio.to_thread(_transcribe_sync, audio_bytes),
+            timeout=_TIMEOUT_SECONDS,
+        )
+    except asyncio.TimeoutError as exc:
+        raise STTError(
+            f"model loading and/or transcription didn't finish within "
+            f"{_TIMEOUT_SECONDS}s. Check the log lines right above this "
+            "one: if 'loading faster-whisper model' never printed, the "
+            "problem is upstream of stt.py entirely; if it printed but "
+            "'faster-whisper model loaded' or 'transcribe() finished' "
+            "never did, that pinpoints which of the two actually hung."
+        ) from exc
     except Exception as exc:
         raise STTError(str(exc)) from exc

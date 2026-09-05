@@ -145,6 +145,8 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # Malformed base64 -- nothing recoverable, drop it.
                     continue
 
+                print(f"[luna] received {len(audio_bytes)} bytes of audio", file=sys.stderr, flush=True)
+
                 try:
                     user_text = (await stt.transcribe(audio_bytes)).strip()
                 except stt.STTError as exc:

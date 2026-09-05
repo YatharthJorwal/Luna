@@ -208,12 +208,21 @@ New in this round:
   `logs/gpt_sovits.log` / `logs/orchestrator.log` for what actually
   happened -- these replace the old visible terminal windows' output.
 - **Mic blinks/reacts to F9 or the button, but she never hears or
-  responds at all:** this was a real bug -- `stt.py` had no error handling,
-  so a failure there (most likely the CUDA DLL issue two bullets down)
-  used to kill the WebSocket connection silently, with nothing visible
-  anywhere. Fixed: check `logs/orchestrator.log` (or the terminal, if
-  you're running `python app.py` manually) for a `[luna] STT failed: ...`
-  line -- that's the actual underlying error now, instead of nothing.
+  responds, and typed chat stops working right after too:** check
+  `logs/orchestrator.log` for `[luna] received N bytes of audio`,
+  `[luna] loading faster-whisper model...`, and `[luna] transcribing...`
+  lines -- whichever of these is the *last* one to print tells you which
+  stage it's stuck in (never reached stt.py at all / hung loading the
+  model / hung during actual transcription). After 90s it'll time out and
+  recover on its own either way (chat should work again after that), but
+  the log tells you what actually happened. If you never even see
+  "received N bytes," the audio isn't reaching the orchestrator at all --
+  that's a different problem than STT itself.
+- **Mic/F9 records fine but nothing ever comes back, no timeout, no error
+  at all:** this used to be a real bug -- `stt.py` had no error handling,
+  so a failure there (most likely the CUDA DLL issue below) used to kill
+  the WebSocket connection silently. Fixed: check for a
+  `[luna] STT failed: ...` line in the log now instead of nothing.
 - **Orchestrator won't start at all, `ModuleNotFoundError: No module
   named 'faster_whisper'`:** run `pip install -r requirements.txt` again
   in your orchestrator venv -- this isn't STT-specific, `stt.py` is

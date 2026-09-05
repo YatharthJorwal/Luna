@@ -74,9 +74,29 @@ async def _synthesize_gpt_sovits(text: str) -> bytes:
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
             response = await client.post(cfg.api_url, json=payload)
+            content_type = response.headers.get("content-type", "")
+            print(
+                f"[luna] gpt_sovits response: {response.status_code}, "
+                f"content-type={content_type!r}, {len(response.content)} bytes",
+                file=sys.stderr,
+            )
             if response.status_code >= 400:
                 raise TTSUnreachableError(
                     f"{response.status_code} from {cfg.api_url}: {response.text[:300]!r}"
+                )
+            # A 200 with an empty body, or a body that isn't actually
+            # audio (e.g. a JSON error message the server returned with
+            # the wrong status code), used to get handed to the frontend
+            # as if it were real audio -- caught here instead, so it goes
+            # through the same pyttsx3 fallback an unreachable server
+            # already does, rather than the frontend trying to play back
+            # garbage.
+            if not response.content:
+                raise TTSUnreachableError(f"empty response body from {cfg.api_url}")
+            if content_type and not content_type.startswith("audio/"):
+                raise TTSUnreachableError(
+                    f"expected audio from {cfg.api_url}, got content-type "
+                    f"{content_type!r}: {response.text[:300]!r}"
                 )
             return response.content
     except httpx.RequestError as exc:
