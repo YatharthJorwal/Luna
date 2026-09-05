@@ -90,13 +90,18 @@ async def _synthesize_gpt_sovits(text: str) -> bytes:
             # as if it were real audio -- caught here instead, so it goes
             # through the same pyttsx3 fallback an unreachable server
             # already does, rather than the frontend trying to play back
-            # garbage.
+            # garbage. "audio" in content_type (not startswith) also
+            # treats a missing/empty content-type as non-audio -- stricter
+            # than allowing it through by default, confirmed correct
+            # against GPT-SoVITS's real responses on the user's machine.
             if not response.content:
                 raise TTSUnreachableError(f"empty response body from {cfg.api_url}")
-            if content_type and not content_type.startswith("audio/"):
+            if "audio" not in content_type.lower():
+                body_preview = response.text[:1000]
+                print(f"[luna] gpt_sovits non-audio body: {body_preview!r}", file=sys.stderr)
                 raise TTSUnreachableError(
                     f"expected audio from {cfg.api_url}, got content-type "
-                    f"{content_type!r}: {response.text[:300]!r}"
+                    f"{content_type!r}: {body_preview[:300]!r}"
                 )
             return response.content
     except httpx.RequestError as exc:
