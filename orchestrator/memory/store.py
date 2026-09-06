@@ -46,6 +46,31 @@ def get_all_facts(limit: int | None = None) -> list[str]:
     return [row[0] for row in rows]
 
 
+def get_all_facts_with_ids(limit: int | None = None) -> list[tuple[int, str]]:
+    """Same ordering as get_all_facts(), but with each row's id -- needed
+    by forget.py so it can tell the LLM to pick from a numbered list and
+    then delete the *exact* matching row(s), rather than matching on fact
+    text (fragile -- near-duplicate wording, or the model paraphrasing the
+    fact back instead of quoting it verbatim, would silently fail to
+    match anything)."""
+    conn = db.get_connection()
+    query = "SELECT id, content FROM facts ORDER BY created_at DESC, id DESC"
+    if limit is not None:
+        query += f" LIMIT {int(limit)}"
+    return [(row[0], row[1]) for row in conn.execute(query).fetchall()]
+
+
+def delete_facts(fact_ids: list[int]) -> None:
+    """No-op on an empty list (not an error) -- callers (forget.py) don't
+    need to special-case "nothing to delete" before calling this."""
+    if not fact_ids:
+        return
+    conn = db.get_connection()
+    placeholders = ",".join("?" for _ in fact_ids)
+    conn.execute(f"DELETE FROM facts WHERE id IN ({placeholders})", fact_ids)
+    conn.commit()
+
+
 def add_episode(summary: str, embedding: list[float]) -> int:
     """Inserts an episode row and its embedding, sharing one explicit
     rowid between `episodes` and `episode_vectors` so a vector search hit

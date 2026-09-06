@@ -3,11 +3,15 @@
 // global-shortcut block has since been through a real `cargo build` on the
 // user's machine and fixed once (see docs/DECISIONS.md for the E0277
 // error and fix). The process-spawning block (spawn_backend_processes and
-// everything it calls) is new and has NOT been through a real build yet --
-// same unverified status the global-shortcut block started in, treat with
-// the same suspicion on first compile.
+// everything it calls) was new as of that same round and has NOT been
+// through a real build yet -- same unverified status the global-shortcut
+// block started in, treat with the same suspicion on first compile.
+// graceful_shutdown_then_kill() and request_orchestrator_shutdown() are
+// newer still (Phase 3 follow-up, fixing a hard-kill-loses-memory bug) --
+// same unverified status, flagged again at their own definitions below.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::net::{SocketAddr, TcpStream};
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -30,11 +34,17 @@ const CREATE_NO_WINDOW: u32 = 0x08000000;
 
 /// Handles to every child process Luna spawned itself (GPT-SoVITS, the
 /// orchestrator), stored as Tauri-managed state so the tray menu's "quit"
-/// handler can kill them before actually exiting -- spawning them hidden
-/// and then never cleaning them up would leave them running invisibly in
-/// the background forever, which is worse than the old visible-terminal
-/// setup, not better.
-struct ManagedChildren(Arc<Mutex<Vec<Child>>>);
+/// handler can shut them down before actually exiting -- spawning them
+/// hidden and then never cleaning them up would leave them running
+/// invisibly in the background forever, which is worse than the old
+/// visible-terminal setup, not better.
+///
+/// Each entry is labeled (not just a bare `Child`) so the quit handler can
+/// tell which one is the orchestrator -- it's the only one with a
+/// graceful-shutdown HTTP endpoint to try first (see
+/// `graceful_shutdown_then_kill()`); GPT-SoVITS has no such thing and is
+/// just killed outright, same as before.
+struct ManagedChildren(Arc<Mutex<Vec<(String, Child)>>>);
 
 /// Exposed to the frontend for later phases (e.g. a keyboard shortcut or a
 /// HUD button) even though only the tray menu drives it in Phase 1.
@@ -57,7 +67,7 @@ pub fn run() {
             build_tray(app)?;
             register_push_to_talk_hotkey(app)?;
 
-            let managed_children: Arc<Mutex<Vec<Child>>> = Arc::new(Mutex::new(Vec::new()));
+            let managed_children: Arc<Mutex<Vec<(String, Child)>>> = Arc::new(Mutex::new(Vec::new()));
             spawn_backend_processes(managed_children.clone());
             app.manage(ManagedChildren(managed_children));
 
@@ -168,7 +178,7 @@ fn read_launcher_config() -> HashMap<String, String> {
 /// resolve to the repo root's orchestrator/ and logs/ as intended from
 /// there. Not verified for a packaged release build, where the cwd may
 /// differ -- worth rechecking when packaging is actually on the table.
-fn spawn_backend_processes(children: Arc<Mutex<Vec<Child>>>) {
+fn spawn_backend_processes(children: Arc<Mutex<Vec<(String, Child)>>>) {
     let logs_dir = PathBuf::from("../logs");
     let _ = std::fs::create_dir_all(&logs_dir);
 
@@ -262,15 +272,16 @@ fn wait_for_port(port: u16, max_wait: Duration) {
 }
 
 /// Spawns `command` hidden (no console window), with both stdout and
-/// stderr going to `log_path`, and records the resulting Child in
-/// `children` so it can be killed on quit. `command` should invoke the
-/// real interpreter directly, not through a shell -- see the quit
-/// handler's comment for why.
+/// stderr going to `log_path`, and records the resulting Child (alongside
+/// `label`, so the quit handler can tell processes apart -- see
+/// ManagedChildren's doc comment) in `children` so it can be shut down on
+/// quit. `command` should invoke the real interpreter directly, not
+/// through a shell -- see the quit handler's comment for why.
 fn spawn_logged(
     label: &str,
     command: &mut Command,
     log_path: &std::path::Path,
-    children: &Arc<Mutex<Vec<Child>>>,
+    children: &Arc<Mutex<Vec<(String, Child)>>>,
 ) {
     let stdout_file = match std::fs::File::create(log_path) {
         Ok(f) => f,
@@ -295,7 +306,7 @@ fn spawn_logged(
     {
         Ok(child) => {
             if let Ok(mut children) = children.lock() {
-                children.push(child);
+                children.push((label.to_string(), child));
             }
         }
         Err(e) => eprintln!("[luna] failed to start {label}: {e}"),
@@ -338,21 +349,16 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     let _ = window.set_ignore_cursor_events(now_ignoring);
                 }
                 "quit" => {
-                    // Kill anything we spawned ourselves before actually
-                    // exiting -- see ManagedChildren's doc comment on why
-                    // this matters (orphaned background processes are
-                    // worse than the old visible-terminal setup, not
-                    // better). Each Child here is the real interpreter
-                    // process directly (spawn_logged() never goes through
-                    // a cmd.exe wrapper), so .kill() reliably stops it --
-                    // no grandchild process left behind the way killing a
-                    // shell wrapper around the real process would risk.
+                    // Try a graceful shutdown first, falling back to a
+                    // hard kill for anything still alive after a bounded
+                    // wait -- see graceful_shutdown_then_kill()'s own doc
+                    // comment for why child.kill() alone isn't enough
+                    // anymore (it was silently losing Phase 3 memory
+                    // consolidation on every quit, found while answering
+                    // the user's own "what's the right way to close this"
+                    // question -- see docs/DECISIONS.md).
                     if let Some(state) = app.try_state::<ManagedChildren>() {
-                        if let Ok(mut children) = state.0.lock() {
-                            for child in children.iter_mut() {
-                                let _ = child.kill();
-                            }
-                        }
+                        graceful_shutdown_then_kill(&state.0);
                     }
                     app.exit(0)
                 }
@@ -362,4 +368,85 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         .build(app)?;
 
     Ok(())
+}
+
+/// **UNVERIFIED -- no Rust toolchain in the sandbox this was written in.**
+/// Written as carefully as the rest of this file, but treat with the same
+/// suspicion the global-shortcut block started in before its one real
+/// E0277 fix on first compile (see docs/DECISIONS.md) -- this is new code
+/// of a similar kind, and there's a real chance something here needs a
+/// small fix too on your first `cargo build`.
+///
+/// Tries a graceful shutdown of the orchestrator first -- a fire-and-
+/// forget POST to its own `/shutdown` endpoint (see
+/// orchestrator/app.py's `shutdown_endpoint()` docstring) -- because
+/// `child.kill()` alone (`TerminateProcess` on Windows) gives Python's
+/// own `finally` block, and therefore Phase 3's `consolidate_session()`,
+/// no chance to run at all. Every quit was silently losing that
+/// session's memory before this existed.
+///
+/// Falls back to a hard `.kill()` for anything still alive after a
+/// bounded wait, regardless of label -- GPT-SoVITS has no graceful
+/// shutdown path of its own (nothing here asks it for one), and the
+/// orchestrator itself falls back to this too if it doesn't finish
+/// tearing down in time -- so quitting never hangs waiting on either one,
+/// and never leaves an orphaned process behind either way.
+fn graceful_shutdown_then_kill(children: &Arc<Mutex<Vec<(String, Child)>>>) {
+    request_orchestrator_shutdown();
+
+    // Matched to orchestrator/app.py's own ~5s bounded wait for its
+    // connections to finish tearing down -- if that window's ever too
+    // short for a slow consolidation LLM call, it's a mismatch to widen
+    // on both sides together, not just one.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let all_exited = match children.lock() {
+            Ok(mut children) => children
+                .iter_mut()
+                .all(|(_label, child)| matches!(child.try_wait(), Ok(Some(_)))),
+            Err(_) => break,
+        };
+        if all_exited || Instant::now() >= deadline {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // Whatever's still alive at this point (graceful shutdown didn't
+    // finish in time, or it's GPT-SoVITS which never had a graceful path
+    // to begin with) gets hard-killed here, same as the old unconditional
+    // behavior. Calling .kill() on a process that already exited on its
+    // own is a harmless no-op error on Windows, so there's no need to
+    // re-check try_wait() here first -- just always attempt it.
+    if let Ok(mut children) = children.lock() {
+        for (_label, child) in children.iter_mut() {
+            let _ = child.kill();
+        }
+    }
+}
+
+/// Fire-and-forget raw HTTP/1.1 POST to the orchestrator's `/shutdown`
+/// endpoint -- a plain `TcpStream` write, not a new HTTP client
+/// dependency (see Cargo.toml -- nothing like `reqwest`/`ureq` is pulled
+/// in anywhere else in this project either, and one fire-and-forget POST
+/// with an empty body isn't worth adding one for). Doesn't wait for or
+/// read the response -- graceful_shutdown_then_kill()'s own poll loop is
+/// what actually waits on the *result* of this; this function only needs
+/// the request to actually reach the server.
+///
+/// A connect failure (orchestrator already dead, port not open yet, or
+/// launcher.local.txt/venv not set up so it never started at all) is
+/// expected and handled fine by the poll-then-kill fallback above either
+/// way -- silently returning here on any connect error is deliberate, not
+/// an oversight.
+fn request_orchestrator_shutdown() {
+    let addr: SocketAddr = "127.0.0.1:8765"
+        .parse()
+        .expect("hardcoded loopback address is always valid");
+    let Ok(mut stream) = TcpStream::connect_timeout(&addr, Duration::from_millis(500)) else {
+        return;
+    };
+    let _ = stream.write_all(
+        b"POST /shutdown HTTP/1.1\r\nHost: 127.0.0.1:8765\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+    );
 }

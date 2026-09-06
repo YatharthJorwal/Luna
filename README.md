@@ -63,19 +63,34 @@ live) or to a real running Ollama instance, so:
   assumed) `/api/embed` shape, and `app.py`'s Phase 3 wiring (recall
   injected per-turn without polluting persisted history, consolidation
   firing once on disconnect) was driven through a real WebSocket
-  connection with recall/consolidation/LLM/TTS all stubbed.
+  connection with recall/consolidation/LLM/TTS all stubbed. The
+  explicit-forget feature (`memory/forget.py`, 29 tests total now in
+  `memory/test_memory.py`) is verified the same real way -- regex gate,
+  fact deletion, and degradation all exercised against a real DB with
+  only the LLM classification call stubbed. The graceful-shutdown
+  handshake's **Python half** was verified end-to-end against a real
+  running server in a background thread with a real websocket client --
+  an idle connection actually noticing `/shutdown`, tearing itself down
+  cleanly, consolidation running on the real completed-turn history, and
+  the process-exit path firing -- including catching and fixing a test
+  that initially passed for the wrong reason (see `docs/DECISIONS.md`).
 - **Not verified, because I had no way to:** actual faster-whisper CUDA
   execution on the 3060 (currently moot -- running on CPU by choice, see
   above); a real Ollama instance actually serving `nomic-embed-text` (the
   request/response *shape* is verified against current docs, not a real
-  server); and, the one Phase 3 piece with a real open question --
+  server); the one Phase 3 piece with a real open question --
   whether `qwen3.5:9b` (a small model) reliably follows the
   consolidation JSON format in practice on real conversations rather than
-  the handful of synthetic transcripts tested here. `consolidation.py`'s
+  the handful of synthetic transcripts tested here (`consolidation.py`'s
   parser is deliberately forgiving specifically because this wasn't
   something to assume would just work; if it turns out to fail often in
   practice, that's a real signal to revisit, not a sign the fallback
-  logic is wrong.
+  logic is wrong); and the graceful-shutdown handshake's **Rust half**
+  (`graceful_shutdown_then_kill()`/`request_orchestrator_shutdown()` in
+  `src-tauri/src/lib.rs`) -- no Rust toolchain in this sandbox at all,
+  flagged explicitly at its own definition in that file, same starting
+  status the process-spawning code itself had before its own first real
+  `cargo build`.
 
 Expect to still fix small things on first run -- normal for anything that's
 never touched real model weights, a real mic, or a real Rust compiler, not
@@ -202,10 +217,14 @@ mic (button or F9), Windows/WebView2 will prompt for microphone
 permission; allow it.
 
 **Quitting:** use the tray icon's Quit item, not just closing the window
-(closing just hides it -- Luna's meant to live in the tray). Quit is also
-what actually stops the GPT-SoVITS/orchestrator processes it started; if
-you ever kill the app a harder way (Task Manager, etc.), check Task
-Manager for orphaned `python.exe` processes afterward.
+(closing just hides it -- Luna's meant to live in the tray). Quit now
+tries a graceful shutdown of the orchestrator first (so Phase 3
+consolidation actually gets to run -- see `docs/DECISIONS.md`), falling
+back to a hard kill after ~5s for anything still alive, so it still can't
+hang or leave orphans behind either way. If you ever kill the app a
+harder way (Task Manager, etc.), that graceful path is skipped entirely
+-- expect that session's memory not to be saved, and check Task Manager
+for orphaned `python.exe` processes afterward regardless.
 
 ## If something doesn't work
 
@@ -341,6 +360,13 @@ Still applies from Phase 1 -- unchanged:
   after episodes already existed with the old model's vector width --
   see the warning's own text for the fix (revert the model, or accept
   losing existing episode memory by deleting `orchestrator/data/memory.db`).
+- **Telling her to forget something doesn't seem to work:** the forget
+  feature only triggers on fairly explicit language ("forget that...",
+  "delete that", "stop remembering...") -- check `logs/orchestrator.log`
+  for `[luna] forget:` lines either way. It won't catch an implicit
+  correction like "actually I like X now" without the word "forget"
+  somewhere in there -- that's an open limitation, not a bug (see
+  `docs/DECISIONS.md`).
 
 ## Running the tests
 

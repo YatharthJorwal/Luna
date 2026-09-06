@@ -102,7 +102,7 @@ awaiting on-machine confirmation · ⬜ not started)
   trail. Also folds in the model swap to `qwen3.5:9b` (see
   `docs/DECISIONS.md`), done as part of this same push since it surfaced
   from the same real-hardware testing round.
-- 🔶 **Phase 3 — Persistent memory.** SQLite facts/episodes with
+- ✅ **Phase 3 — Persistent memory.** SQLite facts/episodes with
   `sqlite-vec` for semantic recall over past-episode summaries (embedding
   via Ollama's `nomic-embed-text`, `/api/embed` request shape checked
   against current docs rather than assumed), a consolidation job that
@@ -110,26 +110,42 @@ awaiting on-machine confirmation · ⬜ not started)
   disconnect, and recall injected into the LLM call each turn as an
   ephemeral system message (never written into persisted session
   history, so it can't grow stale or leak into consolidation's own input).
-  Sandbox-verified for real, not just stub-shaped, unlike prior phases'
-  backend integrations — sqlite-vec is pure-C with no GPU/network
-  dependency, so the DB layer (schema, CRUD, the actual vec0
-  nearest-neighbor query) has a real committed test suite
-  (`orchestrator/memory/test_memory.py`, 19 tests, the first committed
-  tests in this repo) rather than only ad hoc sandbox verification. Two
-  real sqlite-vec bugs found and fixed this way, not anticipated from
-  docs alone: a bound `LIMIT ?` parameter isn't accepted on a vec0 KNN
-  query (needs `k = ?` instead), and `facts` needed an `id DESC`
-  tiebreaker alongside `created_at DESC` since `datetime('now')` only has
-  1-second resolution. `app.py`'s wiring (recall injection, consolidation
-  firing on disconnect) verified end-to-end through a real WebSocket
-  connection with recall/consolidation/LLM/TTS stubbed. Not verified: a
-  real Ollama instance actually serving `nomic-embed-text` (the client's
-  request/response handling is verified against a stub matching current
-  docs, not a real server), and whether `qwen3.5:9b` reliably follows the
-  consolidation JSON format on real conversations rather than the
-  synthetic transcripts tested here — `consolidation.py`'s parser is
-  deliberately forgiving specifically because this was a real open
-  question, not an assumption. Awaiting on-machine confirmation.
+  Plus an explicit "forget that" feature (`memory/forget.py`) — regex-
+  gated, small-model-classified, deletes on the spot rather than waiting
+  for session-end consolidation — scoped to what was actually asked for
+  (explicit forget language), not automatic contradiction detection,
+  which stays an open limitation. Sandbox-verified for real, not just
+  stub-shaped, unlike prior phases' backend integrations — sqlite-vec is
+  pure-C with no GPU/network dependency, so the DB layer (schema, CRUD,
+  the actual vec0 nearest-neighbor query, forget's deletion path) has a
+  real committed test suite (`orchestrator/memory/test_memory.py`, 29
+  tests, the first committed tests in this repo) rather than only ad hoc
+  sandbox verification. Two real sqlite-vec bugs found and fixed this
+  way, not anticipated from docs alone: a bound `LIMIT ?` parameter isn't
+  accepted on a vec0 KNN query (needs `k = ?` instead), and `facts`
+  needed an `id DESC` tiebreaker alongside `created_at DESC` since
+  `datetime('now')` only has 1-second resolution. `app.py`'s wiring
+  (recall + forget injection, consolidation firing on disconnect)
+  verified end-to-end through a real WebSocket connection with
+  recall/consolidation/LLM/TTS stubbed. Confirmed on the user's actual
+  machine: cross-session recall working naturally in conversation.
+  Also fixed as part of this phase: tray Quit (and Ctrl+C, and Task
+  Manager) hard-killing the orchestrator process was silently discarding
+  every session's consolidation, since `TerminateProcess` gives Python's
+  `finally` block no chance to run — found while answering an unrelated
+  question about the right way to close the app, not anticipated up
+  front. Fixed with a `/shutdown` HTTP handshake (graceful-then-kill),
+  Python half verified end-to-end against a real running server, Rust
+  half unverified (no toolchain in this sandbox) — see
+  `docs/DECISIONS.md` for the full trail, including a test that initially
+  passed for the wrong reason before being caught and fixed. Not
+  verified: a real Ollama instance actually serving `nomic-embed-text`
+  (the client's request/response handling is verified against a stub
+  matching current docs, not a real server), and whether `qwen3.5:9b`
+  reliably follows the consolidation/forget JSON formats on real
+  conversations rather than the synthetic transcripts tested here — both
+  parsers are deliberately forgiving specifically because this was a
+  real open question, not an assumption.
 - ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
   `read_clipboard` + OCR fallback, tool-calling loop live. On-demand "look at
   my screen" works for coding help, and the scheduled-capture /
