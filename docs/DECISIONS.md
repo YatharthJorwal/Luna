@@ -793,3 +793,81 @@ Also worth correcting for the record: the user's closing report described
 "the tts fumbling," but the actual log shows GPT-SoVITS responding `200,
 content-type='audio/wav'` successfully on every single request across the
 whole session -- TTS was never the problem here, only STT was.
+
+## Persona rewrite: roommate-tsundere with flustered-at-flirtation, anti-repetition
+
+Rewrote `persona.py`'s `SYSTEM_PROMPT` on request -- the original ("sharp,
+competent... senior dev looking over their shoulder") was read as flat and
+repetitive in practice, cycling the same 2-3 stock lines
+("quit staring at the screen," "what's the error"). Three changes:
+
+- Reframed from "senior dev colleague" to "roommate who never leaves" --
+  closer to the "roommate waifu" framing asked for, while keeping the
+  underlying tsundere mechanic (blunt exterior, genuine competence
+  underneath) intact.
+- Added an explicit flustered-at-flirtation reaction: non-denial denial,
+  visibly thrown off rhythm for a line or two before recovering -- a
+  named, deliberate trigger distinct from the existing "flustered by
+  sincere thanks" behavior, since the user specifically wants direct/
+  flirtatious comments to land differently than plain gratitude does.
+  Also explicit that when something genuinely matters (user's stuck,
+  stressed), the act drops immediately -- this was implicit before, made
+  it a named rule so a smaller local model doesn't lose it under the new,
+  more playful framing.
+- Added an explicit anti-repetition instruction, naming the exact
+  overused lines as examples of what to avoid. `qwen3.5:9b` is a small
+  model without much creative range by default at temperature 0.8 alone;
+  an explicit instruction against reaching for stock lines is worth more
+  here than raising temperature further would be (higher temperature
+  trades coherence for variety indiscriminately, whereas this targets the
+  actual failure mode directly).
+
+Not verified against the real model's output -- no local LLM in this
+sandbox to test tone/variety against. Purely a system-prompt change, no
+code path changed, so nothing to sandbox-verify beyond "the file still
+imports," which it does.
+
+## Bigger roadmap items, scoped not built: VRoid migration, UI overhaul, emotion system, environments
+
+A large batch of future-direction requests arrived in one message. None
+of these are started -- scoped into `docs/ROADMAP.md` as new phases so
+they're tracked and sequenceable, rather than either building blind or
+losing them. See ROADMAP.md itself for the phase-by-phase scope of each;
+recorded here is just the reasoning that ties them together and the
+cross-dependencies worth knowing about before picking an order:
+
+- **VRoid Studio migration** (2D Live2D -> 3D VRM avatar) is the single
+  biggest architectural change in this batch -- it replaces the entire
+  rendering stack (`pixi-live2d5` + Cubism -> a WebGL VRM
+  renderer, e.g. `@pixiv/three-vrm`), not an incremental change to
+  `src/main.ts`. Everything else visual (UI overhaul, emotion-driven
+  expressions, environments/backgrounds, cursor-poke reactions) is easier
+  to build well on top of a VRM model than on top of Live2D, since VRM's
+  blendshape/bone system is a more standard target for that kind of
+  control than Live2D's 2D parameter rig is. Worth sequencing this one
+  *before* the emotion-expression and environment work, not after, even
+  though it's the largest single lift -- otherwise that work risks being
+  built twice.
+- **Emotion system + face control** is a natural fit for the `emotion`
+  field that's already been sitting unused in the `speak` WebSocket
+  message since Phase 1 (`ws-client.ts`'s `SpeakMessage.emotion`,
+  commented as "Phase 6 will use it to pick a ... expression") -- this
+  isn't new protocol surface, it's finally using protocol that was already
+  designed in. The hardcoded-trigger idea (e.g. "confused" on an
+  out-of-capability request) is a reasonable v1 alongside LLM-driven
+  emotion tagging, and is genuinely easier to get first: an explicit code
+  path (this specific kind of request -> this specific emotion) rather
+  than depending on a small local model to reliably self-report emotional
+  state as structured output.
+- **UI overhaul** (drop the plain input box, add color) is the smallest,
+  most self-contained item in this batch -- pure `index.html`/`style.css`
+  work, no backend or protocol changes, no dependency on any of the
+  others. Genuinely could be done independently, any time.
+- **Two environments now, VR later** -- the user already correctly
+  identified VR as "currently unachievable" and scoped it out themselves;
+  recorded here only to confirm that's the right call, not a limitation
+  worth arguing with. The other two (draggable corner companion with
+  cursor-poke reactions; a fuller "sandbox" scene with backgrounds) both
+  benefit from VRM's more standard 3D scene/camera model over Live2D's
+  flat compositing, another point in favor of sequencing the VRoid
+  migration first.
