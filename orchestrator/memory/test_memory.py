@@ -25,7 +25,7 @@ import struct
 
 import pytest
 
-from . import consolidation, db, embeddings, recall, store
+from . import consolidation, db, embeddings, recall, store, forget
 
 
 def _fake_vector(seed: float, dim: int = 4) -> list[float]:
@@ -352,3 +352,134 @@ async def test_consolidation_keeps_facts_when_embedding_fails(memory_db, monkeyp
     await consolidation.consolidate_session(history)
 
     assert "prefers terse commit messages" in store.get_all_facts()
+
+
+# ---------------------------------------------------------------------------
+# store.py -- get_all_facts_with_ids / delete_facts (forget.py's building blocks)
+# ---------------------------------------------------------------------------
+
+
+def test_get_all_facts_with_ids_and_delete(memory_db):
+    store.add_fact("likes pizza")
+    store.add_fact("likes ice cream")
+    with_ids = store.get_all_facts_with_ids()
+    assert [content for _id, content in with_ids] == ["likes ice cream", "likes pizza"]
+
+    pizza_id = next(fact_id for fact_id, content in with_ids if content == "likes pizza")
+    store.delete_facts([pizza_id])
+    assert store.get_all_facts() == ["likes ice cream"]
+
+
+def test_delete_facts_empty_list_is_noop(memory_db):
+    store.add_fact("likes pizza")
+    store.delete_facts([])
+    assert store.get_all_facts() == ["likes pizza"]
+
+
+# ---------------------------------------------------------------------------
+# forget.py -- store is real (via memory_db fixture), llm.stream_reply stubbed
+# ---------------------------------------------------------------------------
+
+
+def _stub_forget_llm(monkeypatch, output_text: str):
+    async def fake_stream_reply(messages):
+        for ch in output_text:
+            yield ch
+
+    monkeypatch.setattr(forget.llm, "stream_reply", fake_stream_reply)
+
+
+@pytest.mark.asyncio
+async def test_forget_skips_llm_call_with_no_trigger_word(memory_db, monkeypatch):
+    """The cheap regex gate should mean a completely unrelated message
+    never even reaches the LLM -- if it did, this stub would raise and
+    fail the test, since it's never supposed to be called."""
+    store.add_fact("likes pizza")
+
+    async def should_not_be_called(messages):
+        raise AssertionError("LLM should never be called without a forget-intent trigger word")
+        yield  # pragma: no cover -- unreachable, keeps this an async generator
+
+    monkeypatch.setattr(forget.llm, "stream_reply", should_not_be_called)
+    result = await forget.maybe_forget("what's the weather like today")
+    assert result is None
+    assert store.get_all_facts() == ["likes pizza"]
+
+
+@pytest.mark.asyncio
+async def test_forget_removes_matched_fact(memory_db, monkeypatch):
+    store.add_fact("likes pizza")
+    store.add_fact("uses an RTX 3060")
+    _stub_forget_llm(monkeypatch, '{"remove_indices": [2]}')  # facts listed newest-first: [1]=RTX 3060, [2]=pizza
+
+    result = await forget.maybe_forget("forget that I like pizza")
+    assert result is not None
+    assert "likes pizza" in result
+    assert store.get_all_facts() == ["uses an RTX 3060"]
+
+
+@pytest.mark.asyncio
+async def test_forget_no_facts_referenced_removes_nothing(memory_db, monkeypatch):
+    store.add_fact("likes pizza")
+    _stub_forget_llm(monkeypatch, '{"remove_indices": []}')
+
+    result = await forget.maybe_forget("forget what I said about my ex")
+    assert result is None
+    assert store.get_all_facts() == ["likes pizza"]
+
+
+@pytest.mark.asyncio
+async def test_forget_ignores_out_of_range_indices(memory_db, monkeypatch):
+    """A hallucinated index the small model made up (e.g. it saw 1 fact
+    but said to remove index 5) should be dropped, not crash or delete the
+    wrong row."""
+    store.add_fact("likes pizza")
+    _stub_forget_llm(monkeypatch, '{"remove_indices": [5]}')
+
+    result = await forget.maybe_forget("forget that")
+    assert result is None
+    assert store.get_all_facts() == ["likes pizza"]
+
+
+@pytest.mark.asyncio
+async def test_forget_parses_json_wrapped_in_prose(memory_db, monkeypatch):
+    store.add_fact("likes pizza")
+    _stub_forget_llm(monkeypatch, 'Sure!\n```json\n{"remove_indices": [1]}\n```\nDone.')
+
+    result = await forget.maybe_forget("forget that I like pizza")
+    assert result is not None
+    assert store.get_all_facts() == []
+
+
+@pytest.mark.asyncio
+async def test_forget_falls_back_to_nothing_on_unparseable_output(memory_db, monkeypatch):
+    store.add_fact("likes pizza")
+    _stub_forget_llm(monkeypatch, "sorry, I can't do that in JSON")
+
+    result = await forget.maybe_forget("forget that I like pizza")
+    assert result is None
+    assert store.get_all_facts() == ["likes pizza"]
+
+
+@pytest.mark.asyncio
+async def test_forget_survives_llm_unreachable(memory_db, monkeypatch):
+    store.add_fact("likes pizza")
+
+    async def failing_stream_reply(messages):
+        raise forget.llm.LLMUnreachableError("no server")
+        yield  # pragma: no cover -- unreachable, keeps this an async generator
+
+    monkeypatch.setattr(forget.llm, "stream_reply", failing_stream_reply)
+    result = await forget.maybe_forget("forget that I like pizza")
+    assert result is None
+    assert store.get_all_facts() == ["likes pizza"]
+
+
+@pytest.mark.asyncio
+async def test_forget_with_no_facts_at_all_skips_llm_call(memory_db):
+    """Trigger word present but the DB has zero facts -- nothing to
+    possibly remove, so this should short-circuit before ever calling the
+    LLM (no stub installed here at all; a real call would raise since
+    there's no Ollama in this sandbox)."""
+    result = await forget.maybe_forget("forget everything about me")
+    assert result is None

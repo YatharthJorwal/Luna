@@ -18,6 +18,10 @@ Submodules:
 - `store.py`        -- CRUD + the actual vec0 nearest-neighbor query.
 - `recall.py`       -- turns a user message into a memory block for the
                         system prompt (facts + top-K relevant episodes).
+- `forget.py`       -- explicit "forget that" handling: a user directly
+                        asking to remove something already stored, not
+                        automatic contradiction detection (see its own
+                        docstring for that distinction).
 - `consolidation.py` -- runs at session end: LLM distills the session's
                         history into candidate facts + an episode summary.
 

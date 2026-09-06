@@ -971,3 +971,98 @@ against a stub server matching that shape, not a real running server),
 and whether `qwen3.5:9b`'s consolidation output holds up on real
 conversations rather than the handful of synthetic transcripts tested
 here.
+
+## Phase 3 follow-up: forget feature + hard-kill memory loss + persona tweak
+
+Same session, three separate things, done together since they surfaced
+together.
+
+**Explicit "forget that" feature** (`memory/forget.py`) -- scoped
+narrowly to what was actually asked: the user explicitly telling Luna to
+forget something, not automatic contradiction detection (a user saying
+"actually I like ice cream now" without ever saying "forget" is a
+different, harder problem -- correcting a stale fact instead of adding a
+contradictory new one -- left alone for now, same open limitation
+store.py's own docstring already named). Cheap regex gate first (most
+turns have zero forget-intent, so this keeps the common case free of any
+extra LLM call), then a small classification call given a *numbered*
+list of currently stored facts, asked which indices (not verbatim fact
+text -- a small model paraphrasing instead of quoting exactly would
+otherwise silently fail to match anything) the user means to remove.
+Deletion happens immediately (this turn, not waiting for session-end
+consolidation), and forget runs *before* recall in the same turn so a
+just-removed fact can't immediately resurface in that same turn's recall
+block. The classification call only decides *which* facts to remove --
+it doesn't write the in-character acknowledgment itself, since it has no
+persona context; that's left to the main Luna call via an injected
+instruction fragment, so the actual spoken acknowledgment comes from the
+model that has her full voice, not a flat classifier's own text.
+
+**Hard-kill was silently losing every session's memory, on every quit
+path.** Found while answering the user's own question about the right
+way to close the app -- not something anticipated or asked about
+directly, surfaced by actually checking `lib.rs`'s quit handler instead
+of assuming Ctrl+C was simply "the wrong way" for the usual reasons
+(orphaned processes) and leaving it there. `child.kill()` on Windows is
+an unconditional `TerminateProcess` -- no signal, no chance for Python's
+own `finally` block (and therefore `consolidate_session()`) to run at
+all. Every quit -- tray Quit included, not just Ctrl+C -- was silently
+discarding that session's Phase 3 memory before this fix.
+
+Fixed with a graceful-shutdown-then-kill handshake: orchestrator/app.py
+gains a `/shutdown` POST endpoint that sets an `asyncio.Event`, which
+`ws_endpoint`'s main loop races against `websocket.receive_json()` (via
+`asyncio.wait`, not a plain blocking receive) so an idle connection
+actually notices it instead of sitting there forever. Noticing it makes
+the loop `break` the same way a real disconnect would, running the exact
+same `finally` teardown (consolidation included). The endpoint then waits
+a bounded ~5s for that teardown to finish before calling `os._exit(0)`
+itself -- deliberately not uvicorn's own graceful-shutdown machinery
+(`server.should_exit`), since this is a single-user local app, not a
+server needing a zero-downtime drain, and an explicit self-bounded
+teardown is simpler to test and reason about. `lib.rs`'s quit handler now
+tries a fire-and-forget raw-TCP HTTP POST to `/shutdown` first, polls
+(same ~5s bound) whether the labeled child processes have exited on their
+own, then hard-kills whatever's still alive -- GPT-SoVITS has no graceful
+path of its own and always falls into that last step, and the
+orchestrator falls back to it too if it doesn't finish in time, so
+quitting never hangs or leaves an orphan either way.
+
+Verified for real, not just plausible-looking: the Python half was
+exercised end-to-end against a real running uvicorn server in a
+background thread, with a real websocket client -- an idle connection
+sitting on the receive loop, a `/shutdown` POST arriving concurrently,
+the connection closing itself cleanly, `consolidate_session()` actually
+receiving the completed turn's real history, and the scheduled
+`os._exit(0)` callback actually firing. The first attempt at this test
+accidentally validated the wrong thing entirely -- with no real Ollama in
+the sandbox, the initial turn hit the LLM-unreachable fallback line,
+which tried to speak via `pyttsx3`, which crashed outright (no `espeak`
+installed in this Linux sandbox) -- and that unhandled exception tore the
+connection down via `finally` before `/shutdown` was ever called,
+making the test pass for a reason that had nothing to do with the
+shutdown mechanism at all. Caught by actually reading what happened
+rather than trusting a green checkmark, fixed by stubbing `llm.
+stream_reply`/`synthesize` so the turn completes cleanly first, and
+re-verified. The Rust half (`graceful_shutdown_then_kill()`,
+`request_orchestrator_shutdown()`, and the `ManagedChildren` type change
+to carry labels) is **not** verified at all -- no Rust toolchain in this
+sandbox, flagged explicitly at its own definition in `lib.rs`, same
+unverified status the process-spawning block started in before its own
+first real `cargo build`.
+
+**Persona tweak** -- exactly one paragraph inserted into
+`persona.py`'s `SYSTEM_PROMPT`, nothing else touched (confirmed via
+`git diff` showing a single clean insertion), per explicit instruction
+not to rewrite anything else in it. Addresses a real pattern the user
+noticed: the model defaulting almost every line to a "what do you
+actually want" / "you broke the code again" register, reading as an
+annoyed task-queue bot rather than a companion who's just around. The
+added paragraph explicitly names those two example lines and tells the
+model they're for when that's genuinely what's happening, not a resting
+state -- steering toward ordinary-life conversation (games, food, how
+the day went, random observations) as the default, while leaving the
+tsundere flirt-fluster behavior, the stress/swearing-when-annoyed
+behavior, and the "drop the act when it actually matters" behavior
+completely as-is, since the user explicitly said those parts already feel
+natural and shouldn't change.
