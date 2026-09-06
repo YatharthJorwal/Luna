@@ -871,3 +871,29 @@ cross-dependencies worth knowing about before picking an order:
   benefit from VRM's more standard 3D scene/camera model over Live2D's
   flat compositing, another point in favor of sequencing the VRoid
   migration first.
+
+## Persona swapped for a user-authored version
+
+The persona rewrite two entries above was mine; the user asked for a
+handoff prompt to get a version from a different LLM instead, then pasted
+that result back for me to implement verbatim -- done, replacing my
+version entirely rather than merging the two. Implemented exactly as
+given, preserving the author's wording (including deliberately allowing
+mild profanity -- "swear naturally... words like fuck or crap are fine in
+those moments" -- in specific frustration/blunder moments, which wasn't
+in my version). Not evaluated for tone/quality against real model output
+here either, same standing caveat as the first persona rewrite -- no
+local LLM in this sandbox to actually hear it delivered.
+
+Also worth recording since it caused real confusion: the previous
+persona-rewrite-plus-roadmap-scoping bundle *did* apply successfully on
+the user's machine (a real three-way merge with their own concurrent
+Cargo.lock/Cargo.toml commit, completed automatically with no conflicts)
+-- but that merge commit was never separately `git push`ed afterward. A
+fresh clone (done from a new chat session, correctly checking ground
+truth before trusting a stale description) found origin's tip was still
+the pre-merge Cargo.lock commit, made it look like the earlier work had
+been lost entirely. It hadn't -- it was sitting in the user's local repo,
+un-pushed. Worth remembering: every local merge from a pulled bundle
+needs its own explicit `git push` afterward, same as a plain commit
+does -- pulling a bundle doesn't imply pushing the result anywhere.
