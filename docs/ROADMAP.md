@@ -114,8 +114,46 @@ awaiting on-machine confirmation · ⬜ not started)
 - ⬜ **Phase 6 — Personality & perf pass.** Optional split into two-pass
   planner/persona, voice tuning (refining the GPT-SoVITS voice integrated in
   Phase 2.5 — retraining/re-recording reference audio, emotional range —
-  not integrating it fresh), memory quality tuning, profile resource usage
-  with a game running to confirm she doesn't cost FPS.
+  not integrating it fresh; also where a text-normalization pass for
+  non-standard interjections like "Tch" would go, since that's a
+  pronunciation problem more than a training problem — see
+  `docs/DECISIONS.md`), memory quality tuning, profile resource usage
+  with a game running to confirm she doesn't cost FPS. Persona rewrite
+  (roommate-tsundere framing, flustered-at-flirtation, anti-repetition —
+  see `docs/DECISIONS.md`) already done ad hoc, ahead of the rest of this
+  phase.
+- ⬜ **Phase 7 — VRM avatar migration.** Replace the Live2D rendering stack
+  (`pixi-live2d5` + Cubism) with a WebGL 3D VRM renderer (e.g.
+  `@pixiv/three-vrm`) so custom VRoid Studio models can be used instead of
+  a 2D Live2D rig. The single biggest architectural change on the roadmap
+  — not incremental, a new rendering pipeline in `src/main.ts` — and
+  deliberately sequenced before Phases 8–10 below, since all three build
+  more naturally on VRM's blendshape/bone/3D-scene model than on Live2D's
+  flat 2D compositing. `src/lipsync.ts`'s audio-driven mouth movement will
+  need a VRM-blendshape equivalent of whatever it currently drives on the
+  Live2D model.
+- ⬜ **Phase 8 — Emotion system + expression control.** Finally uses the
+  `emotion` field that's been sitting unused in the `speak` WebSocket
+  message since Phase 1 (`ws-client.ts`'s `SpeakMessage.emotion`) to drive
+  VRM blendshapes/facial expressions (bored, angry, embarrassed, happy,
+  sad, confused, etc.), gradually shifting based on the conversation
+  rather than snapping per-line. Some triggers hardcoded (e.g. "confused"
+  on a request outside what she can actually do) rather than left entirely
+  to the LLM self-reporting emotional state, which a small local model
+  won't do reliably as structured output. Depends on Phase 7 (VRM) being
+  done first — mapping emotions to Live2D parameters would be
+  throwaway work otherwise.
+- ⬜ **Phase 9 — UI overhaul.** Replace the plain input box/HUD with
+  something more visually considered — color, less utilitarian chrome.
+  Pure `index.html`/`style.css` work, no protocol or backend changes, no
+  dependency on any other phase — can happen independently, any time.
+- ⬜ **Phase 10 — Environments.** Two of the three requested (VR explicitly
+  scoped out by the user themselves as currently unachievable): (1) desktop
+  companion mode — draggable corner presence, reacting to cursor
+  pokes/touches (Talking Tom-style); (2) a fuller sandbox scene she stands
+  in, with selectable backgrounds (classroom, home, park, etc.) instead of
+  a blank canvas. Both easier on a 3D VRM scene/camera than Live2D's flat
+  compositing — depends on Phase 7.
 
 ## Open decisions
 
