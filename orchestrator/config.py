@@ -56,11 +56,26 @@ class SessionConfig:
 
 
 @dataclass(frozen=True)
+class EmbeddingConfig:
+    base_url: str
+    model: str
+    dimension: int
+
+
+@dataclass(frozen=True)
+class MemoryConfig:
+    db_path: str
+    recall_top_k: int
+    embedding: EmbeddingConfig
+
+
+@dataclass(frozen=True)
 class Config:
     llm: LLMConfig
     tts: TTSConfig
     stt: STTConfig
     session: SessionConfig
+    memory: MemoryConfig
 
 
 def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
@@ -93,11 +108,15 @@ def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
     raw_tts = dict(raw["tts"])
     raw_tts["gpt_sovits"] = GPTSoVITSConfig(**raw_tts["gpt_sovits"])
 
+    raw_memory = dict(raw["memory"])
+    raw_memory["embedding"] = EmbeddingConfig(**raw_memory["embedding"])
+
     return Config(
         llm=LLMConfig(**raw["llm"]),
         tts=TTSConfig(**raw_tts),
         stt=STTConfig(**raw["stt"]),
         session=SessionConfig(**raw["session"]),
+        memory=MemoryConfig(**raw_memory),
     )
 
 

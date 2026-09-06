@@ -8,6 +8,7 @@ src-tauri/target/
 # Python
 orchestrator/venv/
 orchestrator/__pycache__/
+orchestrator/**/__pycache__/
 orchestrator/*.pyc
 
 # OS
@@ -27,5 +28,9 @@ src-tauri/gen/
 # Output of spawn_backend_processes() in src-tauri/src/lib.rs -- generated
 # every run, not source.
 /logs/
+
+# Phase 3 memory DB -- the user's own facts/episodes, created on first use,
+# not source and not something to ship/share between machines.
+orchestrator/data/
  
  

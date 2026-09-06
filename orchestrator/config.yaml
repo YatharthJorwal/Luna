@@ -94,5 +94,32 @@ stt:
 session:
   # How many past (user, assistant) turns to keep in the LLM's context
   # before dropping the oldest. Session-only -- gone on disconnect. Durable
-  # memory across restarts is Phase 3.
+  # memory across restarts is Phase 3 (see `memory` below).
   max_history_turns: 20
+
+memory:
+  # Phase 3 -- persistent memory (facts + episode summaries), surviving
+  # app restarts unlike `session` above. SQLite file, relative to
+  # orchestrator/ (created on first use, gitignored -- see
+  # docs/DECISIONS.md for why it lives here instead of a platform data
+  # dir, same "repo-relative, runs from source" reasoning as everything
+  # else in this project).
+  db_path: "data/memory.db"
+  # How many past episode summaries get semantically recalled per turn,
+  # nearest-first by embedding distance. Small on purpose -- a few
+  # genuinely relevant callbacks, not a history dump.
+  recall_top_k: 5
+  embedding:
+    # Reuses the same Ollama instance the LLM talks to -- one running
+    # server, not a second process. Override if embeddings ever move to a
+    # separate server.
+    base_url: "http://127.0.0.1:11434"
+    # nomic-embed-text: small (~274MB), Apache-2.0, well-established --
+    # fits in VRAM alongside qwen3.5:9b with room to spare (see
+    # docs/MODELS.md). Pull it first: `ollama pull nomic-embed-text`.
+    model: "nomic-embed-text"
+    # Must match the configured model's actual output width -- 768 for
+    # nomic-embed-text. sqlite-vec's episode_vectors table bakes this in
+    # at creation time; see memory/db.py's dimension-mismatch check for
+    # what happens if this and the model ever disagree.
+    dimension: 768

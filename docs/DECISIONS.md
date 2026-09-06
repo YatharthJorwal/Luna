@@ -897,3 +897,77 @@ been lost entirely. It hadn't -- it was sitting in the user's local repo,
 un-pushed. Worth remembering: every local merge from a pulled bundle
 needs its own explicit `git push` afterward, same as a plain commit
 does -- pulling a bundle doesn't imply pushing the result anywhere.
+
+## Phase 3 -- persistent memory
+
+Scoped as "full semantic" on purpose, not the simpler facts-only
+alternative offered alongside it: SQLite + `sqlite-vec` + a real
+embedding model, matching what `docs/ARCHITECTURE.md` originally
+specified rather than a scaled-down v1. `nomic-embed-text` via Ollama
+was the pick -- see `docs/MODELS.md` for the sizing/API-shape reasoning.
+
+**Design decisions worth recording:**
+- Recall is injected as a fresh, ephemeral system message per turn --
+  built in `memory/recall.py`, spliced into the LLM call in `app.py`,
+  *never* written into the persisted `history` list. Considered just
+  appending it into history directly (simpler code), rejected because it
+  would (a) go stale immediately next turn, (b) duplicate/compound every
+  single turn since nothing ever removes an old one, and (c) get fed
+  straight back into `consolidation.py`'s session-summarization pass as
+  if the memory block were something the user or Luna actually said.
+- The recall block's own wording explicitly tells the model not to refer
+  to it as "notes" or "memory" or read it aloud -- an earlier draft
+  didn't have this line, and on reflection a small model given a block
+  literally labeled "Known facts about the user" without that steering
+  seemed likely to just recite it back rather than act on it naturally
+  (not confirmed against a real model in this sandbox -- a real thing to
+  watch for on first on-machine test).
+- `consolidation.py`'s JSON parsing is deliberately forgiving (whole-output
+  parse, then regex-extracted `{...}` block, then a raw-text fallback
+  episode summary) rather than a strict `json.loads` that throws the
+  session's memory away over one stray sentence -- `qwen3.5:9b` is a
+  small model, and whether it reliably follows the requested JSON shape
+  on real conversations (vs. the synthetic transcripts tested here) is a
+  genuinely open question, not an assumption. If this turns out to fail
+  often in practice, that's a signal to revisit (a smaller/tighter schema,
+  a system prompt tweak, grammar-constrained decoding if the backend
+  supports it), not a sign the fallback logic itself is wrong.
+
+**Real bugs found via sandbox testing, not anticipated from docs alone**
+(this is the part of Phase 3 that's actually verified for real rather
+than stub-shaped, unlike prior phases' backend integrations -- sqlite-vec
+is pure-C with no GPU/network dependency, so a real committed test suite
+was possible here, see `orchestrator/memory/test_memory.py`, 19 tests,
+first committed tests in this repo):
+1. `sqlite-vec`'s `vec0` KNN queries reject a bound `LIMIT ?` parameter
+   outright (`OperationalError: A LIMIT or 'k = ?' constraint is required
+   on vec0 knn queries`), even though a *literal* `LIMIT 5` works fine.
+   The accepted parameterized form is `WHERE embedding MATCH ? AND k = ?`
+   instead -- not documented anywhere obvious, found by the query
+   actually failing in a test, not by reading ahead of time.
+2. `facts`' `ORDER BY created_at DESC` alone isn't a stable ordering --
+   `datetime('now')` only has 1-second resolution, so several `add_fact()`
+   calls in the same second (exactly what `consolidation.py` does,
+   writing multiple facts from one session back-to-back) can tie, coming
+   back in an arbitrary relative order. Needed `id DESC` as an explicit
+   tiebreaker. Also only surfaced from a real test failure.
+3. (Test-authoring bug, not a code bug, recorded anyway since it caused a
+   real scare mid-session:) an app.py wiring check initially expected 3
+   `speak` messages for a 3-delta stub LLM reply, then failed again
+   expecting 4 messages in a reconstructed LLM call -- both were wrong
+   arithmetic/assumptions in the *test*, not regressions. The first
+   ignored `chunking.py`'s `MIN_CHUNK_CHARS` (a short stub sentence never
+   clears the mid-stream chunking threshold, so it only ever flushes once
+   at the end -- correct existing Phase 2 behavior); the second miscounted
+   `history[:-1] + [memory] + history[-1:]`'s actual length. Both were
+   caught and fixed by re-reading the actual code instead of trusting the
+   first assumption, the same standard this file already holds
+   sandbox-verification to elsewhere.
+
+**Not verified, and said so plainly in `README.md`:** a real Ollama
+instance actually serving `nomic-embed-text` (the client's request/
+response handling is checked against current Ollama docs and exercised
+against a stub server matching that shape, not a real running server),
+and whether `qwen3.5:9b`'s consolidation output holds up on real
+conversations rather than the handful of synthetic transcripts tested
+here.

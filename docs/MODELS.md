@@ -91,3 +91,32 @@ share the 3060 with an LLM that's already sized to nearly fill it. Also
 confirmed against the same `riko_project` reference: `faster_whisper.
 WhisperModel(model_size, device, compute_type)`, `.transcribe(path)`
 returns segments to join into text — about as simple as local STT gets.
+
+## Embeddings (Phase 3 memory recall)
+
+**nomic-embed-text** via Ollama — 768-dim, Apache-2.0, ~274MB. Picked
+over a heavier/higher-quality alternative (e.g. `mxbai-embed-large`)
+specifically because it's small enough to sit in VRAM alongside
+`qwen3.5:9b` with room to spare, same reasoning as the STT/LLM VRAM
+budget above, and because reusing the Ollama instance already running
+for the LLM means zero new server processes — `ollama pull
+nomic-embed-text` is the only new setup step, no new Python ML
+dependency to manage.
+
+Confirmed the actual request/response shape against current Ollama docs
+before writing `orchestrator/memory/embeddings.py` (same standard
+`docs/DECISIONS.md`'s `think`-flag investigation already held itself to
+— don't assume, check): `POST {base_url}/api/embed` with
+`{"model": "nomic-embed-text", "input": ["text"]}` (a list, even for one
+string), `{"embeddings": [[...]]}` back. Deliberately not the older
+`/api/embeddings` (singular `prompt`/`embedding` fields) — current docs
+mark that legacy and it's a common source of silent 404s on newer
+installs.
+
+Swappable via `orchestrator/config.yaml`'s `memory.embedding` block, but
+the vector width (`memory.embedding.dimension`) is baked into the
+`episode_vectors` sqlite-vec table at creation time — swapping models
+after episodes already exist needs either a fresh DB or reverting the
+model, see `orchestrator/memory/db.py`'s dimension-mismatch check (prints
+a clear startup warning rather than letting this surface as a cryptic
+sqlite-vec error mid-turn).

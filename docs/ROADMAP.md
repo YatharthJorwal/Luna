@@ -24,8 +24,9 @@
 - Coding-help and gaming-help as the two flagship use cases.
 - **STT (voice input from the user)**, via faster-whisper — added mid-build
   (was explicitly out of scope in the original Phase 0 spec below; see
-  Phase 2.5 and `docs/DECISIONS.md` for when/why this changed). Built and
-  sandbox-verified as of Phase 2.5; awaiting on-machine confirmation.
+  Phase 2.5 and `docs/DECISIONS.md` for when/why this changed). Confirmed
+  working end-to-end on the user's machine as of Phase 2.5, including a
+  full voice turn actually completing (currently CPU, see Phase 2.5).
 
 ### Explicitly out of scope (v1)
 - No continuous/always-on camera or screen streaming into context.
@@ -51,7 +52,7 @@ awaiting on-machine confirmation · ⬜ not started)
   `docs/DECISIONS.md` for what changed from the original plan while building
   this (notably: Live2D rendering library swap, manual lipsync). Confirmed
   working on the user's machine.
-- 🔶 **Phase 2 — Brain online.** Wire the local LLM/VLM server in (see
+- ✅ **Phase 2 — Brain online.** Wire the local LLM/VLM server in (see
   `docs/MODELS.md` for the pick), single-pass tsundere persona prompting,
   streamed text → TTS → lip-sync. Real conversation, session-only memory, no
   tools yet. Built and verified end-to-end in the sandbox (real LLM client
@@ -60,7 +61,7 @@ awaiting on-machine confirmation · ⬜ not started)
   running on the user's machine against a real local LLM (`qwen3-vl:8b`
   initially); two real bugs found on that first run (lipsync never moved,
   slight audio overlap between chunks) and fixed — see `docs/DECISIONS.md`.
-- 🔶 **Phase 2.5 — Voice input/output upgrade.** Pulled forward from Phase 6
+- ✅ **Phase 2.5 — Voice input/output upgrade.** Pulled forward from Phase 6
   mid-build once a usable voice reference sample was in hand. GPT-SoVITS
   backend in `orchestrator/tts.py` is built, verified against a stub server
   matching the real API contract, and confirmed working end-to-end on the
@@ -93,16 +94,42 @@ awaiting on-machine confirmation · ⬜ not started)
   tray Quit, needed a `PYTHONIOENCODING`/`PYTHONUTF8` fix the user found
   themselves for a Windows console-encoding crash), replacing the old
   three-terminal `start-luna.bat` with a single `npm run tauri dev` —
-  confirmed compiling and running end-to-end on the user's machine. Not
-  yet confirmed: a full voice turn actually completing on CPU after all
-  of the above — next real-machine round.
+  confirmed compiling and running end-to-end on the user's machine.
+  Confirmed on the user's machine: a full voice turn actually completing
+  end-to-end on CPU, mic button and F9 push-to-talk both.
   See `docs/MODELS.md` for the STT API shapes and `docs/DECISIONS.md` for
   the device/lazy-load/hotkey/CUDA/launcher choices and the full bug
   trail. Also folds in the model swap to `qwen3.5:9b` (see
   `docs/DECISIONS.md`), done as part of this same push since it surfaced
   from the same real-hardware testing round.
-- ⬜ **Phase 3 — Persistent memory.** SQLite facts/episodes, consolidation job,
-  recall injected into the system prompt each turn.
+- 🔶 **Phase 3 — Persistent memory.** SQLite facts/episodes with
+  `sqlite-vec` for semantic recall over past-episode summaries (embedding
+  via Ollama's `nomic-embed-text`, `/api/embed` request shape checked
+  against current docs rather than assumed), a consolidation job that
+  distills each session into candidate facts + one episode summary on
+  disconnect, and recall injected into the LLM call each turn as an
+  ephemeral system message (never written into persisted session
+  history, so it can't grow stale or leak into consolidation's own input).
+  Sandbox-verified for real, not just stub-shaped, unlike prior phases'
+  backend integrations — sqlite-vec is pure-C with no GPU/network
+  dependency, so the DB layer (schema, CRUD, the actual vec0
+  nearest-neighbor query) has a real committed test suite
+  (`orchestrator/memory/test_memory.py`, 19 tests, the first committed
+  tests in this repo) rather than only ad hoc sandbox verification. Two
+  real sqlite-vec bugs found and fixed this way, not anticipated from
+  docs alone: a bound `LIMIT ?` parameter isn't accepted on a vec0 KNN
+  query (needs `k = ?` instead), and `facts` needed an `id DESC`
+  tiebreaker alongside `created_at DESC` since `datetime('now')` only has
+  1-second resolution. `app.py`'s wiring (recall injection, consolidation
+  firing on disconnect) verified end-to-end through a real WebSocket
+  connection with recall/consolidation/LLM/TTS stubbed. Not verified: a
+  real Ollama instance actually serving `nomic-embed-text` (the client's
+  request/response handling is verified against a stub matching current
+  docs, not a real server), and whether `qwen3.5:9b` reliably follows the
+  consolidation JSON format on real conversations rather than the
+  synthetic transcripts tested here — `consolidation.py`'s parser is
+  deliberately forgiving specifically because this was a real open
+  question, not an assumption. Awaiting on-machine confirmation.
 - ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
   `read_clipboard` + OCR fallback, tool-calling loop live. On-demand "look at
   my screen" works for coding help, and the scheduled-capture /

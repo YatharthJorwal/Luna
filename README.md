@@ -35,44 +35,47 @@ additions -- no `vendor/` or Live2D asset changes this round.
 
 This was built in a Linux sandbox with no GUI, no Rust toolchain, no GPU,
 and no network path to Hugging Face (where faster-whisper's model weights
-live), so:
+live) or to a real running Ollama instance, so:
 
+- **Confirmed on the user's actual machine, full stack:** Phases 1 and 2,
+  and now Phase 2.5 (GPT-SoVITS voice cloning + faster-whisper STT, both
+  mic button and F9 global push-to-talk) -- a complete voice turn
+  end-to-end, one-command launch (Tauri spawning both backend processes
+  hidden), all confirmed working for real. STT currently runs on CPU
+  after a missing-CUDA-DLL issue on this machine (see `docs/DECISIONS.md`).
 - **Verified for real, in this environment:** the orchestrator's LLM
   client (`orchestrator/llm.py`) was run against hand-written stub servers
   matching both the OpenAI-compatible and Ollama-native streaming
-  protocols; `orchestrator/stt.py`'s transcription logic (segment-joining,
-  empty-audio handling, config passthrough, lazy model construction, and
-  now `STTError` wrapping so a backend failure gets surfaced instead of
-  silently killing the connection) was verified against a stubbed
-  `WhisperModel`/a stubbed failing `transcribe()`; and `app.py`'s
-  `user_audio` WebSocket handling was driven end-to-end through a real
-  WebSocket connection (transcript echoed back, turn runs on a non-empty
-  result, silence/malformed-audio/STT-failure all handled without dropping
-  the connection) with stt/llm/tts all stubbed -- same methodology as the
-  LLM verification above. The frontend passes a full `npm run build` (real
-  `tsc` typecheck + Vite production build, zero errors), the same bar
-  every phase has been held to.
-- **Confirmed on the user's actual machine:** the mic button renders and
-  is clickable and correctly triggers WebView2's microphone permission
-  prompt; F9 push-to-talk and the process-spawning global-shortcut Rust
-  code both compile clean after one real fix each (E0277 on the hotkey
-  code -- see `docs/DECISIONS.md`); the STT silent-failure bug above was
-  found from this exact symptom on the user's real machine, not predicted
-  in advance.
-- **Not verified, because I had no way to:** actual faster-whisper model
-  weights or CUDA execution (no GPU, no Hugging Face access from this
-  sandbox -- the *code path* is verified, transcription quality and
-  whether CUDA init even succeeds on the user's 3060 aren't), a real
-  microphone actually capturing intelligible audio start-to-finish through
-  a completed voice turn, and the new `spawn_backend_processes()` process-
-  supervision Rust code (no Rust toolchain here at all -- see the note at
-  the top of `src-tauri/src/lib.rs`; given the hotkey code needed a real
-  fix despite similar care, expect this to need at least one too). Same
-  standing caveats as before on the visual/audio side otherwise -- no
-  display, no WebGL here, so seeing/hearing all of this actually work
-  together (mic click or F9 → she visibly hears you → she replies in her
-  cloned voice, all auto-started by one command) is still
-  first-run-on-your-machine territory.
+  protocols; `orchestrator/stt.py`'s transcription logic against a
+  stubbed `WhisperModel`; `app.py`'s WebSocket handling driven end-to-end
+  through a real connection with stt/llm/tts stubbed. The frontend passes
+  a full `npm run build`. **Phase 3 memory's DB layer
+  (`orchestrator/memory/db.py`/`store.py`) is fully, honestly verified,
+  not just stub-shaped** -- sqlite-vec is a pure local C library with no
+  GPU/network dependency, so its schema, facts/episodes CRUD, and the
+  actual vec0 nearest-neighbor query all ran for real against real
+  temp-file databases (see `orchestrator/memory/test_memory.py`, 19
+  passing tests -- the first committed test file in this repo, unlike
+  every prior phase's ad hoc sandbox verification, precisely because this
+  layer doesn't carry the "can't verify without real hardware" caveat).
+  `memory/embeddings.py`'s request/response handling was verified against
+  a stub HTTP server built to match Ollama's current (checked, not
+  assumed) `/api/embed` shape, and `app.py`'s Phase 3 wiring (recall
+  injected per-turn without polluting persisted history, consolidation
+  firing once on disconnect) was driven through a real WebSocket
+  connection with recall/consolidation/LLM/TTS all stubbed.
+- **Not verified, because I had no way to:** actual faster-whisper CUDA
+  execution on the 3060 (currently moot -- running on CPU by choice, see
+  above); a real Ollama instance actually serving `nomic-embed-text` (the
+  request/response *shape* is verified against current docs, not a real
+  server); and, the one Phase 3 piece with a real open question --
+  whether `qwen3.5:9b` (a small model) reliably follows the
+  consolidation JSON format in practice on real conversations rather than
+  the handful of synthetic transcripts tested here. `consolidation.py`'s
+  parser is deliberately forgiving specifically because this wasn't
+  something to assume would just work; if it turns out to fail often in
+  practice, that's a real signal to revisit, not a sign the fallback
+  logic is wrong.
 
 Expect to still fix small things on first run -- normal for anything that's
 never touched real model weights, a real mic, or a real Rust compiler, not
@@ -103,6 +106,15 @@ a sign something's fundamentally wrong.
   pointing `llm.base_url` at your llama.cpp server's OpenAI-compatible
   endpoint (usually `http://127.0.0.1:8080/v1`) -- see `docs/DECISIONS.md`
   for why the native/OpenAI split exists at all.
+- **Ollama embedding model, for Phase 3 memory** -- same Ollama install
+  above, just pull one more model:
+  ```
+  ollama pull nomic-embed-text
+  ```
+  (~274MB -- small enough to sit in VRAM alongside qwen3.5:9b with room to
+  spare.) Used for semantic recall of past-session summaries; if this
+  isn't pulled, memory degrades to facts-only recall rather than the
+  orchestrator failing to start -- see `orchestrator/memory/recall.py`.
 - **GPT-SoVITS** (optional -- `tts.engine` falls back to `pyttsx3`
   automatically if its server isn't reachable) -- run its own API server
   per https://github.com/RVC-Boss/GPT-SoVITS, then fill in
@@ -315,11 +327,36 @@ Still applies from Phase 1 -- unchanged:
   (browsers sometimes require a user gesture before audio plays; typing in
   the input box and hitting Enter should count, but worth confirming) or a
   browser blocking `AudioContext` until user interaction.
+- **Memory recall seems to be missing / facts never come up:** check
+  `logs/orchestrator.log` for `memory recall:` lines -- most likely
+  `nomic-embed-text` hasn't been pulled yet (`ollama pull
+  nomic-embed-text`), or `ollama serve` isn't reachable at all. Facts
+  (not needing an embedding) should still show up even if only episode
+  recall is degraded; if *neither* ever shows up, confirm
+  `orchestrator/data/memory.db` actually exists and is growing after a
+  few sessions -- if it's not being created at all, check for a
+  `MemoryUnavailableError` in the log around startup.
+- **Startup prints a `WARNING` about `episode_vectors` / embedding
+  dimension:** you (or a config change) swapped the embedding model
+  after episodes already existed with the old model's vector width --
+  see the warning's own text for the fix (revert the model, or accept
+  losing existing episode memory by deleting `orchestrator/data/memory.db`).
 
-## Next: Phase 3
+## Running the tests
 
-Once STT is confirmed working on real hardware, Phase 2.5 is done. Then:
-persistent memory -- SQLite facts/episodes, a consolidation job, and
-recall injected into the system prompt each turn -- so she remembers
-things across restarts, not just within one session. Nothing in the
-frontend needs to change again; it's orchestrator-only work.
+The memory subsystem (`orchestrator/memory/`) has a real, non-stub test
+suite -- sqlite-vec is a pure local library with no GPU/network
+dependency, unlike the LLM/TTS/STT backends, so it's honestly testable
+without real hardware:
+```
+cd orchestrator
+pip install -r requirements-dev.txt
+python -m pytest memory/test_memory.py -v
+```
+
+## Next
+
+Phase 3 (persistent memory) is done -- see `docs/ROADMAP.md` for what's
+scoped next (Phases 7-10: VRM/VRoid avatar migration, an emotion system,
+a UI overhaul, and environments/cursor-reactions) and `docs/DECISIONS.md`
+for why they're sequenced the way they are.

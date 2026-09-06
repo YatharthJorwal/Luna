@@ -10,9 +10,14 @@ instead of waiting for the whole reply -- each chunk goes to the shell as
 its own `speak` message (src/main.ts queues and plays them back to back,
 not overlapping).
 
-Memory is session-only: history lives in a plain Python list tied to the
-websocket connection and is gone when it disconnects. Durable memory
-across restarts is Phase 3 -- no tools yet either, that's Phase 4.
+`history` itself is still session-only: a plain Python list tied to the
+websocket connection, gone when it disconnects. Phase 3 adds durable
+memory *alongside* that, not instead of it: each turn gets a fresh recall
+block (facts + semantically relevant past-episode summaries, see
+memory/recall.py) injected into that turn's LLM call only, and once the
+connection actually ends, memory/consolidation.py distills the whole
+session into new facts + one episode summary for next time. No tool-calling
+yet either way -- that's Phase 4.
 
 Phase 2.5 adds voice input: a `user_audio` message (base64 WAV/WebM bytes
 from the frontend's MediaRecorder) is transcribed via faster-whisper
@@ -32,6 +37,7 @@ import llm
 import stt
 from chunking import extract_ready_chunks, flush
 from config import CONFIG
+from memory import consolidation, recall
 from persona import SYSTEM_PROMPT, apply_persona_pass
 from tts import synthesize
 
@@ -93,10 +99,25 @@ async def _run_turn(
     between the two."""
     history.append({"role": "user", "content": user_text})
 
+    # Phase 3: a fresh memory block built for this turn only -- inserted
+    # into what actually gets sent to the LLM, never into `history` itself
+    # (see memory/recall.py's docstring for why: history is the real
+    # conversation, and this would otherwise go stale, double up every
+    # turn, and get fed back into consolidation.py as if it were something
+    # someone actually said). Falls back to plain `history` unchanged if
+    # there's nothing to recall yet (fresh DB) or memory's unavailable --
+    # a turn should never fail or even look different structurally just
+    # because memory had nothing to add.
+    memory_block = await recall.build_recall_context(user_text, CONFIG.memory.recall_top_k)
+    if memory_block:
+        messages_for_llm = history[:-1] + [{"role": "system", "content": memory_block}] + history[-1:]
+    else:
+        messages_for_llm = history
+
     buffer = ""
     reply_parts: list[str] = []
     try:
-        async for delta in llm.stream_reply(history):
+        async for delta in llm.stream_reply(messages_for_llm):
             buffer += delta
             chunks, buffer = extract_ready_chunks(buffer)
             for chunk in chunks:
@@ -167,9 +188,31 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 continue
     except WebSocketDisconnect:
         pass
+    finally:
+        # Phase 3: distill this session into durable memory (facts +
+        # one episode summary) once it's actually over. In `finally`, not
+        # just the `except WebSocketDisconnect` branch, so it also runs on
+        # a clean/unexpected exit either way. Wrapped defensively even
+        # though consolidate_session() already catches its own known
+        # failure modes internally (LLM/embedding unreachable) -- a
+        # session ending should never be blocked by memory work, and an
+        # unforeseen bug here shouldn't take down connection teardown.
+        try:
+            await consolidation.consolidate_session(history)
+        except Exception as exc:  # noqa: BLE001 -- see comment above
+            print(f"[luna] consolidation failed unexpectedly: {exc}", file=sys.stderr)
 
 
 if __name__ == "__main__":
     import uvicorn
+
+    from memory import db as memory_db
+
+    # Cheap check, once per process start -- see
+    # check_embedding_dimension_matches()'s docstring for why this is
+    # worth doing proactively instead of waiting for a mid-turn error the
+    # first time someone swaps the embedding model after episodes already
+    # exist.
+    memory_db.check_embedding_dimension_matches()
 
     uvicorn.run(app, host=HOST, port=PORT)
