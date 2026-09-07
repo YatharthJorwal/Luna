@@ -1218,3 +1218,62 @@ could be an old process from before the bundle was even applied, or
 something else entirely -- needs the user's diagnostic output to narrow
 down, not guessable from code alone.
 
+## Persona: grounded roasting, task-loop, no empty PC-villain threats; unified action button
+
+Follow-up after real usage confirmed both the recall wording fix and
+port-conflict diagnosis (the fabrication reports turned out to have been
+against a fresh, correctly-running process, per the user's "yeah it
+works" -- so the recall fix genuinely helped, this round is a separate,
+deeper persona pass, not a retry of the same fix).
+
+**Task-loop and fabricated roasting share one root cause.** The earlier
+"not every moment is a task" paragraph (added two rounds ago) reduced
+but didn't eliminate her defaulting to "what do you actually want"/
+"what's broken" as a fallback -- and separately, her roasting/insults
+were still inventing specific unstated details ("grease stains",
+"staring blankly at a wall") the same way recall.py's fabrication bug
+did, just in a completely different code path (this is pure persona
+behavior, no memory system involved at all). Confirms the earlier
+DECISIONS.md note that this was a *pattern* in the model's behavior
+(reach for invented vivid specifics to sound observant/personal), not
+something scoped only to memory recall. Fixed with two changes: the
+task-loop paragraph strengthened with explicit "you are not sitting here
+waiting for a task queue" framing and real curiosity/opinion-having
+language (kept the original concrete examples -- ask how their day went,
+react to a game/show/weather -- rather than replacing them with only
+abstract language, caught and corrected during editing since the first
+draft accidentally dropped them); and a new paragraph added specifically
+for roasting: ground insults in what is actually happening/being said,
+never invent an incident or image that was never described, sharp is
+good, fabricated is not the same thing as sharp.
+
+**"I'm in your PC, I'll delete your files" had gone stale.** The
+capability-boundary paragraph (originally just a boundary statement:
+can't control mouse/keyboard/edit files) apparently doubled as license
+for generic computer-villain threat material once combined with tsundere
+pettiness -- explicitly told her not to threaten things she can't
+actually do (delete files, wipe browser history) and to find sharper
+material instead, right in the same paragraph that already establishes
+she can't do those things.
+
+None of this is verified against a real qwen3.5:9b in this sandbox (no
+Ollama here, same standing caveat as every other prompt-wording change
+this session) -- needs the user's own read on whether it actually lands
+differently in practice.
+
+**Unified action button.** The previous round built stop and send as two
+separate `<button>` elements that happened to be shown/hidden mutually
+exclusively. The user specifically wanted one element that morphs
+(matching how mainstream chat apps do it) rather than two elements
+occupying the same visual slot -- `index.html` now has a single
+`#action-button` with no icon of its own; `main.ts`'s
+`updateInputButtons()` sets its innerHTML/title/aria-label/click-target
+based on state (stop while `turnActive`, send once there's text, hidden
+entirely otherwise -- mic covers the empty-idle case, unchanged). Mic
+stayed a separate element deliberately, matching what the user actually
+asked for (send+stop merged) rather than merging all three, which
+wasn't requested. Verified via a real `tsc` typecheck + production
+`vite build`, same as every frontend change this session -- no browser
+in this sandbox, so the actual morph/feel is still first-run territory.
+
+
