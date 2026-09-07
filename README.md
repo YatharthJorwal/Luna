@@ -74,6 +74,20 @@ live) or to a real running Ollama instance, so:
   cleanly, consolidation running on the real completed-turn history, and
   the process-exit path firing -- including catching and fixing a test
   that initially passed for the wrong reason (see `docs/DECISIONS.md`).
+  The stop-response button's concurrency change (`_run_turn()` now runs
+  as its own cancellable `asyncio.Task` instead of being awaited inline,
+  so the connection can react to a `stop` message mid-generation) was
+  also driven through a real running server with a real websocket
+  client -- confirmed cancellation is immediate, `turn_end` arrives
+  promptly, a fresh turn works right after (the connection doesn't get
+  left wedged), and the partial reply lands correctly in `history`
+  (present, non-empty, shorter than the uncut reply, no duplicates, no
+  dangling turn). The frontend half of that (`lipsync.ts`'s new
+  `stop()`, `main.ts`'s `stopAll()`/`turnActive` state, the new HTML/CSS)
+  passed a real `tsc` typecheck + production `vite build`, same bar as
+  every other frontend change -- but there's no browser in this sandbox,
+  so whether it actually *feels* instant when clicked is first-run
+  territory.
 - **Not verified, because I had no way to:** actual faster-whisper CUDA
   execution on the 3060 (currently moot -- running on CPU by choice, see
   above); a real Ollama instance actually serving `nomic-embed-text` (the
@@ -85,12 +99,18 @@ live) or to a real running Ollama instance, so:
   parser is deliberately forgiving specifically because this wasn't
   something to assume would just work; if it turns out to fail often in
   practice, that's a real signal to revisit, not a sign the fallback
-  logic is wrong); and the graceful-shutdown handshake's **Rust half**
+  logic is wrong); the graceful-shutdown handshake's **Rust half**
   (`graceful_shutdown_then_kill()`/`request_orchestrator_shutdown()` in
   `src-tauri/src/lib.rs`) -- no Rust toolchain in this sandbox at all,
   flagged explicitly at its own definition in that file, same starting
   status the process-spawning code itself had before its own first real
-  `cargo build`.
+  `cargo build`; and two prompt-wording fixes (the recall block now
+  explicitly forbids fabricating specifics beyond what's actually stored,
+  and persona.py's terseness instruction is now a concrete sentence-count
+  constraint instead of a vaguer "terse by default") -- prompt wording's
+  effect on a specific small model's actual behavior is inherently
+  something to confirm by using it, not something a stub-server test can
+  verify.
 
 Expect to still fix small things on first run -- normal for anything that's
 never touched real model weights, a real mic, or a real Rust compiler, not
@@ -367,6 +387,25 @@ Still applies from Phase 1 -- unchanged:
   correction like "actually I like X now" without the word "forget"
   somewhere in there -- that's an open limitation, not a bug (see
   `docs/DECISIONS.md`).
+- **She still yaps despite the terseness fix, or still invents specifics
+  memory recall shouldn't have produced:** both are prompt-wording fixes
+  made without a real Ollama/qwen3.5:9b to test against in the sandbox
+  this was built in -- see `docs/DECISIONS.md` for exactly what changed
+  and why. If either is still happening after this round, that's useful
+  signal the wording alone isn't enough, not a sign something's broken;
+  worth flagging so the next fix can go further (e.g. lowering the
+  model's temperature, or for recall specifically, making facts
+  semantically-filtered the same way episodes already are instead of
+  "all facts, always").
+- **Stop button doesn't seem to actually stop anything:** check that the
+  orchestrator log shows a `stop` message arriving (nothing specific is
+  logged for it currently, but a `turn_end` should follow quickly after
+  you click it). If audio keeps playing but generation did stop, that's
+  a frontend-only issue (`SpeakQueue.stopAll()`/`lipsync.ts`'s `stop()`
+  not actually reaching the currently-playing audio element) -- this
+  piece only has a `tsc`/build-level check behind it, no real browser
+  verification, since there's no browser in the sandbox this was built
+  in.
 
 ## Running the tests
 

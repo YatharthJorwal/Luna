@@ -157,16 +157,37 @@ async def _run_turn(
             await _send_speak(websocket, apply_persona_pass(chunk))
     except llm.LLMUnreachableError:
         await _send_speak(websocket, LLM_UNREACHABLE_LINE)
+    finally:
+        # In `finally`, not just after the try block, so a stop-button
+        # cancellation (asyncio.CancelledError, raised into whichever
+        # await this task happens to be sitting on when ws_endpoint's
+        # "stop" handler cancels it) still records whatever was actually
+        # said up to that point -- matching reality (she got cut off
+        # mid-sentence) instead of silently dropping the whole turn.
+        # CancelledError propagates on through after this, same as any
+        # other exception would through a finally block. The
+        # LLM-unreachable fallback line above is deliberately NOT added to
+        # reply_parts -- it was never really said by her, so it shouldn't
+        # end up looking like a real reply in history either.
+        if reply_parts:
+            history.append({"role": "assistant", "content": " ".join(reply_parts)})
+        else:
+            # Nothing usable came back (LLM unreachable and no fallback
+            # line ended up in reply_parts either, or stopped before a
+            # single chunk arrived) -- drop the dangling user turn rather
+            # than leave a one-sided exchange in context for next time.
+            history.pop()
+        _trim_history(history)
 
-    if reply_parts:
-        history.append({"role": "assistant", "content": " ".join(reply_parts)})
-    else:
-        # Nothing usable came back (LLM unreachable, or a genuinely
-        # empty response) -- drop the dangling user turn rather than
-        # leave a one-sided exchange in context for next time.
-        history.pop()
-
-    _trim_history(history)
+    # Tells the frontend nothing more is coming for this turn (so it can
+    # hide the stop button, re-enable input, etc.) -- only reached on a
+    # *normal* completion (finished generating, or hit the LLM-unreachable
+    # fallback). A stop-button cancellation skips this entirely (the
+    # CancelledError above propagates straight out of the function instead
+    # of reaching this line) -- ws_endpoint's "stop" handler sends its own
+    # turn_end right after successfully cancelling, once it's actually
+    # safe to send anything further over the socket.
+    await websocket.send_json({"type": "turn_end"})
 
 
 @app.post("/shutdown")
@@ -217,6 +238,14 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     _active_connections.add(websocket)
     history: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # The in-flight turn, if any -- run as its own task (not just awaited
+    # inline) specifically so the main loop below can keep concurrently
+    # watching for a "stop" message (or /shutdown) while generation is
+    # still happening. Awaiting _run_turn() directly, the way earlier
+    # phases did, meant the loop couldn't read anything else off the
+    # socket until a turn finished -- a "stop" message would just sit
+    # unread in the transport buffer until it was too late to matter.
+    current_turn_task: asyncio.Task | None = None
 
     try:
         while True:
@@ -244,11 +273,32 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             data = receive_task.result()
             msg_type = data.get("type")
 
+            if msg_type == "stop":
+                # No-op if nothing's actually running -- a stray/late
+                # click after a reply already finished shouldn't do
+                # anything or send anything back.
+                if current_turn_task is not None and not current_turn_task.done():
+                    current_turn_task.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await current_turn_task
+                    # _run_turn's own turn_end send is skipped on a
+                    # cancellation (see its own comment) -- send it here
+                    # instead, now that the task has actually finished
+                    # unwinding and it's safe to use the socket again.
+                    await websocket.send_json({"type": "turn_end"})
+                continue
+
             if msg_type == "user_text":
                 user_text = (data.get("text") or "").strip()
                 if not user_text:
                     continue
-                await _run_turn(websocket, history, user_text)
+                if current_turn_task is not None and not current_turn_task.done():
+                    # Already mid-reply -- ignore rather than overlap two
+                    # turns concurrently mutating the same `history` list.
+                    # The frontend should disable input while a reply is
+                    # in flight; this is just defense in depth regardless.
+                    continue
+                current_turn_task = asyncio.create_task(_run_turn(websocket, history, user_text))
 
             elif msg_type == "user_audio":
                 audio_b64 = data.get("audio_b64") or ""
@@ -261,6 +311,14 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     continue
 
                 print(f"[luna] received {len(audio_bytes)} bytes of audio", file=sys.stderr, flush=True)
+
+                if current_turn_task is not None and not current_turn_task.done():
+                    # Already mid-reply -- drop this clip without even
+                    # transcribing it, same "ignore, don't overlap turns"
+                    # policy as user_text above, just applied before
+                    # spending STT compute on something we're going to
+                    # ignore anyway.
+                    continue
 
                 try:
                     user_text = (await stt.transcribe(audio_bytes)).strip()
@@ -277,13 +335,22 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # Silence, noise, or nothing intelligible -- nothing to
                     # reply to, and nothing worth adding to history.
                     continue
-                await _run_turn(websocket, history, user_text)
+                current_turn_task = asyncio.create_task(_run_turn(websocket, history, user_text))
             else:
                 continue
     except WebSocketDisconnect:
         pass
     finally:
         _active_connections.discard(websocket)
+        # A turn still running when the connection itself goes away (not
+        # just a "stop" click) -- cancel it too, same reasoning as
+        # above, so consolidation below reads a `history` that's finished
+        # settling instead of one an abandoned task might still be
+        # mutating mid-append.
+        if current_turn_task is not None and not current_turn_task.done():
+            current_turn_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await current_turn_task
         # Phase 3: distill this session into durable memory (facts +
         # one episode summary) once it's actually over. In `finally`, not
         # just the `except WebSocketDisconnect` branch, so it also runs on

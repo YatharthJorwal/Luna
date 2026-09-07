@@ -27,6 +27,18 @@ function getAudioContext(): AudioContext {
 
 export interface SpeakHandle {
   onFinish(cb: () => void): void;
+  /**
+   * Stops playback immediately (the "stop response" button) and releases
+   * the AnalyserNode/MediaElementSource -- but deliberately does NOT fire
+   * the onFinish callback the way the natural "ended" event does.
+   * SpeakQueue's stopAll() clears its whole pending queue itself and
+   * resets its own state directly; if stop() also fired onFinish, that
+   * callback's own playNext() call would fire a redundant, confusing
+   * extra step on an already-cleared queue. Two separate paths (natural
+   * end vs. manual stop) are simpler to reason about than one shared path
+   * with a "but not this time" flag threaded through it.
+   */
+  stop(): void;
 }
 
 /**
@@ -72,6 +84,7 @@ export function speakWithLipsync(model: Live2DModel, audioUrl: string): SpeakHan
   const lipSyncIds: string[] = internalModel.motionManager.lipSyncIds ?? [];
 
   let finishCallback: (() => void) | undefined;
+  let cleaned = false;
 
   function onBeforeModelUpdate(): void {
     if (audioEl.paused || audioEl.ended) return;
@@ -94,19 +107,33 @@ export function speakWithLipsync(model: Live2DModel, audioUrl: string): SpeakHan
   }
 
   function cleanup(): void {
+    if (cleaned) return;
+    cleaned = true;
     internalModel.off("beforeModelUpdate", onBeforeModelUpdate);
     source.disconnect();
     analyser.disconnect();
+  }
+
+  function onEnded(): void {
+    cleanup();
     finishCallback?.();
   }
 
   internalModel.on("beforeModelUpdate", onBeforeModelUpdate);
-  audioEl.addEventListener("ended", cleanup);
+  audioEl.addEventListener("ended", onEnded);
   audioEl.play().catch((err) => console.error("[luna] audio playback failed", err));
 
   return {
     onFinish(cb) {
       finishCallback = cb;
+    },
+    stop() {
+      // No-op if it already finished naturally (onEnded already ran
+      // cleanup) or was already stopped -- avoids pausing/cleaning up
+      // twice for no reason.
+      if (audioEl.paused || audioEl.ended) return;
+      audioEl.pause();
+      cleanup();
     },
   };
 }
