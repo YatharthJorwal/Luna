@@ -57,6 +57,7 @@ function setupHud(model: Live2DModel): void {
   const input = document.getElementById("input-box") as HTMLInputElement;
   const statusDot = document.getElementById("status-dot") as HTMLDivElement;
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
+  const stopButton = document.getElementById("stop-button") as HTMLButtonElement;
 
   const setState = (state: ConnectionState) => {
     statusDot.classList.remove("connected", "listening");
@@ -64,11 +65,27 @@ function setupHud(model: Live2DModel): void {
     if (state !== "offline") statusDot.classList.add(state);
   };
 
+  // Toggled true right when a turn starts (sendUserText/sendUserAudio),
+  // false on turn_end -- independent of ConnectionState, which flips back
+  // to "connected" as soon as the *first* speak chunk arrives even though
+  // more chunks (and audio playback) can still be in flight for several
+  // more seconds after that. This is specifically "is there a reply
+  // actively being generated or spoken right now", which is the actual
+  // question the stop button and input-disabling need answered.
+  let turnActive = false;
+  function setTurnActive(active: boolean): void {
+    turnActive = active;
+    stopButton.hidden = !active;
+    micButton.hidden = active;
+    input.disabled = active;
+  }
+
   const queue = new SpeakQueue(model);
   const client = new WsClient({
     onStateChange: setState,
     onSpeak: (msg: SpeakMessage) => queue.push(msg),
     onTranscript: (msg: TranscriptMessage) => showTranscript(msg.text),
+    onTurnEnd: () => setTurnActive(false),
   });
   client.connect();
 
@@ -78,6 +95,21 @@ function setupHud(model: Live2DModel): void {
     if (!text) return;
     client.sendUserText(text);
     input.value = "";
+    setTurnActive(true);
+  });
+
+  stopButton.addEventListener("click", () => {
+    // Both fire immediately, independently -- queue.stopAll() kills
+    // client-side audio/lipsync right now without waiting on a round
+    // trip; sendStop() separately tells the orchestrator to cancel
+    // generation server-side (saves compute, and records a truthful
+    // partial reply in history instead of a full one nobody heard the
+    // end of). setTurnActive(false) doesn't wait for the server's own
+    // turn_end either -- the button disappearing should feel instant,
+    // same as the audio actually stopping.
+    queue.stopAll();
+    client.sendStop();
+    setTurnActive(false);
   });
 
   // Briefly shows what the orchestrator heard in the input box's own
@@ -104,6 +136,7 @@ function setupHud(model: Live2DModel): void {
     onClip: async (blob) => {
       const audioB64 = await blobToBase64(blob);
       client.sendUserAudio(audioB64);
+      setTurnActive(true);
     },
     onError: (err) => {
       // Most likely mic permission denied, or no input device -- nothing
@@ -120,7 +153,11 @@ function setupHud(model: Live2DModel): void {
   // actual global shortcut registration lives in src-tauri/src/lib.rs
   // (Rust), which just emits this event; all the recording logic stays
   // here in one place, same start()/stop() the mic button itself uses.
+  // Guarded against turnActive here specifically because it's a global
+  // hotkey, not a click on the (now-hidden) mic button -- hiding the
+  // button doesn't stop F9 from still firing while a reply's in flight.
   listen<string>("hotkey-talk", (event) => {
+    if (turnActive) return;
     if (event.payload === "pressed") {
       mic.start();
     } else if (event.payload === "released") {
@@ -142,6 +179,7 @@ class SpeakQueue {
   private model: Live2DModel;
   private pending: SpeakMessage[] = [];
   private playing = false;
+  private currentHandle: ReturnType<typeof speakWithLipsync> | null = null;
 
   // A short pause between chunks, not zero. Two back-to-back HTMLAudioElements
   // chained on "ended" can have a few ms of overlap at the boundary (the next
@@ -161,10 +199,23 @@ class SpeakQueue {
     if (!this.playing) this.playNext();
   }
 
+  /** The "stop response" button: drops everything still queued and stops
+   * whatever's currently playing immediately -- not a graceful fade,
+   * since the point is for it to feel instant. Doesn't wait on the
+   * orchestrator at all; ws-client.ts's sendStop() is fired alongside
+   * this, separately, for the backend-side cancellation. */
+  stopAll(): void {
+    this.pending = [];
+    this.currentHandle?.stop();
+    this.currentHandle = null;
+    this.playing = false;
+  }
+
   private playNext(): void {
     const msg = this.pending.shift();
     if (!msg) {
       this.playing = false;
+      this.currentHandle = null;
       return;
     }
     this.playing = true;
@@ -178,8 +229,10 @@ class SpeakQueue {
     // vendor/pixi-live2d5/NOTES.md). speakWithLipsync() plays the audio
     // and drives the model's LipSync parameters from it manually.
     const handle = speakWithLipsync(this.model, url);
+    this.currentHandle = handle;
     handle.onFinish(() => {
       URL.revokeObjectURL(url);
+      this.currentHandle = null;
       window.setTimeout(() => this.playNext(), SpeakQueue.GAP_MS);
     });
   }

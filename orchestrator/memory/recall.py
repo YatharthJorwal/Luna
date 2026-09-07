@@ -58,10 +58,18 @@ async def build_recall_context(user_text: str, top_k: int = DEFAULT_TOP_K) -> st
     if episodes:
         parts.append("Relevant past context: " + "; ".join(episodes) + ".")
     return (
-        "This is background memory from past sessions, silently informing "
-        "your response -- never read it aloud or refer to it as \"notes\" "
-        "or \"memory\", just act like someone who naturally remembers "
-        "this. " + " ".join(parts)
+        "Background memory from earlier sessions -- some of it may be "
+        "relevant right now, most of it probably is not. Only bring "
+        "something up if it is genuinely relevant to what the user just "
+        "said; do not force a reference in just because it is listed "
+        "below, and do not bring up more than one thing per reply. Never "
+        "invent a specific incident, date, or detail that is not written "
+        "here -- a fact like \"likes pizza\" means exactly that and "
+        "nothing more; do not turn it into a story, an event, or a "
+        "callback to something that supposedly happened (no made-up "
+        "\"last Tuesday\"s). Never read this list aloud, and never call "
+        "it \"notes\" or \"memory\" out loud -- if it comes up, say it "
+        "the way someone would who simply already knows it. " + " ".join(parts)
     )
 
 

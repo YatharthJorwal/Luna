@@ -1066,3 +1066,97 @@ tsundere flirt-fluster behavior, the stress/swearing-when-annoyed
 behavior, and the "drop the act when it actually matters" behavior
 completely as-is, since the user explicitly said those parts already feel
 natural and shouldn't change.
+
+## Recall was fabricating specific incidents; terseness; a stop button
+
+Same session, three more things, reported after the user actually used
+the app for a while -- the first real qualitative feedback on how memory
+recall *reads* in practice, not just whether the plumbing runs.
+
+**Recall was inventing specifics that were never stated.** Given only
+"likes pizza", "likes ice cream", and "owns an RTX 3060" as three
+separate, unrelated facts, the model was fabricating connective
+specifics like a made-up "melted ice cream on your 3060 last Tuesday" --
+combining unrelated facts into an invented incident, and eagerly forcing
+a reference in on nearly every turn regardless of relevance ("you get
+grease everywhere" off of "likes pizza" alone). Root cause: recall.py's
+injected block said "act like someone who naturally remembers this"
+without ever telling the model NOT to invent detail beyond what's
+literally listed, and unconditionally included every fact every turn
+with no relevance gating at all. Fixed by rewording the block explicitly:
+only bring something up if genuinely relevant to what the user just said,
+never invent an incident/date/detail not written there, at most one thing
+per reply. Not verified against a real qwen3.5:9b in this sandbox (no
+Ollama here) -- this is a prompt-wording fix, and prompt wording effects
+on a specific small model's behavior are inherently something to verify
+by actually using it, not something a stub-server test can confirm.
+Considered also making facts semantically-filtered the same way episodes
+already are (rather than "all facts, always") as a more thorough
+architectural fix, but skipped for now -- the user's own repro only had
+3 facts total, so a relevance *cap* wouldn't have changed anything for
+this specific complaint; the wording fix is what actually addresses it,
+and doing the heavier rearchitecture without being able to verify its
+effect on model behavior here risked solving a problem that wasn't
+demonstrated to need it. Worth revisiting if the wording fix alone isn't
+enough once the user has accumulated more facts.
+
+**Terseness.** Persona already said "keep it terse by default", but
+apparently that wasn't concrete enough for qwen3.5:9b to reliably follow
+-- the user reported her "yapping" regularly. Tightened the existing TTS-
+format paragraph in persona.py with an explicit, concrete constraint
+("one or two sentences is normal, three is already pushing it") instead
+of the vaguer "terse by default" -- small models generally follow
+concrete numeric guidance more reliably than qualitative adjectives. Not
+independently verified here either, same reasoning as above.
+
+**Stop-response button.** Needed real concurrency work, not just a UI
+button -- the previous ws_endpoint structure awaited `_run_turn()`
+directly inline, meaning the main receive loop couldn't read anything
+else off the socket (including a "stop" message) until a turn finished
+generating entirely, by which point stopping it would already be too
+late. Restructured so `_run_turn()` runs as its own tracked
+`asyncio.Task` instead, letting the main loop keep concurrently racing
+{receive, shutdown} the whole time a turn is in flight; a `"stop"`
+message now cancels that task directly (`task.cancel()`), and `_run_turn`
+records whatever was actually generated up to that point into `history`
+via a `finally` block (matching reality -- she got cut off
+mid-sentence -- rather than silently losing the whole turn or, worse,
+leaving a dangling user turn with no reply at all). A new `turn_end`
+message tells the frontend when a turn is truly over either way (normal
+completion sends it from inside `_run_turn`; a stop sends it from
+ws_endpoint's stop-handler instead, once the cancelled task has actually
+finished unwinding and it's safe to use the socket again) -- needed
+because "the audio finished playing" isn't the same signal as "no more
+chunks are coming."
+
+Frontend: `lipsync.ts`'s `SpeakHandle` gained a real `stop()` (pauses the
+audio element, cleans up the AnalyserNode/MediaElementSource, but
+deliberately does NOT fire the normal `onFinish` callback -- that would
+trigger the queue's own auto-advance logic on a queue that's being
+cleared anyway). `SpeakQueue` gained `stopAll()` (clears everything
+pending, stops whatever's currently playing). `ws-client.ts` gained
+`sendStop()` and a `turn_end` message type. `main.ts` tracks a
+`turnActive` flag (separate from `ConnectionState`, which flips back to
+"connected" as soon as the *first* speak chunk arrives even though
+generation/playback can continue for a while after that) to toggle the
+stop button, hide the mic button, disable the input box, and guard F9
+push-to-talk (a global hotkey, so hiding the mic button alone doesn't
+stop it from still firing) against starting a new recording mid-reply.
+
+Verified for real: the concurrency change is exactly the kind of thing
+that looks right on a read-through and is wrong in practice, so it was
+driven through a real running server with a real websocket client and a
+deliberately slow, long streaming stub -- confirmed cancellation is
+immediate (zero extra chunks leak through after `stop` is sent),
+`turn_end` arrives promptly, a fresh turn works immediately afterward
+(the connection doesn't get left in a wedged state), and a second test
+confirmed the partial reply lands correctly in `history` (present,
+non-empty, shorter than the full un-cut reply, and exactly three
+messages total -- system/user/assistant, no duplicates, no dangling
+turn). The frontend change was driven through a real `tsc` typecheck +
+production `vite build`, both clean, same bar as every previous frontend
+change -- but there is no real Live2D/audio runtime in this sandbox
+(no browser), so the actual UX -- does the mouth/audio really stop
+the instant the button is clicked, does the button reappear/disappear at
+the right moments -- is still first-run-on-your-machine territory, same
+as the rest of the frontend always has been.
