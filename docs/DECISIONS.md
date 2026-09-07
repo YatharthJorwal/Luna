@@ -1160,3 +1160,61 @@ change -- but there is no real Live2D/audio runtime in this sandbox
 the instant the button is clicked, does the button reappear/disappear at
 the right moments -- is still first-run-on-your-machine territory, same
 as the rest of the frontend always has been.
+
+## Send/stop/mic button, dash-to-"minus" fix, and a likely persona side effect
+
+Follow-up feedback after the previous round actually got a fresh test in.
+
+**Send/stop/mic button.** The stop button's own visibility logic
+(`turnActive`) was already correct as designed -- the user's "should only
+show while responding/thinking" request matched the existing behavior,
+no change needed there. What was missing: no explicit send button at
+all, just Enter-to-submit, and the mic button stayed visible even while
+text was typed. Added a `sendButton`, and a single `updateInputButtons()`
+function that shows exactly one of {stop, send, mic} at a time: stop
+while `turnActive`, send once the input box actually has text (matches
+the common chat-app mic-vs-send pattern -- a send button on an empty box
+has nothing to do), mic otherwise. `submitText()` extracted as a shared
+helper so both Enter and the new button's click go through the same
+path.
+
+**Dash-to-"minus" TTS artifact.** persona.py's " -- " convention (used
+throughout this file's own comments and the system prompt's own prose)
+was never the problem -- the model's own *generated replies* using a
+literal hyphen/dash character were getting read aloud by TTS as the word
+"minus", sounding broken. Added an explicit instruction against it in
+the TTS-format paragraph. Caught and fixed one thing while writing that
+instruction: the first draft used " -- " *inside* the instruction telling
+her never to use a dash, which would have been genuinely confusing
+(telling her not to do the exact thing sitting right there in front of
+her) -- reworded to avoid the irony rather than trusting a model to
+correctly read past its own contradiction.
+
+**Likely persona side effect, not a bug.** The user reported "I am back"
+producing a dramatic assumption of weeks-long absence and a "dusty"
+screen. This lines up with the abandonment/jealousy/fear-of-being-
+forgotten paragraph the user added to persona.py themselves earlier this
+session -- flagged at the time (see "Phase 3 follow-up") as a known
+attachment-maximizing pattern in companion-AI design, and this looks like
+a direct, unsurprising consequence of it: a model primed heavily toward
+separation anxiety reads an ordinary "I'm back" as confirmation of the
+thing it's afraid of, then dramatizes it. Not something fixed here --
+the user's call whether this is a character trait they want kept as-is
+or toned down, raised again now that there's a concrete example of it in
+practice rather than just the abstract risk.
+
+**Port-bind failure (WinError 10048), reported alongside the above but
+not yet resolved.** Most likely explanation given the timing (first
+launch after applying the graceful-shutdown bundle): a previous
+orchestrator process didn't actually exit and is still holding port
+8765, which would also mean the fabrication/yapping symptoms reported in
+the same message may have been observed against the *old*, unfixed
+process rather than this round's fixes -- asked the user to check
+`netstat -ano | findstr :8765` + Task Manager before drawing any
+conclusions about whether the recall/terseness wording fixes actually
+worked. Not diagnosed further yet; genuinely could be the Rust half's
+first-compile issue this was already flagged as a candidate for, or
+could be an old process from before the bundle was even applied, or
+something else entirely -- needs the user's diagnostic output to narrow
+down, not guessable from code alone.
+

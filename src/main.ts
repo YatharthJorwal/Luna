@@ -59,6 +59,8 @@ function setupHud(model: Live2DModel): void {
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
   const stopButton = document.getElementById("stop-button") as HTMLButtonElement;
 
+  const sendButton = document.getElementById("send-button") as HTMLButtonElement;
+
   const setState = (state: ConnectionState) => {
     statusDot.classList.remove("connected", "listening");
     statusDot.title = state;
@@ -73,12 +75,38 @@ function setupHud(model: Live2DModel): void {
   // actively being generated or spoken right now", which is the actual
   // question the stop button and input-disabling need answered.
   let turnActive = false;
+
+  // Exactly one of {stop, send, mic} is shown at a time: stop while a
+  // reply is in flight; send once there's actually something typed to
+  // send (matches the common chat-app pattern -- a send button with an
+  // empty box has nothing to do); mic otherwise, for voice input. Called
+  // on every turnActive change and every keystroke in the input box.
+  function updateInputButtons(): void {
+    const hasText = input.value.trim().length > 0;
+    stopButton.hidden = !turnActive;
+    sendButton.hidden = turnActive || !hasText;
+    micButton.hidden = turnActive || hasText;
+  }
+
   function setTurnActive(active: boolean): void {
     turnActive = active;
-    stopButton.hidden = !active;
-    micButton.hidden = active;
     input.disabled = active;
+    updateInputButtons();
   }
+
+  function submitText(): void {
+    const text = input.value.trim();
+    if (!text) return;
+    client.sendUserText(text);
+    input.value = "";
+    setTurnActive(true);
+  }
+
+  // Matches the HTML's own default `hidden` attributes (mic visible,
+  // stop/send hidden) at rest, but called explicitly rather than relying
+  // on that alone -- keeps this the single source of truth for the
+  // initial state instead of two places that have to agree by accident.
+  updateInputButtons();
 
   const queue = new SpeakQueue(model);
   const client = new WsClient({
@@ -91,12 +119,10 @@ function setupHud(model: Live2DModel): void {
 
   input.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
-    const text = input.value.trim();
-    if (!text) return;
-    client.sendUserText(text);
-    input.value = "";
-    setTurnActive(true);
+    submitText();
   });
+  input.addEventListener("input", updateInputButtons);
+  sendButton.addEventListener("click", submitText);
 
   stopButton.addEventListener("click", () => {
     // Both fire immediately, independently -- queue.stopAll() kills
