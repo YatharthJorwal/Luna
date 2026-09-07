@@ -57,9 +57,12 @@ function setupHud(model: Live2DModel): void {
   const input = document.getElementById("input-box") as HTMLInputElement;
   const statusDot = document.getElementById("status-dot") as HTMLDivElement;
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
-  const stopButton = document.getElementById("stop-button") as HTMLButtonElement;
+  const actionButton = document.getElementById("action-button") as HTMLButtonElement;
 
-  const sendButton = document.getElementById("send-button") as HTMLButtonElement;
+  const STOP_ICON =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>';
+  const SEND_ICON =
+    '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.6 21 12 3.4 3.4 3 10l12 2-12 2z" /></svg>';
 
   const setState = (state: ConnectionState) => {
     statusDot.classList.remove("connected", "listening");
@@ -73,19 +76,36 @@ function setupHud(model: Live2DModel): void {
   // more chunks (and audio playback) can still be in flight for several
   // more seconds after that. This is specifically "is there a reply
   // actively being generated or spoken right now", which is the actual
-  // question the stop button and input-disabling need answered.
+  // question the action button and input-disabling need answered.
   let turnActive = false;
 
-  // Exactly one of {stop, send, mic} is shown at a time: stop while a
-  // reply is in flight; send once there's actually something typed to
-  // send (matches the common chat-app pattern -- a send button with an
-  // empty box has nothing to do); mic otherwise, for voice input. Called
-  // on every turnActive change and every keystroke in the input box.
+  // One button, not two sitting side by side -- it morphs between stop
+  // and send (same element, same click handler, icon/label/behavior
+  // swapped based on state) rather than showing/hiding two separate
+  // buttons that happen to alternate. Hidden entirely with nothing typed
+  // and no reply in flight, since there's nothing for it to do in that
+  // state -- the mic button covers that case instead. Called on every
+  // turnActive change and every keystroke in the input box.
   function updateInputButtons(): void {
     const hasText = input.value.trim().length > 0;
-    stopButton.hidden = !turnActive;
-    sendButton.hidden = turnActive || !hasText;
-    micButton.hidden = turnActive || hasText;
+    if (turnActive) {
+      actionButton.hidden = false;
+      actionButton.classList.add("stop-mode");
+      actionButton.innerHTML = STOP_ICON;
+      actionButton.title = "Stop response";
+      actionButton.setAttribute("aria-label", "Stop response");
+      micButton.hidden = true;
+    } else if (hasText) {
+      actionButton.hidden = false;
+      actionButton.classList.remove("stop-mode");
+      actionButton.innerHTML = SEND_ICON;
+      actionButton.title = "Send message";
+      actionButton.setAttribute("aria-label", "Send message");
+      micButton.hidden = true;
+    } else {
+      actionButton.hidden = true;
+      micButton.hidden = false;
+    }
   }
 
   function setTurnActive(active: boolean): void {
@@ -102,10 +122,10 @@ function setupHud(model: Live2DModel): void {
     setTurnActive(true);
   }
 
-  // Matches the HTML's own default `hidden` attributes (mic visible,
-  // stop/send hidden) at rest, but called explicitly rather than relying
-  // on that alone -- keeps this the single source of truth for the
-  // initial state instead of two places that have to agree by accident.
+  // Matches the HTML's own default `hidden` attribute on action-button
+  // (mic visible at rest) but called explicitly rather than relying on
+  // that alone -- keeps this the single source of truth for the initial
+  // state instead of two places that have to agree by accident.
   updateInputButtons();
 
   const queue = new SpeakQueue(model);
@@ -122,20 +142,23 @@ function setupHud(model: Live2DModel): void {
     submitText();
   });
   input.addEventListener("input", updateInputButtons);
-  sendButton.addEventListener("click", submitText);
 
-  stopButton.addEventListener("click", () => {
-    // Both fire immediately, independently -- queue.stopAll() kills
-    // client-side audio/lipsync right now without waiting on a round
-    // trip; sendStop() separately tells the orchestrator to cancel
-    // generation server-side (saves compute, and records a truthful
-    // partial reply in history instead of a full one nobody heard the
-    // end of). setTurnActive(false) doesn't wait for the server's own
-    // turn_end either -- the button disappearing should feel instant,
-    // same as the audio actually stopping.
-    queue.stopAll();
-    client.sendStop();
-    setTurnActive(false);
+  actionButton.addEventListener("click", () => {
+    if (turnActive) {
+      // Both fire immediately, independently -- queue.stopAll() kills
+      // client-side audio/lipsync right now without waiting on a round
+      // trip; sendStop() separately tells the orchestrator to cancel
+      // generation server-side (saves compute, and records a truthful
+      // partial reply in history instead of a full one nobody heard the
+      // end of). setTurnActive(false) doesn't wait for the server's own
+      // turn_end either -- the button disappearing should feel instant,
+      // same as the audio actually stopping.
+      queue.stopAll();
+      client.sendStop();
+      setTurnActive(false);
+    } else {
+      submitText();
+    }
   });
 
   // Briefly shows what the orchestrator heard in the input box's own

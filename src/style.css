@@ -128,7 +128,7 @@ body {
   animation: mic-pulse 1.2s ease-in-out infinite;
 }
 
-#stop-button {
+#action-button {
   flex: none;
   width: 22px;
   height: 22px;
@@ -143,39 +143,22 @@ body {
   transition: color 150ms ease;
 }
 
-#stop-button svg {
+#action-button svg {
   width: 16px;
   height: 16px;
   fill: currentColor;
 }
 
-#stop-button:hover {
-  color: var(--accent-listening);
-}
-
-#send-button {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border: none;
-  color: var(--dim);
-  cursor: pointer;
-  -webkit-app-region: no-drag;
-  transition: color 150ms ease;
-}
-
-#send-button svg {
-  width: 16px;
-  height: 16px;
-  fill: currentColor;
-}
-
-#send-button:hover {
+#action-button:hover {
   color: var(--ink);
+}
+
+/* Applied only while it's acting as the stop button (a reply is in
+   flight) -- same red/pink accent the mic uses while recording, so
+   "something is actively happening and this button interrupts it" reads
+   consistently across both. */
+#action-button.stop-mode:hover {
+  color: var(--accent-listening);
 }
 
 @keyframes mic-pulse {
