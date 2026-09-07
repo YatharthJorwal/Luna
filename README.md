@@ -406,6 +406,16 @@ Still applies from Phase 1 -- unchanged:
   piece only has a `tsc`/build-level check behind it, no real browser
   verification, since there's no browser in the sandbox this was built
   in.
+- **Orchestrator fails to start with `WinError 10048` (address already in
+  use) on port 8765:** something's already listening on that port --
+  most likely a previous orchestrator process that didn't actually exit.
+  Run `netstat -ano | findstr :8765` in PowerShell, find the PID in the
+  last column, check Task Manager for it (Details tab) -- if it's a
+  lingering `python.exe`, end it (`taskkill /PID <pid> /F` or End Task)
+  and relaunch. If this keeps happening after a normal tray-icon Quit,
+  that points at the graceful-shutdown handshake's Rust half not actually
+  working -- see `docs/DECISIONS.md`, that half was never verified in the
+  sandbox this was built in.
 
 ## Running the tests
 
