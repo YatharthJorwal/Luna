@@ -1384,4 +1384,76 @@ real-world meters, unlike Live2D's arbitrary internal units), explicitly
 documented as needing retuning, same spirit as the old Live2D `SCALE`
 constant always needing hand-tuning too.
 
+## Phase 7 follow-up: T-pose and camera framing, from the user's first real screenshot
+
+The user's first actual on-machine render (their own designed model,
+first VRM ever loaded by this code outside the sandbox) surfaced two
+real bugs immediately: locked in a T-pose, and zoomed out much further
+than intended.
+
+**T-pose was a real gap, not a surprise once named.** VRM's bind/rest
+pose is a T-pose by default -- normal for a skeleton, but nothing in the
+Phase 7 code posed it into anything more natural, since there was no
+idle animation clip and no static pose-setting code at all. Should have
+been anticipated (any first-time three-vrm user hits this), wasn't.
+
+Fixed with `applyIdlePose()`, rotating the upper/lower arm bones down to
+a natural at-the-side resting position. The rotation values were derived
+empirically, not guessed a second time after getting the camera framing
+guess wrong the first round: loaded the same real sample VRM in a Node
+script, and for each candidate rotation, computed the hand bone's actual
+world position via `updateMatrixWorld(true)` + `getWorldPosition()` --
+real forward-kinematics math, no rendering needed for this part either.
+First guess (positive Z rotation) moved the hand *up*, not down --
+caught immediately by the numbers rather than shipped and found out
+later. Swept several values and axes empirically until finding the
+correct one (negative Z for the left arm), then confirmed X-axis
+rotation does nothing at all (rolls around the bone's own long axis,
+doesn't move a child bone's position) and Y-axis swings the arm
+forward/backward rather than down -- useful to know, not just the one
+answer needed. Confirmed the right arm mirrors with the opposite sign
+rather than assuming symmetry, since VRM's "normalized" humanoid bone
+space is specifically designed to guarantee mirror symmetry and a
+consistent convention across different source rigs -- meaning, unlike
+the camera framing, these exact rotation values should transfer
+correctly to any VRM model, not just the one they were derived against.
+
+**Camera framing switched from a fixed guess to a computed one.** The
+original `CAMERA_POSITION`/`CAMERA_LOOK_AT` were fixed world-space
+coordinates, explicitly flagged in README.md as an untested guess needing
+retuning -- and the user's screenshot confirmed it needed retuning
+(zoomed out, character small in frame). Rather than just picking new
+fixed numbers (repeating the same kind of guess that already turned out
+wrong once), switched to computing camera position relative to the
+loaded model's own actual head-bone world position, read after the model
+is added to the scene and posed. This makes framing adapt to whatever
+height/proportions a given model actually has instead of assuming one
+specific set of proportions -- a real engineering improvement prompted
+directly by the first guess being wrong, not just a bigger guess.
+Verified with the same kind of forward-kinematics math as the pose fix:
+simulated `boot()`'s exact sequence (pose, then camera) against the real
+sample model and confirmed the head lands almost exactly at the center
+of the camera's view frustum (projected head position in normalized
+device coordinates: ~(0.000, 0.000), should be ~(0,0) for a correctly
+centered look-at) and the camera sits at the intended ~0.9m distance
+from the head. This is real confirmation the *math* is correct -- still
+can't confirm from this sandbox whether 0.9m/the height offset actually
+*look* good as a framing choice without a real render, but at least the
+camera is now provably looking at the right point from the right
+distance, not just hoped to be.
+
+**"Something on her jacket" -- flagged as a likely-related symptom, not
+separately diagnosed.** The user also reported a light/pale patch
+visible through the jacket sleeve in their screenshot. Genuinely can't
+diagnose this from here (no way to see the actual render), but the
+likely explanation: VRoid outfit meshes are typically skinned/weighted
+assuming a natural pose, not a full T-pose -- an oversized sleeve mesh
+sitting correctly over the arm in a natural pose can clip badly and
+expose the arm mesh underneath when stretched into a full T-pose instead.
+If that's what happened, fixing the T-pose should fix or substantially
+change this on its own. Asked the user to re-check after this fix before
+treating it as a separate bug worth chasing further -- diagnosing a
+rendering artifact blind, on top of an already-identified likely cause,
+risked wasted effort in the wrong direction.
+
 
