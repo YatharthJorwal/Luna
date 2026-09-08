@@ -1,6 +1,6 @@
-/* This window IS the overlay -- there's no "page" to design, the Live2D
-   character is the visual centerpiece. Everything here exists to get out of
-   the character's way: fully transparent background, one small glass pill
+/* This window IS the overlay -- there's no "page" to design, the avatar
+   is the visual centerpiece. Everything here exists to get out of the
+   character's way: fully transparent background, one small glass pill
    for input, no chrome, no web fonts (keeps this light while a game is
    running). The status dot doubles as a mood indicator later (its color
    will track Luna's emotion tag from the persona layer) rather than being a
@@ -42,7 +42,7 @@ body {
   -webkit-app-region: drag;
 }
 
-#live2d-canvas {
+#avatar-canvas {
   width: 100%;
   height: 100%;
   display: block;
