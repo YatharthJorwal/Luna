@@ -16,11 +16,53 @@ const MODEL_PATH = "/vrm/luna.vrm";
 
 // Hand-tuned starting point for a bust-up framing at roughly a real VRM
 // humanoid's actual scale (VRM models are authored in real-world meters,
-// unlike Live2D's arbitrary internal units) -- retune once a real model's
-// proportions are known, same spirit as the old Live2D SCALE constant.
-const CAMERA_FOV_DEGREES = 30;
-const CAMERA_POSITION = new THREE.Vector3(0, 1.35, 1.6);
-const CAMERA_LOOK_AT = new THREE.Vector3(0, 1.3, 0);
+// unlike Live2D's arbitrary internal units). Distance/height are offsets
+// from the model's own head bone position (computed after load, see
+// boot() below) rather than fixed world coordinates -- this way framing
+// adapts to whatever height/proportions the actual loaded model turns
+// out to have, instead of a blind guess at absolute numbers that only
+// happens to work for one specific model.
+const CAMERA_FOV_DEGREES = 32;
+const CAMERA_DISTANCE_FROM_HEAD = 0.9;
+// Camera sits slightly below head height and looks slightly up at it --
+// reads more natural than a flat, dead-level stare into the middle of
+// the face.
+const CAMERA_HEIGHT_OFFSET_FROM_HEAD = -0.15;
+
+// VRM's bind/rest pose is a T-pose by default (arms straight out to the
+// sides) -- that's normal for a skeleton's rest pose, not something wrong
+// with an export, but nothing poses it into anything more natural unless
+// code explicitly does so; there's no idle animation clip involved here.
+// Rotation values below were derived empirically, not guessed -- see
+// docs/DECISIONS.md: loaded a real sample VRM in a Node script and
+// computed actual hand-bone world positions via forward kinematics for
+// several candidate rotations, picking the one that visibly brought the
+// hand down to a natural at-the-side height. VRM's "normalized" humanoid
+// bone space is specifically designed to use a consistent convention
+// across every VRM model regardless of the source rig, so these values
+// should transfer correctly to any other model, not just the one they
+// were derived against -- unlike the camera framing above, which
+// necessarily depends on each model's own actual proportions.
+function applyIdlePose(vrm: VRM): void {
+  const humanoid = vrm.humanoid;
+  if (!humanoid) return;
+
+  const leftUpperArm = humanoid.getNormalizedBoneNode("leftUpperArm");
+  const rightUpperArm = humanoid.getNormalizedBoneNode("rightUpperArm");
+  const leftLowerArm = humanoid.getNormalizedBoneNode("leftLowerArm");
+  const rightLowerArm = humanoid.getNormalizedBoneNode("rightLowerArm");
+
+  // Mirror-symmetric by construction (confirmed, not assumed) -- left and
+  // right take opposite-sign rotations around the same axis.
+  leftUpperArm?.rotation.set(0, 0, -1.35);
+  rightUpperArm?.rotation.set(0, 0, 1.35);
+  // A small bend at the elbow so the arms don't look ramrod-straight
+  // glued to her sides -- purely aesthetic, safe to omit if a given
+  // model doesn't have separate lower-arm bones for some reason (the
+  // optional chaining above already no-ops in that case).
+  leftLowerArm?.rotation.set(0, -0.15, 0);
+  rightLowerArm?.rotation.set(0, 0.15, 0);
+}
 
 async function boot(): Promise<void> {
   const canvas = document.getElementById("avatar-canvas") as HTMLCanvasElement;
@@ -31,8 +73,6 @@ async function boot(): Promise<void> {
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, window.innerWidth / window.innerHeight, 0.1, 20);
-  camera.position.copy(CAMERA_POSITION);
-  camera.lookAt(CAMERA_LOOK_AT);
 
   // VRoid's toon (MToon) materials still need at least one real light in
   // the scene to shade correctly, unlike an unlit 2D sprite -- a single
@@ -60,7 +100,32 @@ async function boot(): Promise<void> {
   VRMUtils.combineSkeletons(vrm.scene);
   VRMUtils.combineMorphs(vrm);
 
+  applyIdlePose(vrm);
+
   scene.add(vrm.scene);
+
+  // Frame the camera relative to the model's own actual head position,
+  // computed only now (after adding to the scene and posing it) so world
+  // matrices are up to date -- see this constant's own comment above on
+  // why this isn't a fixed world-space coordinate.
+  const headNode = vrm.humanoid?.getNormalizedBoneNode("head");
+  const headWorldPosition = new THREE.Vector3();
+  if (headNode) {
+    vrm.scene.updateMatrixWorld(true);
+    headNode.getWorldPosition(headWorldPosition);
+  } else {
+    // Extremely unlikely for any real VRM export (a head bone is
+    // required by the spec), but fall back to a reasonable guess rather
+    // than crash boot() over a malformed file.
+    headWorldPosition.set(0, 1.4, 0);
+    console.warn("[luna] VRM has no head bone in its humanoid map -- using a fallback camera position");
+  }
+  camera.position.set(
+    headWorldPosition.x,
+    headWorldPosition.y + CAMERA_HEIGHT_OFFSET_FROM_HEAD,
+    headWorldPosition.z + CAMERA_DISTANCE_FROM_HEAD,
+  );
+  camera.lookAt(headWorldPosition);
 
   function layout(): void {
     renderer.setSize(window.innerWidth, window.innerHeight);
