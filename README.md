@@ -1,35 +1,68 @@
-# Luna -- Phase 2.5
+# Luna
 
-Shell + Live2D + audio pipeline + a real local LLM brain, now with real
-cloned voice output and voice input. Type in the input box (or click the
-mic and talk), she thinks with an actual model (via Ollama or llama.cpp,
-your choice in `orchestrator/config.yaml`), and replies by voice with
-lip-sync, one sentence at a time as she "thinks" of them. See `/CLAUDE.md`
-at the repo root for the full architecture and roadmap.
+Shell + a VRM 3D avatar + audio pipeline + a real local LLM brain with
+persistent memory, cloned voice output, and voice input. Type in the
+input box (or click the mic and talk), she thinks with an actual model
+(via Ollama or llama.cpp, your choice in `orchestrator/config.yaml`),
+remembers things across restarts, and replies by voice with lip-sync,
+one sentence at a time as she "thinks" of them. See `/CLAUDE.md` at the
+repo root for the full architecture and roadmap.
 
-If you're updating an existing Phase 2 checkout: `orchestrator/stt.py` is
-new (STT), `src/mic.ts` is new (mic capture, both a mic-button toggle and
-an F9 global push-to-talk hotkey), and `src/ws-client.ts` / `src/main.ts`
-/ `index.html` / `src/style.css` all picked up small voice-input
-additions -- no `vendor/` or Live2D asset changes this round.
+**Phase 7 (this bundle): the avatar migrated from Live2D to VRM.** If
+you're updating an existing checkout with a Live2D model already set up,
+that setup is gone -- `public/live2d/`, `public/cubism5/`,
+`vendor/pixi-live2d5/`, and the Cubism Core script tag in `index.html`
+have all been removed, replaced by `three` + `@pixiv/three-vrm`. You'll
+need an actual `.vrm` file to see anything on screen -- see "Putting
+your VRoid model in" below.
 
-**Three things to redo after pulling this bundle, not just `git pull`:**
-1. `pip install -r requirements.txt` again in your orchestrator venv --
-   picks up `faster-whisper`. If the orchestrator crashes on startup with
-   `ModuleNotFoundError: No module named 'faster_whisper'`, this is why;
-   it's not an STT-specific failure, the whole orchestrator (including
-   typed chat) won't start until this is run, since `stt.py` is imported
-   at the top of `app.py`.
-2. `npm install` -- `@tauri-apps/api` moved from a dev to a real
-   dependency (it's now actually used, for the F9 hotkey listener), no
-   new packages otherwise.
-3. The F9 hotkey needed a small Rust change (`src-tauri/Cargo.toml` and
-   `src-tauri/src/lib.rs`, a new `tauri-plugin-global-shortcut`
-   dependency) -- `npm run tauri dev` (or `cargo build` directly) will
-   pull and compile it automatically, updating `src-tauri/Cargo.lock` in
-   the process. That Rust code has never been through `cargo check`
-   anywhere (no Rust toolchain in the sandbox this was built in) -- see
-   "What's actually been verified" below before you run it.
+**After pulling this bundle:**
+1. `npm install` -- picks up `three`, `@pixiv/three-vrm`, and
+   `@types/three` (this version of three.js doesn't ship its own type
+   declarations); drops `pixi.js`/`pixi-live2d5`.
+2. Export a `.vrm` from VRoid Studio and drop it at `public/vrm/luna.vrm`
+   -- see "Putting your VRoid model in" below for the full walkthrough.
+   Nothing renders without this.
+3. No orchestrator/Python changes this round -- skip `pip install` unless
+   you're also behind on an earlier bundle.
+
+## Putting your VRoid model in
+
+1. **Export from VRoid Studio.** File -> Export -> "Export as VRM" (or
+   similar, depending on your VRoid Studio version). Either VRM format
+   works -- `main.ts` calls `VRMUtils.rotateVRM0()` on load, which
+   auto-detects and corrects the one orientation difference between them
+   (a no-op if you exported VRM1, the newer format).
+2. **Drop the file at `public/vrm/luna.vrm`** -- that exact path; it's
+   what `MODEL_PATH` in `src/main.ts` points at. `public/vrm/` already
+   exists (with a `README.txt` reminder) and is gitignored, so your model
+   file itself never gets committed -- it's yours, not source.
+3. **Run it** -- `npm run tauri dev` as usual. If she doesn't appear:
+   check the browser devtools console (right-click the window ->
+   Inspect, or check `logs/` if Tauri surfaces it there) for a load
+   error. A 404 almost always means the filename/path doesn't match
+   exactly; anything else is likely a genuinely malformed export, worth
+   re-exporting.
+4. **Expect the framing to be off at first.** `CAMERA_POSITION` /
+   `CAMERA_FOV_DEGREES` / `CAMERA_LOOK_AT` in `src/main.ts` are a
+   hand-tuned *guess* at bust-up framing for a roughly-average VRM
+   humanoid's proportions -- they were never tested against a real
+   model, only a sample test asset used to verify the loading code
+   itself works (see `docs/DECISIONS.md`). Depending on your model's
+   actual height/proportions, you'll likely need to nudge these:
+   - Model's head is cut off / too zoomed in -> increase
+     `CAMERA_POSITION`'s Y and Z values (move the camera back and up).
+   - Too much empty space above her head -> decrease `CAMERA_LOOK_AT`'s Y
+     value slightly, or decrease `CAMERA_FOV_DEGREES`.
+   - Model looks tiny in the middle of the window -> decrease
+     `CAMERA_POSITION`'s Z value (move the camera closer).
+5. **Lipsync needs the "aa" and "blink" expressions to exist** on your
+   model -- these are part of VRM's standard expression preset list, so
+   any normal VRoid Studio export should have them automatically (nothing
+   you need to configure by hand in VRoid Studio itself). If her mouth
+   never moves while she talks, or she never blinks, check your model's
+   file in a VRM viewer (e.g. https://hub.vroid.com/en/ has an online one)
+   to confirm those expressions are actually present.
 
 ## What's actually been verified vs. not, honestly
 
@@ -87,7 +120,22 @@ live) or to a real running Ollama instance, so:
   passed a real `tsc` typecheck + production `vite build`, same bar as
   every other frontend change -- but there's no browser in this sandbox,
   so whether it actually *feels* instant when clicked is first-run
-  territory.
+  territory. **Phase 7 (VRM avatar migration)**: the loading pipeline
+  itself was verified for real, not just typechecked -- downloaded an
+  official VRM1 sample model from `pixiv/three-vrm`'s own repo and ran
+  the exact loader code path (`GLTFLoader` + `VRMLoaderPlugin`) in a
+  plain Node script (with a `self` global polyfill for the one
+  browser-only texture-decode call path), confirming it actually parses,
+  resolves humanoid bones (`head`, `hips`), finds the `aa`/`blink`
+  expressions the lipsync and blink code depend on, and that
+  `setValue()` + `vrm.update()` don't throw. Also checked, not assumed:
+  whether `VRMExpressionManager` has a Cubism-style snapshot/restore
+  cycle that would silently undo a value set from an independent render
+  loop (the exact bug that shaped the old Live2D lipsync code's
+  architecture) -- read `@pixiv/three-vrm-core`'s actual bundled source
+  to confirm it does not, before writing the new lipsync code around
+  that assumption. `src/main.ts`/`src/lipsync.ts` both pass a real `tsc`
+  typecheck + production `vite build`.
 - **Not verified, because I had no way to:** actual faster-whisper CUDA
   execution on the 3060 (currently moot -- running on CPU by choice, see
   above); a real Ollama instance actually serving `nomic-embed-text` (the
@@ -110,7 +158,16 @@ live) or to a real running Ollama instance, so:
   constraint instead of a vaguer "terse by default") -- prompt wording's
   effect on a specific small model's actual behavior is inherently
   something to confirm by using it, not something a stub-server test can
-  verify.
+  verify. Most significantly for this round: **the actual visual result
+  of the VRM migration itself.** There is no browser, no GPU, and no
+  real `.vrm` file in the sandbox this was built in, so while the
+  *loading pipeline* is genuinely verified (see above -- a real sample
+  model, a real loader run, not just a typecheck), whether a real model
+  actually renders correctly, whether the camera framing looks anywhere
+  close to right, and whether the lipsync/blink actually look good in
+  motion are all first-run-on-your-machine territory, more so than
+  anything else in this project so far -- see "Putting your VRoid model
+  in" above for what to expect and adjust.
 
 Expect to still fix small things on first run -- normal for anything that's
 never touched real model weights, a real mic, or a real Rust compiler, not
@@ -123,12 +180,10 @@ a sign something's fundamentally wrong.
 - **Python 3.11+**
 - **WebView2** -- already installed on any up-to-date Windows 10/11, which
   covers you
-- **Live2D Cubism Core runtime** -- download the "Cubism SDK for Web" from
-  https://www.live2d.com/en/sdk/download/web/, pull
-  `live2dcubismcore.min.js` out of its `Core/` folder, and drop it in
-  `public/live2dcubismcore.min.js` (see `public/live2d/README.txt`). This
-  can't be bundled here -- Live2D's own license terms don't allow third
-  parties to redistribute it, you have to grab it yourself.
+- **VRoid Studio** (free) -- https://vroid.com/en/studio, for designing
+  and exporting your own `.vrm` model. Not needed to build/run the code
+  itself, only to have an actual character on screen -- see "Putting
+  your VRoid model in" above.
 - **Ollama** -- https://ollama.com/download/windows. After installing,
   pull the default model:
   ```
@@ -174,11 +229,10 @@ a sign something's fundamentally wrong.
   zero extra setup and is fast enough for short conversational clips. See
   `docs/DECISIONS.md` for the full trail if you want to chase CUDA later.
 
-The Hiyori sample model in `public/live2d/Hiyori/` is already included --
-it's Live2D's own official free sample, licensed for exactly this kind of
-prototyping. Swap it for a licensed/purchased/commissioned model before
-this becomes anything more than a local dev build (see CLAUDE.md's open
-decisions).
+No sample model is bundled anymore -- Live2D's Hiyori sample (used during
+Phases 1-6) is gone along with the rest of the Live2D stack. Nothing
+renders until you drop your own `.vrm` at `public/vrm/luna.vrm` (see
+"Putting your VRoid model in" above).
 
 ## Run it
 
@@ -345,18 +399,27 @@ Still applies from Phase 1 -- unchanged:
   mismatch in `src-tauri/src/lib.rs` -- see the note at the top of that
   file for the likeliest spots, and the compiler error will name the exact
   item that's wrong.
-- **Window appears but no model, or a console error mentioning
-  `doDrawModel`/Cubism Core:** open devtools (right-click won't work since
-  there's no titlebar -- add `"devtools": true` temporarily to the window
-  config) and check the Console tab. Most likely one of:
-  - a 404 on `Hiyori.model3.json` or `live2dcubismcore.min.js` -- the
-    latter is the manual step above, the most common miss;
-  - a 404 under `/cubism5/shaders/` -- this fork loads 13 GLSL files at
-    runtime from `public/cubism5/shaders/`, already included, but confirm
-    they made it into your copy if you're updating an existing checkout.
-- **Model appears but is tiny, huge, or off-window:** `SCALE` in
-  `src/main.ts` is a starting guess, not measured against your actual
-  window size. Adjust the constant and let Vite hot-reload.
+- **Window appears but no model, or a console error about loading the
+  VRM:** open devtools (right-click won't work since there's no
+  titlebar -- add `"devtools": true` temporarily to the window config)
+  and check the Console tab. Most likely:
+  - a 404 for `/vrm/luna.vrm` -- you haven't dropped your exported file
+    at `public/vrm/luna.vrm` yet, or the filename doesn't match exactly;
+  - a parse/loader error -- most likely a genuinely malformed export;
+    try re-exporting from VRoid Studio, or opening the file in an online
+    VRM viewer (e.g. https://hub.vroid.com/en/) to confirm it's valid.
+- **Model appears but is tiny, huge, cut off, or off-window:**
+  `CAMERA_POSITION`/`CAMERA_FOV_DEGREES`/`CAMERA_LOOK_AT` in
+  `src/main.ts` are a starting guess, not measured against your actual
+  model's proportions -- see "Putting your VRoid model in" above for
+  which constant to nudge for which symptom. Adjust and let Vite
+  hot-reload.
+- **Mouth never moves while she talks, or she never blinks:** your VRM
+  export is likely missing the standard `aa`/`blink` expression presets
+  the lipsync/blink code depends on -- check in an online VRM viewer
+  (link above). This should be automatic from a normal VRoid Studio
+  export; if it's missing, that points at an export issue, not something
+  to configure in this code.
 - **Model appears but never speaks:** check the orchestrator terminal is
   still running and the status dot in the HUD ever turns solid (means the
   WebSocket connected). If it stays dim, the shell can't reach

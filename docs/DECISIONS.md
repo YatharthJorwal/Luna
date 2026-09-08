@@ -1276,4 +1276,112 @@ wasn't requested. Verified via a real `tsc` typecheck + production
 `vite build`, same as every frontend change this session -- no browser
 in this sandbox, so the actual morph/feel is still first-run territory.
 
+## Phase 7 -- VRM avatar migration
+
+The single biggest architectural change so far, requested explicitly as
+the next phase over Phase 4 (vision tools) -- the user wants to finish
+the aesthetic/avatar side of things before adding new capabilities, and
+is designing the actual model in VRoid Studio themselves while this side
+of the work happened in parallel.
+
+**Library choice: `three` + `@pixiv/three-vrm`.** The obvious pick --
+`@pixiv/three-vrm` is pixiv's own official library for exactly this (VRM
+is pixiv's own format), actively maintained, and there wasn't a real
+second option worth weighing against it. This version of `three`
+(0.185.1) ships no bundled `.d.ts` files at all (checked, not assumed --
+`ls node_modules/three/build/` came back with only `.js` files); needed
+`@types/three` from DefinitelyTyped instead, which is the standard way
+to consume three.js from TypeScript regardless of version.
+
+**Full removal, not a toggle.** `public/live2d/`, `public/cubism5/`,
+`vendor/pixi-live2d5/`, `src/types/pixi-live2d5.d.ts`, and the Cubism
+Core script tag in `index.html` are all gone, not kept behind a flag --
+ROADMAP.md's own Phase 7 scoping already called this "replace", not
+"add alongside", and there's no reasonable path where a desktop
+companion runs two rendering stacks at once. The Hiyori Live2D sample
+(Live2D's own free sample, used since Phase 1) goes with it.
+
+**The HUD/input shell does not need to change, confirmed by reading the
+actual code, not assumed.** `setupHud()` never touched the model/canvas
+directly except to pass it through to `SpeakQueue`, which itself only
+ever forwarded it into `speakWithLipsync()` -- once lipsync no longer
+needs a model reference at all (see below), nothing in the HUD layer
+needs to know or care whether the thing behind it is a 2D Live2D canvas
+or a 3D WebGL scene. `#hud`, the status dot, input box, and action/mic
+buttons are byte-for-byte untouched. Only `#stage-container`'s child
+canvas (renamed `#live2d-canvas` -> `#avatar-canvas`) and the rendering
+code feeding it changed.
+
+**Lipsync required real architectural work, not a mechanical port --
+and this project has been burned by exactly this kind of assumption
+before.** The Live2D lipsync code hooked `internalModel.on
+("beforeModelUpdate", ...)` specifically because Cubism restores
+parameters from a snapshot every frame, silently wiping anything set
+from an independent loop before it could ever visibly land. Before
+writing the VRM version the same way (independent loop, no special
+hook), actually read `@pixiv/three-vrm-core`'s bundled source
+(`node_modules/@pixiv/three-vrm-core/lib/three-vrm-core.cjs`) to check
+whether `VRMExpressionManager` has anything similar. It does not --
+`setValue()` just sets `expression.weight` directly, and `update()`
+reads whatever that current weight is; no snapshot/restore cycle exists.
+Confirmed this is safe to build on before committing to the simpler
+architecture (one shared `requestAnimationFrame` loop in `main.ts`
+calling `setValue("aa", getMouthOpenValue())` right before `vrm.update
+(delta)` each frame), rather than assuming "VRM is architecturally
+different from Cubism so it's probably fine" and finding out the hard
+way on the user's machine.
+
+This also let `speakWithLipsync()` drop its `model` parameter entirely
+-- lipsync.ts tracks *which* audio clip's mouth-openness reading the
+shared loop should read via a module-level `currentMouthDriver`
+reference, rather than each call needing to reach into the model itself
+the way the old Live2D version did (hooking a specific model instance's
+event system per call). `SpeakQueue`/`setupHud()` in `main.ts` lost their
+`model`/`vrm` parameters as a direct consequence -- nothing downstream of
+the render loop needs a model reference anymore.
+
+**VRM0 vs VRM1 handled without asking the user which one they'll
+export.** `VRMUtils.rotateVRM0(vrm)` (three-vrm's own utility) is a
+documented no-op for VRM1 files and only rotates legacy VRM0.x exports
+180 degrees to match three.js's -Z-forward convention -- called
+unconditionally on every load rather than trying to detect the version
+and branch, since the library already handles that detection internally
+and it's one less thing to get wrong.
+
+**Verified for real, not just typechecked -- the loading pipeline, not
+the visual result.** No browser, no GPU, and no real `.vrm` file exist
+in this sandbox, so the actual on-screen result is unverifiable here no
+matter what. What IS verifiable: whether the exact loader code path
+(`GLTFLoader` + `VRMLoaderPlugin`, the same classes `main.ts` imports)
+actually parses a real VRM file and produces the humanoid bones /
+expression manager the rest of the code depends on. Downloaded an
+official sample model from `pixiv/three-vrm`'s own GitHub repo
+(sparse-cloned just `packages/three-vrm/examples/models/`, avoiding a
+full clone of a large monorepo for one file) -- `VRM1_Constraint_Twist_
+Sample.vrm`, confirmed via direct GLB/JSON parsing (no three.js needed
+for this part) to be VRM spec 1.0 with 54 humanoid bones and the full
+expression preset list including `aa`/`ih`/`ou`/`ee`/`oh` (the viseme
+shapes lipsync needs) and `blink`/`blinkLeft`/`blinkRight`. Wrote a
+plain Node script running the actual loader code (needed one polyfill --
+`globalThis.self = globalThis`, since `GLTFLoader`'s texture-decode path
+assumes a browser's `self` global that doesn't exist in Node) and
+confirmed: the file loads without throwing, `vrm.humanoid.
+getNormalizedBoneNode("head"/"hips")` both resolve, `expressionManager.
+getExpression("aa"/"blink")` both resolve, and `setValue()` +
+`vrm.update()` run without throwing. This is the actual API surface
+`main.ts`/`lipsync.ts` use, not a simplified stand-in -- genuine
+confidence the loading code is correct, even though the sample model
+used to prove it isn't the user's real one.
+
+**Not verified, plainly:** the actual visual result (does she render
+correctly, does the camera framing look anywhere close to right against
+a real model's proportions, does the lipsync/blink look good in motion)
+-- all first-run-on-the-user's-machine territory once their VRoid Studio
+export actually exists. `CAMERA_POSITION`/`CAMERA_FOV_DEGREES`/
+`CAMERA_LOOK_AT` in `main.ts` are a hand-tuned starting guess for
+bust-up framing at real VRM humanoid scale (VRM models are authored in
+real-world meters, unlike Live2D's arbitrary internal units), explicitly
+documented as needing retuning, same spirit as the old Live2D `SCALE`
+constant always needing hand-tuning too.
+
 

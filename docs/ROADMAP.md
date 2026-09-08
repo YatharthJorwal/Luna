@@ -165,16 +165,35 @@ awaiting on-machine confirmation · ⬜ not started)
   (roommate-tsundere framing, flustered-at-flirtation, anti-repetition —
   see `docs/DECISIONS.md`) already done ad hoc, ahead of the rest of this
   phase.
-- ⬜ **Phase 7 — VRM avatar migration.** Replace the Live2D rendering stack
-  (`pixi-live2d5` + Cubism) with a WebGL 3D VRM renderer (e.g.
-  `@pixiv/three-vrm`) so custom VRoid Studio models can be used instead of
-  a 2D Live2D rig. The single biggest architectural change on the roadmap
-  — not incremental, a new rendering pipeline in `src/main.ts` — and
-  deliberately sequenced before Phases 8–10 below, since all three build
-  more naturally on VRM's blendshape/bone/3D-scene model than on Live2D's
-  flat 2D compositing. `src/lipsync.ts`'s audio-driven mouth movement will
-  need a VRM-blendshape equivalent of whatever it currently drives on the
-  Live2D model.
+- 🔶 **Phase 7 — VRM avatar migration.** Replaced the Live2D rendering
+  stack (`pixi-live2d5` + Cubism) with `three` + `@pixiv/three-vrm` --
+  `public/live2d/`, `public/cubism5/`, `vendor/pixi-live2d5/`, and the
+  Cubism Core script tag are all gone. `src/main.ts` now sets up a
+  Three.js scene/camera/renderer, loads a `.vrm` from `public/vrm/luna.vrm`
+  (gitignored -- the user's own model, not source), and drives a simple
+  randomized blink loop since VRM doesn't idle-animate on its own the way
+  Live2D's authored motion groups did. `src/lipsync.ts` rewritten around
+  VRM's `expressionManager` (the `aa`/`ih`/`ou`/`ee`/`oh` viseme-like
+  presets) instead of Cubism parameters -- architecturally different, not
+  a mechanical port, since `VRMExpressionManager` has no Cubism-style
+  snapshot/restore-per-frame cycle (confirmed by reading
+  `@pixiv/three-vrm-core`'s actual bundled source, not assumed just
+  because it seemed different), so a single shared `requestAnimationFrame`
+  loop driving `setValue()` each frame works correctly here, unlike the
+  old Live2D code which needed a specific model event hook to avoid being
+  silently overwritten. The loading pipeline itself was verified for
+  real: downloaded an official VRM1 sample model from `pixiv/three-vrm`'s
+  own repo, ran the exact loader code path in a plain Node script,
+  confirmed it parses, resolves humanoid bones, and finds the
+  `aa`/`blink` expressions the code depends on. Not verified: the actual
+  visual result against a real user-designed model -- no browser, no
+  GPU, no real `.vrm` file in the sandbox this was built in, so camera
+  framing (`CAMERA_POSITION`/`CAMERA_FOV_DEGREES` in `src/main.ts`) is a
+  hand-tuned guess, not measured against anything real; see `README.md`'s
+  "Putting your VRoid model in" for the full setup walkthrough and what
+  to adjust. HUD/input shell (`#hud`, status dot, input box, buttons)
+  deliberately untouched -- confirmed it doesn't need to change for this
+  migration, only the canvas/rendering code underneath it does.
 - ⬜ **Phase 8 — Emotion system + expression control.** Finally uses the
   `emotion` field that's been sitting unused in the `speak` WebSocket
   message since Phase 1 (`ws-client.ts`'s `SpeakMessage.emotion`) to drive

@@ -18,6 +18,10 @@ Thumbs.db
 # Proprietary, downloaded manually per README -- never commit this
 public/live2dcubismcore.min.js
 
+# Your own VRoid Studio export -- personal, large, not source. Keep
+# public/vrm/README.txt (the setup note) but not the model itself.
+public/vrm/*.vrm
+
 # Personal launcher scripts -- hardcode machine-specific absolute paths
 # (your GPT-SoVITS install location, etc.), so these stay local-only, same
 # as config.yaml's real ref_audio_path/prompt_text values.

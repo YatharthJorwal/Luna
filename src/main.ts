@@ -1,59 +1,127 @@
-import * as PIXI from "pixi.js";
-import { Live2DModel } from "pixi-live2d5";
+import * as THREE from "three";
+import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
+import { VRMLoaderPlugin, VRMUtils, type VRM } from "@pixiv/three-vrm";
 import { listen } from "@tauri-apps/api/event";
 import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage } from "./ws-client";
-import { speakWithLipsync } from "./lipsync";
+import { speakWithLipsync, getMouthOpenValue } from "./lipsync";
 import { MicInput, blobToBase64 } from "./mic";
 
-// Required so pixi-live2d5 can reach window.PIXI.Ticker to auto-update models.
-(window as unknown as { PIXI: typeof PIXI }).PIXI = PIXI;
+// Phase 7: VRM avatar migration -- see docs/DECISIONS.md for the full
+// reasoning. Replaces pixi.js + pixi-live2d5 (a 2D Cubism rig) with
+// three.js + @pixiv/three-vrm (a WebGL 3D VRM renderer), so a VRoid
+// Studio export can be used instead of a Live2D model. Drop your
+// exported .vrm file at MODEL_PATH below -- see README.md for the full
+// walkthrough.
+const MODEL_PATH = "/vrm/luna.vrm";
 
-const MODEL_PATH = "/live2d/Hiyori/Hiyori.model3.json";
-// How much of the window's height Luna should occupy. Cubism models are
-// authored at an arbitrary internal size unrelated to window pixels, so
-// this is a hand-tuned constant rather than derived from model bounds --
-// bump it up/down until she looks right at your window size, then leave it.
-const SCALE = 0.12;
+// Hand-tuned starting point for a bust-up framing at roughly a real VRM
+// humanoid's actual scale (VRM models are authored in real-world meters,
+// unlike Live2D's arbitrary internal units) -- retune once a real model's
+// proportions are known, same spirit as the old Live2D SCALE constant.
+const CAMERA_FOV_DEGREES = 30;
+const CAMERA_POSITION = new THREE.Vector3(0, 1.35, 1.6);
+const CAMERA_LOOK_AT = new THREE.Vector3(0, 1.3, 0);
 
 async function boot(): Promise<void> {
-  const canvas = document.getElementById("live2d-canvas") as HTMLCanvasElement;
+  const canvas = document.getElementById("avatar-canvas") as HTMLCanvasElement;
 
-  // PixiJS 8 uses an async init() instead of passing options to the
-  // constructor (that was the v7 pattern our first attempt used).
-  const app = new PIXI.Application();
-  await app.init({
-    canvas,
-    resizeTo: window,
-    backgroundAlpha: 0,
-    antialias: true,
-    resolution: window.devicePixelRatio || 1,
-  });
+  const renderer = new THREE.WebGLRenderer({ canvas, alpha: true, antialias: true });
+  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setSize(window.innerWidth, window.innerHeight);
 
-  const model = await Live2DModel.from(MODEL_PATH);
-  app.stage.addChild(model);
-  model.anchor.set(0.5, 1);
+  const scene = new THREE.Scene();
+  const camera = new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, window.innerWidth / window.innerHeight, 0.1, 20);
+  camera.position.copy(CAMERA_POSITION);
+  camera.lookAt(CAMERA_LOOK_AT);
+
+  // VRoid's toon (MToon) materials still need at least one real light in
+  // the scene to shade correctly, unlike an unlit 2D sprite -- a single
+  // soft directional light gives a flat, even look rather than trying to
+  // fake real lighting/shadows for a desktop overlay.
+  const light = new THREE.DirectionalLight(0xffffff, 1.4);
+  light.position.set(1, 1, 1);
+  scene.add(light);
+  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+
+  const loader = new GLTFLoader();
+  loader.register((parser) => new VRMLoaderPlugin(parser));
+
+  const gltf = await loader.loadAsync(MODEL_PATH);
+  const vrm: VRM = gltf.userData.vrm;
+
+  // rotateVRM0 is a no-op for VRM1 exports -- only legacy VRM0.x models
+  // (older VRoid Studio versions default to this) face the wrong way for
+  // three.js's -Z-forward convention and need the 180-degree turn.
+  VRMUtils.rotateVRM0(vrm);
+  // Standard best-practice cleanup from every official three-vrm example:
+  // merges skinned meshes/morph targets where safe to cut down draw calls
+  // and keep facial-expression blending consistent across submeshes --
+  // both are no-ops if there's nothing to combine, safe to always call.
+  VRMUtils.combineSkeletons(vrm.scene);
+  VRMUtils.combineMorphs(vrm);
+
+  scene.add(vrm.scene);
 
   function layout(): void {
-    model.scale.set(SCALE);
-    model.position.set(app.renderer.width / 2, app.renderer.height - 4);
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
   }
   layout();
-  // Not window.addEventListener("resize", layout) on purpose: PIXI's own
-  // resizeTo:window plugin also listens for window resize and updates
-  // app.renderer.width/height independently, with no guaranteed ordering
-  // against our own listener -- that race is what let a maximize/restore
-  // reposition her using stale dimensions and send her off-window. Running
-  // layout() every tick costs nothing measurable and can't race.
-  app.ticker.add(layout);
+  window.addEventListener("resize", layout);
 
-  // The model idles on its own: Hiyori's model3.json defines an "Idle"
-  // motion group, and the motion manager loops whichever group is named
-  // "Idle" whenever nothing higher-priority is playing.
+  // A simple blink loop -- VRM doesn't idle-animate on its own the way
+  // Hiyori's Live2D rig did with its authored "Idle" motion group; this
+  // is the minimum to not look like a frozen mannequin. Randomized
+  // interval, not a fixed metronome, so it doesn't read as mechanical.
+  let blinkTimer = 0;
+  let nextBlinkAt = 2 + Math.random() * 3;
+  let blinking = false;
+  let blinkElapsed = 0;
+  const BLINK_DURATION_S = 0.18;
 
-  setupHud(model);
+  function updateBlink(delta: number): void {
+    if (!vrm.expressionManager) return;
+    if (!blinking) {
+      blinkTimer += delta;
+      if (blinkTimer >= nextBlinkAt) {
+        blinking = true;
+        blinkElapsed = 0;
+        blinkTimer = 0;
+        nextBlinkAt = 2 + Math.random() * 4;
+      }
+      return;
+    }
+    blinkElapsed += delta;
+    const t = blinkElapsed / BLINK_DURATION_S;
+    if (t >= 1) {
+      vrm.expressionManager.setValue("blink", 0);
+      blinking = false;
+      return;
+    }
+    // Triangular envelope: closes over the first half, opens over the
+    // second -- cheap and reads fine for something this quick and this
+    // subtle, no need for actual easing curves.
+    vrm.expressionManager.setValue("blink", t < 0.5 ? t * 2 : (1 - t) * 2);
+  }
+
+  const clock = new THREE.Clock();
+  function animate(): void {
+    requestAnimationFrame(animate);
+    const delta = clock.getDelta();
+    updateBlink(delta);
+    if (vrm.expressionManager) {
+      vrm.expressionManager.setValue("aa", getMouthOpenValue());
+    }
+    vrm.update(delta);
+    renderer.render(scene, camera);
+  }
+  animate();
+
+  setupHud();
 }
 
-function setupHud(model: Live2DModel): void {
+function setupHud(): void {
   const input = document.getElementById("input-box") as HTMLInputElement;
   const statusDot = document.getElementById("status-dot") as HTMLDivElement;
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
@@ -128,7 +196,7 @@ function setupHud(model: Live2DModel): void {
   // state instead of two places that have to agree by accident.
   updateInputButtons();
 
-  const queue = new SpeakQueue(model);
+  const queue = new SpeakQueue();
   const client = new WsClient({
     onStateChange: setState,
     onSpeak: (msg: SpeakMessage) => queue.push(msg),
@@ -221,11 +289,13 @@ function setupHud(model: Live2DModel): void {
 // one per sentence, streamed as the LLM produces them (see
 // orchestrator/app.py / chunking.py) -- instead of Phase 1's one message
 // per reply. Without a queue, a second chunk arriving while the first is
-// still playing would call speakWithLipsync() again on the same model,
-// starting a second Audio element/AnalyserNode racing the first one.
-// This plays each queued chunk to completion before starting the next.
+// still playing would call speakWithLipsync() again, starting a second
+// Audio element/AnalyserNode racing the first one. This plays each queued
+// chunk to completion before starting the next. No `model`/`vrm`
+// reference needed here as of Phase 7 -- lipsync.ts's mouth-openness
+// value is read by main.ts's own single shared render loop, not pushed
+// into the model directly from here the way the old Live2D version did.
 class SpeakQueue {
-  private model: Live2DModel;
   private pending: SpeakMessage[] = [];
   private playing = false;
   private currentHandle: ReturnType<typeof speakWithLipsync> | null = null;
@@ -238,10 +308,6 @@ class SpeakQueue {
   // delivery sound like natural pauses between sentences rather than abrupt
   // bursts.
   private static readonly GAP_MS = 150;
-
-  constructor(model: Live2DModel) {
-    this.model = model;
-  }
 
   push(msg: SpeakMessage): void {
     this.pending.push(msg);
@@ -272,12 +338,7 @@ class SpeakQueue {
     const blob = base64ToBlob(msg.audio_b64, msg.mime);
     const url = URL.createObjectURL(blob);
 
-    // pixi-live2d5 doesn't include a built-in speak()/lipsync helper (the
-    // old library we started with did, but it's incompatible with the
-    // Cubism Core version Live2D currently ships -- see
-    // vendor/pixi-live2d5/NOTES.md). speakWithLipsync() plays the audio
-    // and drives the model's LipSync parameters from it manually.
-    const handle = speakWithLipsync(this.model, url);
+    const handle = speakWithLipsync(url);
     this.currentHandle = handle;
     handle.onFinish(() => {
       URL.revokeObjectURL(url);
