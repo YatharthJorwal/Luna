@@ -23,11 +23,9 @@ const MODEL_PATH = "/vrm/luna.vrm";
 // out to have, instead of a blind guess at absolute numbers that only
 // happens to work for one specific model.
 const CAMERA_FOV_DEGREES = 32;
-const CAMERA_DISTANCE_FROM_HEAD = 0.9;
-// Camera sits slightly below head height and looks slightly up at it --
-// reads more natural than a flat, dead-level stare into the middle of
-// the face.
-const CAMERA_HEIGHT_OFFSET_FROM_HEAD = -0.15;
+const CAMERA_DISTANCE_FROM_HEAD = 1.2;
+// Camera slightly above the head, not dead-center, so the model's own eyes are looking slightly down at the camera rather than straight at it -- this reads as a more natural, relaxed pose than a dead-on stare.
+const CAMERA_HEIGHT_OFFSET_FROM_HEAD = 0.05;
 
 // VRM's bind/rest pose is a T-pose by default (arms straight out to the
 // sides) -- that's normal for a skeleton's rest pose, not something wrong
