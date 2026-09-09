@@ -48,60 +48,85 @@ body {
   display: block;
 }
 
-/* Captions: one bubble showing whatever sentence is currently playing,
-   synced to SpeakQueue in main.ts (not just to when a `speak` message
-   arrives -- that would desync captions from what's actually audible
-   whenever a sentence is still queued behind an earlier one). Sits above
-   the HUD pill rather than inside it since its width/height changes with
-   the line length and shouldn't push the pill around. Hidden (opacity 0,
-   slightly scaled down + dropped) at rest; `.visible` is the persistent
-   on/off state, `.pop` is a one-shot re-trigger applied every time the
-   text itself changes while already visible, so back-to-back sentences
-   each still get their own little bounce instead of just flatly
-   swapping text. */
+/* Captions: no box, no background, no gradient chip -- just the words
+   themselves sitting over the scene with a soft glow, revealed one at a
+   time roughly in sync with SpeakQueue's playback (see main.ts's
+   startCaptionLine/tickCaptionProgress). Each word is its own <span>,
+   created with display:none and no default caption content, so the line
+   visibly grows word by word instead of the whole sentence appearing (or
+   reserving blank space) at once -- this is the actual fix for the
+   "everything piles up in one big block" look of the old gradient-box
+   version. `.shown` reveals a word; `.active` is the one word currently
+   "in the highlight" (bright glow, karaoke-style); `.spoken` is the
+   dimmer, glow-free afterglow every earlier word settles into once the
+   highlight has moved past it; `.pop` is the one-shot bounce a word gets
+   the instant it's first revealed. */
 #caption {
   position: absolute;
   left: 50%;
-  bottom: 56px;
-  max-width: min(80%, 320px);
-  padding: 9px 16px;
-  border-radius: 18px;
-  background: linear-gradient(135deg, #a684e8, #e88ac0);
-  color: #fff;
-  font-size: 13px;
-  font-weight: 600;
-  line-height: 1.4;
+  bottom: 60px;
+  transform: translateX(-50%);
+  max-width: min(84%, 340px);
   text-align: center;
-  text-shadow: 0 1px 2px rgba(60, 20, 80, 0.25);
-  box-shadow: 0 6px 20px rgba(140, 90, 210, 0.35);
+  line-height: 1.55;
   -webkit-app-region: no-drag;
   pointer-events: none;
   opacity: 0;
-  transform: translate(-50%, 6px) scale(0.9);
-  transform-origin: bottom center;
-  transition:
-    opacity 200ms ease,
-    transform 200ms ease;
+  transition: opacity 260ms ease;
 }
 
 #caption.visible {
   opacity: 1;
-  transform: translate(-50%, 0) scale(1);
 }
 
-#caption.pop {
-  animation: caption-pop 340ms cubic-bezier(0.34, 1.56, 0.64, 1);
+.caption-word {
+  display: none;
+  font-size: 15px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: rgba(244, 240, 255, 0.65);
+  text-shadow: none;
+  transition:
+    color 220ms ease,
+    text-shadow 220ms ease;
 }
 
-@keyframes caption-pop {
+/* The word currently "spoken" -- a soft purple/pink glow bleeding out of
+   the letters themselves rather than a highlight box behind them. */
+.caption-word.active {
+  display: inline-block;
+  color: #fff;
+  text-shadow:
+    0 0 6px rgba(230, 170, 255, 0.9),
+    0 0 16px rgba(190, 130, 240, 0.7),
+    0 0 28px rgba(232, 138, 192, 0.4);
+}
+
+.caption-word.shown {
+  display: inline-block;
+}
+
+.caption-word.spoken {
+  color: rgba(244, 240, 255, 0.55);
+  text-shadow: none;
+}
+
+.caption-word.pop {
+  animation: caption-word-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes caption-word-pop {
   0% {
-    transform: translate(-50%, 4px) scale(0.9);
+    opacity: 0;
+    transform: translateY(6px) scale(0.85);
   }
-  55% {
-    transform: translate(-50%, -3px) scale(1.05);
+  60% {
+    opacity: 1;
+    transform: translateY(-2px) scale(1.08);
   }
   100% {
-    transform: translate(-50%, 0) scale(1);
+    opacity: 1;
+    transform: translateY(0) scale(1);
   }
 }
 
@@ -226,4 +251,32 @@ body {
   50% {
     opacity: 0.4;
   }
+}
+
+/* Dev/QA toggle -- cycles through every VRM expression on click (see
+   main.ts's emotionTestButton handler). Deliberately styled identically
+   to mic/action-button rather than called out as special, since it's a
+   permanent fixture of the HUD, not a temporary debug flag. */
+#emotion-test-button {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+  transition: color 150ms ease;
+}
+
+#emotion-test-button svg {
+  width: 16px;
+  height: 16px;
+}
+
+#emotion-test-button:hover {
+  color: var(--ink);
 }

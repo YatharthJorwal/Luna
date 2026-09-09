@@ -25,6 +25,30 @@ export function getMouthOpenValue(): number {
   return currentMouthDriver ? currentMouthDriver() : 0;
 }
 
+// Same one-clip-at-a-time invariant as currentMouthDriver above (there's
+// only ever one Audio element actually playing), tracked separately
+// rather than reusing that driver's closure because captions need the
+// raw elapsed/duration numbers, not a derived mouth-openness value.
+// This is what lets main.ts approximate per-word caption timing against
+// GPT-SoVITS's *actual* clip length instead of guessing a fixed
+// words-per-second rate -- GPT-SoVITS's API returns finished WAV bytes
+// with no per-word timestamps (confirmed against orchestrator/tts.py),
+// so real phoneme-level sync isn't available; this is the best signal
+// there is to sync against.
+let currentSpeechEl: HTMLAudioElement | null = null;
+
+/** Returns the elapsed/total seconds of whatever clip is currently
+ * playing, or null if nothing is playing or its duration isn't known yet
+ * (metadata hasn't loaded -- normal for the first frame or two after
+ * play() is called). Callers should treat null as "don't move the
+ * caption forward yet," not as an error. */
+export function getSpeechProgress(): { elapsed: number; duration: number } | null {
+  if (!currentSpeechEl || currentSpeechEl.paused || currentSpeechEl.ended) return null;
+  const duration = currentSpeechEl.duration;
+  if (!isFinite(duration) || duration <= 0) return null;
+  return { elapsed: currentSpeechEl.currentTime, duration };
+}
+
 export interface SpeakHandle {
   onFinish(cb: () => void): void;
   /**
@@ -98,6 +122,7 @@ export function speakWithLipsync(audioUrl: string): SpeakHandle {
     // between this clip finishing and this cleanup running, clearing it
     // unconditionally would wipe the wrong one out.
     if (currentMouthDriver === getMouthOpen) currentMouthDriver = null;
+    if (currentSpeechEl === audioEl) currentSpeechEl = null;
     source.disconnect();
     analyser.disconnect();
   }
@@ -108,6 +133,7 @@ export function speakWithLipsync(audioUrl: string): SpeakHandle {
   }
 
   currentMouthDriver = getMouthOpen;
+  currentSpeechEl = audioEl;
   audioEl.addEventListener("ended", onEnded);
   audioEl.play().catch((err) => console.error("[luna] audio playback failed", err));
 

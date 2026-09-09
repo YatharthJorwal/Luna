@@ -3,7 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils, type VRM } from "@pixiv/three-vrm";
 import { listen } from "@tauri-apps/api/event";
 import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage } from "./ws-client";
-import { speakWithLipsync, getMouthOpenValue } from "./lipsync";
+import { speakWithLipsync, getMouthOpenValue, getSpeechProgress } from "./lipsync";
 import { MicInput, blobToBase64 } from "./mic";
 
 // Phase 7: VRM avatar migration -- see docs/DECISIONS.md for the full
@@ -61,6 +61,16 @@ function applyIdlePose(vrm: VRM): void {
   leftLowerArm?.rotation.set(0, -0.15, 0);
   rightLowerArm?.rotation.set(0, 0.15, 0);
 }
+
+// Matches orchestrator/persona.py's VALID_EMOTIONS exactly -- the real
+// standard VRM expression presets, not the more colorful
+// "bored"/"embarrassed" language ROADMAP.md originally sketched this
+// with (see persona.py's own comment on why). Module-level (not just
+// local to boot()'s emotion-blend system) so setupHud's manual
+// expression-test button below can cycle the same list without a second
+// hardcoded copy going stale relative to it.
+const EMOTION_NAMES = ["happy", "angry", "sad", "relaxed", "surprised", "neutral"] as const;
+type EmotionName = (typeof EMOTION_NAMES)[number];
 
 async function boot(): Promise<void> {
   const canvas = document.getElementById("avatar-canvas") as HTMLCanvasElement;
@@ -192,12 +202,7 @@ async function boot(): Promise<void> {
   // expression weights eases toward 1 (if it's the current target) or 0
   // (otherwise) rather than jumping there instantly -- reads as a
   // gradual mood shift over a fraction of a second instead of a jarring
-  // instant switch. EMOTION_NAMES matches orchestrator/persona.py's
-  // VALID_EMOTIONS exactly -- the real standard VRM expression presets,
-  // not the more colorful "bored"/"embarrassed" language ROADMAP.md
-  // originally sketched this with (see persona.py's own comment on why).
-  const EMOTION_NAMES = ["happy", "angry", "sad", "relaxed", "surprised", "neutral"] as const;
-  type EmotionName = (typeof EMOTION_NAMES)[number];
+  // instant switch.
   let targetEmotion: EmotionName = "neutral";
   const currentEmotionWeights: Record<EmotionName, number> = {
     happy: 0,
@@ -233,12 +238,20 @@ async function boot(): Promise<void> {
     }
   }
 
+  const hud = setupHud(setTargetEmotion);
+
   const clock = new THREE.Clock();
   function animate(): void {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
     updateBlink(delta);
     updateEmotion(delta);
+    // Advances the caption's per-word reveal against the currently
+    // playing clip's real elapsed time -- piggybacking on this loop
+    // rather than a second rAF/interval, same reasoning as
+    // getMouthOpenValue() below (one shared loop, everything reads off
+    // it once a frame).
+    hud.tick();
     if (vrm.expressionManager) {
       vrm.expressionManager.setValue("aa", getMouthOpenValue());
     }
@@ -246,15 +259,20 @@ async function boot(): Promise<void> {
     renderer.render(scene, camera);
   }
   animate();
-
-  setupHud(setTargetEmotion);
 }
 
-function setupHud(setTargetEmotion: (emotion?: string) => void): void {
+interface Hud {
+  /** Called once a frame from boot()'s shared render loop -- advances
+   * the caption's per-word reveal against the currently playing clip. */
+  tick(): void;
+}
+
+function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const input = document.getElementById("input-box") as HTMLInputElement;
   const statusDot = document.getElementById("status-dot") as HTMLDivElement;
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
   const actionButton = document.getElementById("action-button") as HTMLButtonElement;
+  const emotionTestButton = document.getElementById("emotion-test-button") as HTMLButtonElement;
   const caption = document.getElementById("caption") as HTMLDivElement;
 
   const STOP_ICON =
@@ -339,8 +357,123 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
   // state instead of two places that have to agree by accident.
   updateInputButtons();
 
+  // Drives the #caption element (see style.css): a soft, glowing overlay
+  // with no background box, whose words pop in one at a time roughly in
+  // time with the currently-playing clip -- not the whole sentence
+  // slammed onto screen at once. GPT-SoVITS's API returns finished WAV
+  // bytes with no per-word timestamps (confirmed against
+  // orchestrator/tts.py), so there's no ground truth to sync against
+  // frame-perfectly; instead each word is allotted a share of the clip's
+  // real duration proportional to its own character length (a longer
+  // word gets more of the clip's time than "a" does) -- a common
+  // approximation for exactly this situation, close enough to read as
+  // "in sync" without needing real forced alignment.
+  let captionWordEls: HTMLSpanElement[] = [];
+  // Fraction (0..1) of the clip's duration at which each word should
+  // become the active one -- captionWordStarts[i] is word i's own start
+  // point, computed once per line in startCaptionLine, not every tick.
+  let captionWordStarts: number[] = [];
+  let captionActiveIndex = -1;
+
+  function startCaptionLine(text: string): void {
+    const words = text.trim().split(/\s+/).filter(Boolean);
+    caption.innerHTML = "";
+    captionWordEls = words.map((word) => {
+      const span = document.createElement("span");
+      span.className = "caption-word";
+      span.textContent = word;
+      caption.appendChild(span);
+      caption.appendChild(document.createTextNode(" "));
+      return span;
+    });
+    const totalChars = words.reduce((sum, w) => sum + w.length, 0) || 1;
+    let seenChars = 0;
+    captionWordStarts = words.map((w) => {
+      const start = seenChars / totalChars;
+      seenChars += w.length;
+      return start;
+    });
+    captionActiveIndex = -1;
+    caption.classList.add("visible");
+    // Reveal the first word immediately rather than waiting for the
+    // first real tick() -- getSpeechProgress() reliably returns null for
+    // a frame or two after play() while the browser's still loading
+    // audio metadata, and an empty caption during that gap reads as
+    // broken rather than just "about to start."
+    applyCaptionProgress(0);
+  }
+
+  function tickCaptionProgress(): void {
+    if (captionWordEls.length === 0) return;
+    const progress = getSpeechProgress();
+    if (!progress) return;
+    const frac = Math.min(1, progress.elapsed / progress.duration);
+    let idx = 0;
+    for (let i = 0; i < captionWordStarts.length; i++) {
+      if (captionWordStarts[i]! <= frac) idx = i;
+      else break;
+    }
+    applyCaptionProgress(idx);
+  }
+
+  // Actually mutates the DOM for a given active word index -- split out
+  // from tickCaptionProgress so startCaptionLine can also call it
+  // directly for word 0 without duplicating this logic. Cheap to call
+  // repeatedly (early-returns if the index hasn't actually changed since
+  // last time) since tickCaptionProgress calls it every frame.
+  function applyCaptionProgress(activeIndex: number): void {
+    if (activeIndex === captionActiveIndex) return;
+    captionActiveIndex = activeIndex;
+    captionWordEls.forEach((el, i) => {
+      if (i < activeIndex) {
+        // Already spoken -- stays visible but settles out of the
+        // brighter "active" highlight, same as a karaoke line's afterglow.
+        el.classList.add("shown", "spoken");
+        el.classList.remove("active", "pop");
+      } else if (i === activeIndex) {
+        const alreadyShown = el.classList.contains("shown");
+        el.classList.add("shown", "active");
+        el.classList.remove("spoken");
+        if (!alreadyShown) {
+          // Word is going from display:none to visible for the first
+          // time -- force a reflow before adding .pop so the browser
+          // treats the keyframe animation as a fresh start rather than
+          // a no-op on a class that (from its perspective) never left.
+          el.classList.remove("pop");
+          void el.offsetWidth;
+          el.classList.add("pop");
+        }
+      } else {
+        el.classList.remove("shown", "active", "spoken", "pop");
+      }
+    });
+  }
+
+  function endCaptionLine(): void {
+    caption.classList.remove("visible");
+  }
+
+  const defaultPlaceholder = input.placeholder;
+  let placeholderTimer: number | undefined;
+  // Generic "flash a message in the input's placeholder for a few
+  // seconds" helper -- originally just for STT transcripts, now also
+  // used by the expression-test button below so both share one revert
+  // timer instead of two independently racing each other.
+  function flashPlaceholder(text: string): void {
+    window.clearTimeout(placeholderTimer);
+    input.placeholder = text;
+    placeholderTimer = window.setTimeout(() => {
+      input.placeholder = defaultPlaceholder;
+    }, 4000);
+  }
+
+  function showTranscript(text: string): void {
+    flashPlaceholder(text ? `Heard: "${text}"` : "Didn't catch that -- try again?");
+  }
+
   const queue = new SpeakQueue({
-    onCaption: (text) => setCaption(text),
+    onCaptionStart: (text) => startCaptionLine(text),
+    onCaptionEnd: () => endCaptionLine(),
     onActive: () => {
       audioIdle = false;
       recomputeTurnActive();
@@ -348,6 +481,10 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
     onIdle: () => {
       audioIdle = true;
       recomputeTurnActive();
+      // She's actually done talking (not just done generating) -- drop
+      // back to a neutral expression rather than leaving whatever mood
+      // the last line's tag set frozen on her face indefinitely.
+      setTargetEmotion("neutral");
     },
   });
   const client = new WsClient({
@@ -404,49 +541,25 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
       orchestratorDone = true;
       audioIdle = true;
       recomputeTurnActive();
+      setTargetEmotion("neutral");
     } else {
       submitText();
     }
   });
 
-  // Briefly shows what the orchestrator heard in the input box's own
-  // placeholder rather than its value -- the transcript has already been
-  // sent and is on its way to the LLM by the time this arrives (see
-  // ws-client.ts), so putting it in `value` would look like something
-  // still waiting to be submitted. Reverts to the normal placeholder after
-  // a few seconds either way.
-  // Drives the #caption bubble (see style.css): shows the sentence
-  // currently playing, one bubble reused for every line rather than a
-  // stack, since SpeakQueue only ever has one chunk actually audible at
-  // a time. `.visible` is a simple persistent on/off (CSS transition
-  // handles the fade/slide); `.pop` is a one-shot bounce re-applied on
-  // every text change so consecutive sentences each still feel like
-  // their own little arrival instead of the text just flatly swapping
-  // underneath a bubble that's already on screen. Removing then
-  // re-adding the class does nothing on its own if it's already applied
-  // -- forcing a reflow in between (reading offsetWidth) is what makes
-  // the browser treat it as a fresh animation start rather than a no-op.
-  function setCaption(text: string | null): void {
-    if (!text) {
-      caption.classList.remove("visible");
-      return;
-    }
-    caption.textContent = text;
-    caption.classList.add("visible");
-    caption.classList.remove("pop");
-    void caption.offsetWidth;
-    caption.classList.add("pop");
-  }
-
-  const defaultPlaceholder = input.placeholder;
-  let transcriptTimer: number | undefined;
-  function showTranscript(text: string): void {
-    window.clearTimeout(transcriptTimer);
-    input.placeholder = text ? `Heard: "${text}"` : "Didn't catch that -- try again?";
-    transcriptTimer = window.setTimeout(() => {
-      input.placeholder = defaultPlaceholder;
-    }, 4000);
-  }
+  // Dev/QA toggle: click through every VRM expression Luna actually
+  // supports, one per click, entirely independent of anything the
+  // orchestrator says -- lets you confirm the model's expression
+  // blendshapes are wired up correctly without needing to provoke each
+  // mood out of the LLM by conversation. Starts at index -1 so the very
+  // first click lands on EMOTION_NAMES[0] rather than skipping it.
+  let emotionTestIndex = -1;
+  emotionTestButton.addEventListener("click", () => {
+    emotionTestIndex = (emotionTestIndex + 1) % EMOTION_NAMES.length;
+    const emotion = EMOTION_NAMES[emotionTestIndex]!;
+    setTargetEmotion(emotion);
+    flashPlaceholder(`Testing expression: ${emotion}`);
+  });
 
   const mic = new MicInput({
     onRecordingChange: (recording) => {
@@ -487,6 +600,10 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
   }).catch((err) => {
     console.error("[luna] couldn't attach F9 push-to-talk listener", err);
   });
+
+  return {
+    tick: () => tickCaptionProgress(),
+  };
 }
 
 // Phase 2's orchestrator sends one reply as several `speak` messages --
@@ -500,11 +617,20 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
 // value is read by main.ts's own single shared render loop, not pushed
 // into the model directly from here the way the old Live2D version did.
 interface SpeakQueueOptions {
-  /** Called with the sentence now playing, or null once nothing is. This
-   * is what drives the #caption bubble -- tied to actual playback
-   * start/end, not to when a `speak` message merely arrives, so captions
-   * stay in sync even when a chunk sits queued behind an earlier one. */
-  onCaption: (text: string | null) => void;
+  /** Called with the full sentence text right as its clip starts
+   * playing -- setupHud's startCaptionLine() splits it into words and
+   * reveals them progressively from there, timed against the same
+   * clip's real elapsed/duration (see lipsync.ts's getSpeechProgress).
+   * Fired from playNext(), not push(), so it stays correctly timed even
+   * when a chunk sits queued behind an earlier one. */
+  onCaptionStart: (text: string) => void;
+  /** Called whenever a clip finishes playing -- whether or not another
+   * is already queued behind it -- or when stopAll() cuts playback
+   * short. Firing this between every chunk (not only when the whole
+   * queue empties) is what gives consecutive sentences a clean
+   * fade-out/fade-in gap instead of one line's words abruptly being
+   * replaced by the next line's mid-transition. */
+  onCaptionEnd: () => void;
   /** Fires once, on the 0-pending/not-playing -> playing transition
    * (i.e. when this queue has something to say for the first time since
    * it was last empty) -- not on every chunk, since chunks 2..n start
@@ -550,7 +676,7 @@ class SpeakQueue {
     this.currentHandle?.stop();
     this.currentHandle = null;
     this.playing = false;
-    this.opts.onCaption(null);
+    this.opts.onCaptionEnd();
     // Not routed through onIdle -- main.ts's stop handler sets its own
     // idle/done flags directly and synchronously alongside this call, so
     // firing onIdle here too would just be a redundant second
@@ -562,12 +688,11 @@ class SpeakQueue {
     if (!msg) {
       this.playing = false;
       this.currentHandle = null;
-      this.opts.onCaption(null);
       this.opts.onIdle();
       return;
     }
     this.playing = true;
-    this.opts.onCaption(msg.text);
+    this.opts.onCaptionStart(msg.text);
 
     const blob = base64ToBlob(msg.audio_b64, msg.mime);
     const url = URL.createObjectURL(blob);
@@ -577,6 +702,7 @@ class SpeakQueue {
     handle.onFinish(() => {
       URL.revokeObjectURL(url);
       this.currentHandle = null;
+      this.opts.onCaptionEnd();
       window.setTimeout(() => this.playNext(), SpeakQueue.GAP_MS);
     });
   }
