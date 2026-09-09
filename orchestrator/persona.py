@@ -6,9 +6,12 @@ run right now.
 
 apply_persona_pass() is the seam docs/ARCHITECTURE.md calls for even while
 collapsed: a real second LLM pass in Phase 6 slots in here without
-touching app.py or llm.py at all. It's a no-op today because there's
-nothing to post-process yet, not because the seam doesn't exist.
+touching app.py or llm.py at all. Not a pure no-op anymore -- see its own
+docstring -- but still no real second LLM call, just a cheap regex
+safety net on the way out.
 """
+
+import re
 
 SYSTEM_PROMPT = """\
 You are Luna, a local offline desktop companion who lives permanently on \
@@ -115,8 +118,32 @@ You live here. Act like it.
 """
 
 
+# Defense in depth against SYSTEM_PROMPT's "never use a dash" instruction
+# not being reliably followed -- confirmed in practice, not just a
+# theoretical worry (see docs/DECISIONS.md): a 9B model given a plain-
+# language instruction not to use a specific punctuation mark is not the
+# same as a 9B model that actually never uses it. A regex can't be argued
+# out of catching one. Runs on every chunk right before TTS, in
+# apply_persona_pass() -- deliberately NOT applied to what's stored in
+# `history` (app.py appends the raw, pre-persona-pass text there), since
+# history is only ever fed back into the LLM as text context, never
+# spoken aloud again -- the "reads aloud as 'minus'" problem this exists
+# to prevent only applies to the TTS-bound path.
+#
+# Replaces with ", " rather than a plain space -- reads fine either way a
+# dash was being used: a compound word ("well-being" -> "well, being",
+# slightly odd but not broken) or a spoken-style interruption/pause
+# ("wait - actually" -> "wait, actually", reads naturally). Covers the
+# ASCII hyphen-minus plus the common Unicode dash-family characters an
+# LLM might actually produce (en dash, em dash, minus sign, etc.) --
+# whitespace already around the dash is absorbed into the same
+# substitution rather than left doubled up.
+_DASH_PATTERN = re.compile(r"\s*[\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212]\s*")
+
+
 def apply_persona_pass(neutral_text: str) -> str:
-    """Phase 6 seam: currently identity. When the persona pass becomes a
-    real second LLM call, this is the only function that changes -- the
-    sentence-chunking/streaming pipeline in app.py stays the same."""
-    return neutral_text
+    """Phase 6 seam: mostly identity, minus one safety net. When the
+    persona pass becomes a real second LLM call, this is the only
+    function that changes -- the sentence-chunking/streaming pipeline in
+    app.py stays the same."""
+    return _DASH_PATTERN.sub(", ", neutral_text)

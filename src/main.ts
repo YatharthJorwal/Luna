@@ -75,13 +75,31 @@ async function boot(): Promise<void> {
   const camera = new THREE.PerspectiveCamera(CAMERA_FOV_DEGREES, window.innerWidth / window.innerHeight, 0.1, 20);
 
   // VRoid's toon (MToon) materials still need at least one real light in
-  // the scene to shade correctly, unlike an unlit 2D sprite -- a single
-  // soft directional light gives a flat, even look rather than trying to
-  // fake real lighting/shadows for a desktop overlay.
-  const light = new THREE.DirectionalLight(0xffffff, 1.4);
-  light.position.set(1, 1, 1);
-  scene.add(light);
-  scene.add(new THREE.AmbientLight(0xffffff, 0.6));
+  // the scene to shade correctly, unlike an unlit 2D sprite -- but a
+  // single strong, off-axis directional light (the original (1,1,1)
+  // setup) is a likely cause of the pale/bright patch the user reported
+  // on the jacket (see docs/DECISIONS.md): MToon's toon shading uses a
+  // fairly hard transition between lit and shadowed bands, and a strong
+  // light coming from a steep side angle can turn that transition into
+  // an unnaturally sharp, oddly-placed bright patch rather than a smooth
+  // gradient. This is a genuine guess, not a confirmed fix -- there's no
+  // renderer in this sandbox to actually see the result -- but flatter,
+  // more front-on, lower-intensity lighting is the standard fix for
+  // exactly this kind of toon-shading artifact, and is also just a
+  // better match for the flat, even VTuber look the user wants generally.
+  const keyLight = new THREE.DirectionalLight(0xffffff, 0.9);
+  // Positioned roughly where the camera itself sits (see CAMERA_* below)
+  // rather than off to one side -- light coming from close to the
+  // viewer's own direction minimizes the self-shadowing/harsh side
+  // lighting a toon material is most likely to render badly.
+  keyLight.position.set(0, 1.6, 2.2);
+  scene.add(keyLight);
+  // A hemisphere light (soft light from "above"/"below" blended by each
+  // surface's own normal direction) fills in shadows more evenly than a
+  // flat ambient light would, which matters more for toon materials --
+  // an evenly-lit flat ambient can still leave the *key* light's harsh
+  // transition band visible, where a hemisphere light softens it.
+  scene.add(new THREE.HemisphereLight(0xffffff, 0xd8d8e0, 1.1));
 
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));

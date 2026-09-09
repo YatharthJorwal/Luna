@@ -1456,4 +1456,49 @@ treating it as a separate bug worth chasing further -- diagnosing a
 rendering artifact blind, on top of an already-identified likely cause,
 risked wasted effort in the wrong direction.
 
+## Dash stripping moved to code; lighting adjustment attempt for the jacket artifact
+
+The user's second screenshot confirmed the T-pose fix worked (close-up
+VTuber-style framing looks good, arms down) but disproved the "T-pose
+caused the jacket artifact" hypothesis from the previous round -- the
+pale patch was still there with the pose fixed, meaning it's a separate
+issue. Also reported: the dash-avoidance persona instruction from two
+rounds ago isn't actually working -- she still generates dashes.
+
+**Dashes: moved from prompt-only to a code-level regex in
+`apply_persona_pass()`.** A plain-language instruction not to use a
+specific punctuation mark turned out not to be reliably followed by a
+9B model -- confirmed in practice now, not just a theoretical risk.
+`apply_persona_pass()` was built in Phase 2 specifically as the seam for
+"a real second pass over the text before it's spoken" -- this is the
+first real use of it. `_DASH_PATTERN` matches the ASCII hyphen plus the
+common Unicode dash-family characters an LLM might actually produce (en
+dash, em dash, minus sign), replacing with ", " -- reads fine either way
+a dash was being used (a compound word reads slightly oddly but isn't
+broken; a spoken-style interruption/pause reads naturally). Verified
+directly against realistic sample sentences (compound words, em-dash
+interruptions, multi-hyphenated phrases) -- all produce sensible,
+speakable output, no case left broken. Deliberately only applied to the
+TTS-bound text, not what's stored in `history` -- history is only ever
+fed back into the LLM as context, never spoken aloud again, so the
+"reads as minus" problem this exists to prevent doesn't apply there.
+
+**Jacket artifact: lighting adjustment, a genuine guess, not a confirmed
+fix.** Since the T-pose wasn't the cause, the next most likely
+explanation (and the user's own guess) is MToon's toon shading producing
+a hard, unnaturally sharp light/shadow transition from the original
+single strong off-axis `DirectionalLight` at `(1,1,1)`. Replaced with a
+softer, more front-on key light (positioned roughly where the camera
+itself sits, to minimize side/self-shadowing) plus a `HemisphereLight`
+for softer, more even fill instead of a flat `AmbientLight` -- standard
+technique for reducing toon-shading artifacts, and also just a better
+match for the flat, even VTuber look the user is going for generally.
+Genuinely can't confirm this fixes the *specific* artifact without a
+real render -- if it doesn't, the next things worth checking (on the
+user's end, not code-fixable) are VRoid Studio's outfit "shape clipping"
+/ auto-hide-under-clothing export setting, or opening the file in an
+online VRM viewer to see if the same patch shows up there independent of
+this app's lighting entirely (which would confirm/rule out an asset
+issue vs. a lighting issue).
+
 
