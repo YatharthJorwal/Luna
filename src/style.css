@@ -54,13 +54,15 @@ body {
    startCaptionLine/tickCaptionProgress). Each word is its own <span>,
    created with display:none and no default caption content, so the line
    visibly grows word by word instead of the whole sentence appearing (or
-   reserving blank space) at once -- this is the actual fix for the
-   "everything piles up in one big block" look of the old gradient-box
-   version. `.shown` reveals a word; `.active` is the one word currently
-   "in the highlight" (bright glow, karaoke-style); `.spoken` is the
-   dimmer, glow-free afterglow every earlier word settles into once the
-   highlight has moved past it; `.pop` is the one-shot bounce a word gets
-   the instant it's first revealed. */
+   reserving blank space) at once. `.shown` reveals a word; `.active` is
+   the one word currently "in the highlight" (bright glow, karaoke-
+   style); `.spoken` is the dimmer, glow-free afterglow the few words
+   right behind the highlight settle into; `.fading` is what a spoken
+   word collapses into once it falls further than CAPTION_TRAIL_WORDS
+   behind the highlight -- individually shrinking and fading out rather
+   than sitting there forever until the whole line disappears at once.
+   `.pop` is the one-shot bounce a word gets the instant it's first
+   revealed. */
 #caption {
   position: absolute;
   left: 50%;
@@ -81,6 +83,11 @@ body {
 
 .caption-word {
   display: none;
+  overflow: hidden;
+  white-space: nowrap;
+  vertical-align: bottom;
+  max-width: 240px;
+  margin-right: 0.28em;
   font-size: 15px;
   font-weight: 700;
   letter-spacing: 0.2px;
@@ -88,7 +95,10 @@ body {
   text-shadow: none;
   transition:
     color 220ms ease,
-    text-shadow 220ms ease;
+    text-shadow 220ms ease,
+    opacity 420ms ease,
+    max-width 420ms ease,
+    margin-right 420ms ease;
 }
 
 /* The word currently "spoken" -- a soft purple/pink glow bleeding out of
@@ -109,6 +119,20 @@ body {
 .caption-word.spoken {
   color: rgba(244, 240, 255, 0.55);
   text-shadow: none;
+}
+
+/* Applied once a word falls more than CAPTION_TRAIL_WORDS behind the
+   current highlight (see main.ts's applyCaptionProgress) -- rather than
+   every spoken word sitting there dimmed until the whole line vanishes
+   at once, each one individually shrinks and fades out as it scrolls
+   out of the trailing window. max-width collapsing to 0 (not just
+   opacity) is what actually keeps the line from growing indefinitely
+   and wrapping -- opacity alone would hide the word but still reserve
+   its space. */
+.caption-word.fading {
+  opacity: 0;
+  max-width: 0;
+  margin-right: 0;
 }
 
 .caption-word.pop {

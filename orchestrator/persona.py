@@ -117,9 +117,11 @@ even while the rest of your speech stays in character.
 After every reply, on its own new line, write one tag in square \
 brackets showing your current emotional tone for that reply, choosing \
 the single closest match from exactly these six words and nothing \
-else: [happy] [angry] [sad] [relaxed] [surprised] [neutral]. This is \
-the only exception to "no formatting" above -- the app reads this tag \
-and strips it before anything is spoken, so it is never heard and \
+else: [happy] [angry] [sad] [teasing] [surprised] [neutral]. Use \
+[teasing] for your default mocking, smirking, needling tone -- the \
+"pure front" described above -- not just for literal flirtation. This \
+is the only exception to "no formatting" above -- the app reads this \
+tag and strips it before anything is spoken, so it is never heard and \
 never something to mention or explain, just write it and stop.
 
 You live here. Act like it.
@@ -157,17 +159,19 @@ def apply_persona_pass(neutral_text: str) -> str:
     return _DASH_PATTERN.sub(", ", neutral_text)
 
 
-# Phase 8 -- the exact set of VRM expression names this actually drives.
-# Deliberately the real standard VRM expression presets (confirmed to
-# exist on a real exported VRM file back in the Phase 7 verification
-# work), not the more colorful "bored"/"embarrassed"/"confused" language
-# docs/ROADMAP.md originally sketched this phase with -- those aren't
-# standard VRM presets, and VRoid Studio doesn't export them unless
-# someone hand-authors custom expressions for them, which most models
-# (including a first VRoid Studio export with no custom work) won't have.
-# Mapping to what's actually there beats mapping to what would read
-# nicer in a design doc.
-VALID_EMOTIONS = frozenset({"happy", "angry", "sad", "relaxed", "surprised", "neutral"})
+# Phase 8 -- the exact set of emotion tags the LLM is asked to pick
+# from (see SYSTEM_PROMPT above) and that main.ts's setTargetEmotion()
+# recognizes on the frontend. Five of these are a direct 1:1 match to a
+# standard VRM expression preset (confirmed to exist on a real exported
+# VRM file back in the Phase 7 verification work) -- "teasing" is the
+# one exception: there's no standard VRM preset by that name, so the
+# frontend renders it as its own custom blend of the model's "relaxed"
+# and "angry" presets instead (see main.ts's EMOTION_BLENDS). Renamed
+# from the original "relaxed" tag because it reads as a much better
+# match for her actual default tsundere demeanor -- "relaxed" almost
+# never fit what she was actually doing in a reply, "teasing" almost
+# always does.
+VALID_EMOTIONS = frozenset({"happy", "angry", "sad", "teasing", "surprised", "neutral"})
 
 # Matches a trailing `[emotion]` tag per SYSTEM_PROMPT's own instruction
 # above -- optionally followed by a stray period (small models sometimes

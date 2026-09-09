@@ -62,15 +62,58 @@ function applyIdlePose(vrm: VRM): void {
   rightLowerArm?.rotation.set(0, 0.15, 0);
 }
 
-// Matches orchestrator/persona.py's VALID_EMOTIONS exactly -- the real
-// standard VRM expression presets, not the more colorful
-// "bored"/"embarrassed" language ROADMAP.md originally sketched this
-// with (see persona.py's own comment on why). Module-level (not just
-// local to boot()'s emotion-blend system) so setupHud's manual
-// expression-test button below can cycle the same list without a second
-// hardcoded copy going stale relative to it.
-const EMOTION_NAMES = ["happy", "angry", "sad", "relaxed", "surprised", "neutral"] as const;
+// Matches orchestrator/persona.py's VALID_EMOTIONS exactly -- the app-
+// facing emotion tags the LLM chooses from and setTargetEmotion() below
+// accepts. Module-level (not just local to boot()'s emotion-blend
+// system) so setupHud's manual expression-test button below can cycle
+// the same list without a second hardcoded copy going stale relative to
+// it. NOT the same list as the VRM's own preset names -- see
+// VRM_PRESET_NAMES/EMOTION_BLENDS just below for why those two had to
+// split apart.
+const EMOTION_NAMES = ["happy", "angry", "sad", "teasing", "surprised", "neutral"] as const;
 type EmotionName = (typeof EMOTION_NAMES)[number];
+
+// The VRM's own standard expression preset names -- what actually gets
+// passed to vrm.expressionManager.setValue(). Four of the six
+// EMOTION_NAMES above map straight onto one of these; "teasing" doesn't,
+// since there's no standard VRM preset by that name (VRoid Studio never
+// exports one unless someone hand-authors it). Kept as its own list
+// (rather than reusing EMOTION_NAMES for both jobs, like before this
+// split) because updateEmotion() needs to know every underlying preset
+// any blend below might touch, independent of which app-facing emotion
+// is currently active.
+const VRM_PRESET_NAMES = ["happy", "angry", "sad", "relaxed", "surprised", "neutral"] as const;
+type VrmPresetName = (typeof VRM_PRESET_NAMES)[number];
+
+// How each app-facing emotion actually gets rendered on the model.
+// Four of these are a plain 1:1 handoff to the identically-named VRM
+// preset. "teasing" is a genuine composite: the model's own "relaxed"
+// preset already supplies a mouth curling into a smirk, blended with a
+// slice of "angry" for a narrower, more knowing eye instead of relaxed's
+// plain half-lidded look -- the combination is meant to read as a
+// sultry, mischievous smirk rather than either preset alone. "happy" is
+// capped below full intensity (0.8, not 1) as a mitigation for VRoid
+// Studio's default "Joy" preset commonly over-puckering the mouth and
+// squeezing the eyes fully shut at 100% weight -- a known, common VRoid
+// quirk, not something specific to this model. That mitigation is a
+// blunt instrument, though: it softens the effect everywhere but can't
+// reshape what the preset actually contains. The real, precise fix for
+// how "happy"/"joy" actually looks lives in VRoid Studio's own
+// expression editor on the source model (adjust or swap the eye/mouth
+// shapes that preset pulls from, then re-export the .vrm) -- that's
+// authoring-time mesh sculpting, not something a weight number in this
+// file can substitute for. These are first-guess starting weights either
+// way, not a confirmed final look -- there's no renderer in this sandbox
+// to actually see the result (same caveat as the lighting setup above)
+// -- tune both the 0.8 and the 0.3 up or down against the real model.
+const EMOTION_BLENDS: Record<EmotionName, Partial<Record<VrmPresetName, number>>> = {
+  happy: { happy: 0.8 },
+  angry: { angry: 1 },
+  sad: { sad: 1 },
+  teasing: { relaxed: 1, angry: 0.3 },
+  surprised: { surprised: 1 },
+  neutral: { neutral: 1 },
+};
 
 async function boot(): Promise<void> {
   const canvas = document.getElementById("avatar-canvas") as HTMLCanvasElement;
@@ -198,13 +241,15 @@ async function boot(): Promise<void> {
 
   // Phase 8: gradual expression blending, not a per-line snap (matching
   // docs/ROADMAP.md's own original scoping note for this phase). One
-  // named emotion is "current" at a time; every frame, each of the six
-  // expression weights eases toward 1 (if it's the current target) or 0
-  // (otherwise) rather than jumping there instantly -- reads as a
-  // gradual mood shift over a fraction of a second instead of a jarring
-  // instant switch.
+  // named emotion is "current" at a time; every frame, each underlying
+  // VRM preset weight eases toward its target in EMOTION_BLENDS[targetEmotion]
+  // (or 0, if that preset isn't part of the current blend) rather than
+  // jumping there instantly -- reads as a gradual mood shift over a
+  // fraction of a second instead of a jarring instant switch. Tracked
+  // per VRM preset now (not per app-facing emotion) since "teasing"
+  // needs two presets (relaxed + angry) eased independently at once.
   let targetEmotion: EmotionName = "neutral";
-  const currentEmotionWeights: Record<EmotionName, number> = {
+  const currentPresetWeights: Record<VrmPresetName, number> = {
     happy: 0,
     angry: 0,
     sad: 0,
@@ -230,11 +275,12 @@ async function boot(): Promise<void> {
   function updateEmotion(delta: number): void {
     if (!vrm.expressionManager) return;
     const step = Math.min(1, EMOTION_BLEND_SPEED * delta);
-    for (const name of EMOTION_NAMES) {
-      const target = name === targetEmotion ? 1 : 0;
-      const next = currentEmotionWeights[name] + (target - currentEmotionWeights[name]) * step;
-      currentEmotionWeights[name] = next;
-      vrm.expressionManager.setValue(name, next);
+    const activeBlend = EMOTION_BLENDS[targetEmotion];
+    for (const preset of VRM_PRESET_NAMES) {
+      const target = activeBlend[preset] ?? 0;
+      const next = currentPresetWeights[preset] + (target - currentPresetWeights[preset]) * step;
+      currentPresetWeights[preset] = next;
+      vrm.expressionManager.setValue(preset, next);
     }
   }
 
@@ -374,6 +420,11 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   // point, computed once per line in startCaptionLine, not every tick.
   let captionWordStarts: number[] = [];
   let captionActiveIndex = -1;
+  // How many already-spoken words stay fully visible right behind the
+  // highlight before they start individually collapsing/fading out --
+  // this (not the end-of-clip fade) is what keeps a long sentence from
+  // ever growing into one big block on screen.
+  const CAPTION_TRAIL_WORDS = 4;
 
   function startCaptionLine(text: string): void {
     const words = text.trim().split(/\s+/).filter(Boolean);
@@ -383,7 +434,6 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       span.className = "caption-word";
       span.textContent = word;
       caption.appendChild(span);
-      caption.appendChild(document.createTextNode(" "));
       return span;
     });
     const totalChars = words.reduce((sum, w) => sum + w.length, 0) || 1;
@@ -420,20 +470,20 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   // from tickCaptionProgress so startCaptionLine can also call it
   // directly for word 0 without duplicating this logic. Cheap to call
   // repeatedly (early-returns if the index hasn't actually changed since
-  // last time) since tickCaptionProgress calls it every frame.
+  // last time) since tickCaptionProgress calls it every frame. Every
+  // word's class is recomputed fresh from its distance to activeIndex
+  // each time this runs, rather than tracked as separate one-shot
+  // transitions -- so a word sliding from "spoken" into "fading" (or
+  // back, if activeIndex ever needed to move backward) falls out
+  // naturally with no extra state to keep in sync.
   function applyCaptionProgress(activeIndex: number): void {
     if (activeIndex === captionActiveIndex) return;
     captionActiveIndex = activeIndex;
     captionWordEls.forEach((el, i) => {
-      if (i < activeIndex) {
-        // Already spoken -- stays visible but settles out of the
-        // brighter "active" highlight, same as a karaoke line's afterglow.
-        el.classList.add("shown", "spoken");
-        el.classList.remove("active", "pop");
-      } else if (i === activeIndex) {
+      if (i === activeIndex) {
         const alreadyShown = el.classList.contains("shown");
         el.classList.add("shown", "active");
-        el.classList.remove("spoken");
+        el.classList.remove("spoken", "fading");
         if (!alreadyShown) {
           // Word is going from display:none to visible for the first
           // time -- force a reflow before adding .pop so the browser
@@ -443,8 +493,21 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
           void el.offsetWidth;
           el.classList.add("pop");
         }
+      } else if (i < activeIndex) {
+        el.classList.add("shown");
+        el.classList.remove("active", "pop");
+        if (activeIndex - i > CAPTION_TRAIL_WORDS) {
+          // Fallen out of the trailing window -- collapse and fade this
+          // one word out individually instead of leaving it dimmed
+          // forever until the whole line disappears at once.
+          el.classList.add("fading");
+          el.classList.remove("spoken");
+        } else {
+          el.classList.add("spoken");
+          el.classList.remove("fading");
+        }
       } else {
-        el.classList.remove("shown", "active", "spoken", "pop");
+        el.classList.remove("shown", "active", "spoken", "fading", "pop");
       }
     });
   }

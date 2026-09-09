@@ -1581,4 +1581,77 @@ cases tested here -- the parser is deliberately forgiving specifically
 because this is a real open question, same standing caveat as
 consolidation.py's/forget.py's own JSON-adjacent parsing.
 
+## Emotion tags split into an app-facing name and an underlying VRM preset name
+
+Phase 8 originally treated `EMOTION_NAMES` in main.ts and `VALID_EMOTIONS`
+in persona.py as the same list, used two ways at once: the tag the LLM
+writes, *and* the literal string passed to
+`vrm.expressionManager.setValue()`. That only works while every tag
+happens to have a same-named VRM preset. It broke once `relaxed` was
+renamed to `teasing` (better match for her actual tsundere default
+demeanor -- `relaxed` rarely fit what she was doing) and `teasing` needed
+to be a genuine *composite* -- there's no standard VRM preset by that
+name, so it's rendered as the model's own `relaxed` preset blended with a
+slice of `angry` (for a sultrier, narrower-eyed smirk rather than
+`relaxed`'s plain half-lidded look).
+
+Fix: main.ts now keeps two lists -- `EMOTION_NAMES` (app-facing, what
+`setTargetEmotion()` accepts) and `VRM_PRESET_NAMES` (the model's own
+preset names) -- plus an `EMOTION_BLENDS` map from each app-facing name to
+a weighted combination of presets. `updateEmotion()` eases every
+*underlying preset's* weight toward its target in the active blend (or 0)
+each frame, rather than one weight per app-facing name. Four of six
+emotions are still a plain 1:1 blend (`{ happy: 1 }` etc.); `teasing` is
+`{ relaxed: 1, angry: 0.3 }`. persona.py's `VALID_EMOTIONS` was updated to
+say `teasing` instead of `relaxed`, and the system prompt now explicitly
+tells the LLM to reach for `[teasing]` as her default mocking/needling
+tone, not just literal flirtation.
+
+Also capped `happy`'s own blend weight at 0.8 (not 1) as a mitigation for
+VRoid Studio's default "Joy" preset over-puckering the mouth and fully
+squeezing the eyes shut at full weight -- a known, common VRoid quirk, not
+specific to this model. This is a blunt fix (softens the effect
+everywhere, can't reshape what the preset actually contains); the precise
+fix is re-authoring the "Joy" expression's bound shapes in VRoid Studio's
+own expression editor and re-exporting the .vrm.
+
+**Not verified against the real model.** Both the 0.3 `teasing` blend
+weight and the 0.8 `happy` cap are first-guess starting points -- there's
+still no renderer in this sandbox to see the result, same standing
+caveat as the rest of Phase 7/8's visual work. Confirmed only that the
+TypeScript compiles and builds clean, and that `extract_emotion_tag()`
+correctly resolves `[teasing]` and correctly rejects a stale `[relaxed]`
+tag as unrecognized.
+
+## Captions: per-word reveal timed against real clip duration, not a fixed rate
+
+Phase 8's caption overlay needed to show what she's saying roughly as she
+says it. GPT-SoVITS's HTTP API returns a finished WAV file with no
+per-word or per-phoneme timestamps (checked `orchestrator/tts.py` --
+nothing in the response carries timing data), so there's no ground truth
+to sync against frame-perfectly; a naive fixed words-per-second guess
+would drift badly on any sentence with a mix of long and short words.
+
+Fix: `lipsync.ts` exposes `getSpeechProgress()` (elapsed/duration of
+whatever clip is currently playing), mirroring the existing
+`getMouthOpenValue()` driver pattern -- same one-clip-at-a-time
+invariant, same lifecycle (set/cleared alongside the mouth driver).
+`SpeakQueue` allots each word a start point proportional to its own
+character length against the clip's real duration, and a new `tick()`
+(called once a frame from main.ts's existing shared render loop, not a
+second rAF/interval) advances which word is "active" against that clip's
+actual elapsed time. Approximate, not real forced alignment -- but it
+tracks the real audio length instead of a guessed constant rate, and
+reads as "in sync" for natural speech pacing.
+
+Visual design (no background box, words popping in with a soft glow
+instead of a highlight chip) was matched directly against a reference
+image the user provided (MiSide-style overlay). Originally, spoken words
+stayed dimly visible until the whole line vanished at once at the end of
+a clip; changed so each word individually collapses (both fading out and
+shrinking its own reserved width via `max-width`, not just opacity, so
+the line doesn't keep growing) once it falls more than
+`CAPTION_TRAIL_WORDS` (4) behind the current highlight -- this, not the
+end-of-clip fade, is what actually keeps a long sentence from turning
+into one large block on screen.
 

@@ -201,9 +201,14 @@ awaiting on-machine confirmation · ⬜ not started)
   since the client-side blend is what makes the transition read as
   gradual, not the tagging granularity). Mapped to the real standard VRM
   expression presets (`happy`/`angry`/`sad`/`relaxed`/`surprised`/
-  `neutral`), not the more colorful example categories this entry
-  originally sketched -- those aren't real VRM presets a default VRoid
-  Studio export has. Hybrid trigger design per this entry's own original
+  `neutral`) at first, not the more colorful example categories this
+  entry originally sketched -- those aren't real VRM presets a default
+  VRoid Studio export has. Later in the same phase, the app-facing
+  `relaxed` tag was renamed `teasing` (a better match for her actual
+  default tsundere demeanor) and split from the underlying VRM preset
+  name it drives: `teasing` now blends the model's own `relaxed` preset
+  with a slice of `angry` for a sultrier, more knowing look, rather than
+  a straight 1:1 handoff like the other five (see `docs/DECISIONS.md`). Hybrid trigger design per this entry's own original
   instinct: the LLM tags its own reply with a trailing `[emotion]`
   marker (forgiving parse, same philosophy as consolidation.py/
   forget.py's JSON parsing), and the two canned error-fallback lines get
