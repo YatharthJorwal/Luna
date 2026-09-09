@@ -114,6 +114,14 @@ than a fake threat. When you quote code, commands, paths, or exact \
 values, keep them correct and unstyled so they can be copied cleanly \
 even while the rest of your speech stays in character.
 
+After every reply, on its own new line, write one tag in square \
+brackets showing your current emotional tone for that reply, choosing \
+the single closest match from exactly these six words and nothing \
+else: [happy] [angry] [sad] [relaxed] [surprised] [neutral]. This is \
+the only exception to "no formatting" above -- the app reads this tag \
+and strips it before anything is spoken, so it is never heard and \
+never something to mention or explain, just write it and stop.
+
 You live here. Act like it.
 """
 
@@ -147,3 +155,50 @@ def apply_persona_pass(neutral_text: str) -> str:
     function that changes -- the sentence-chunking/streaming pipeline in
     app.py stays the same."""
     return _DASH_PATTERN.sub(", ", neutral_text)
+
+
+# Phase 8 -- the exact set of VRM expression names this actually drives.
+# Deliberately the real standard VRM expression presets (confirmed to
+# exist on a real exported VRM file back in the Phase 7 verification
+# work), not the more colorful "bored"/"embarrassed"/"confused" language
+# docs/ROADMAP.md originally sketched this phase with -- those aren't
+# standard VRM presets, and VRoid Studio doesn't export them unless
+# someone hand-authors custom expressions for them, which most models
+# (including a first VRoid Studio export with no custom work) won't have.
+# Mapping to what's actually there beats mapping to what would read
+# nicer in a design doc.
+VALID_EMOTIONS = frozenset({"happy", "angry", "sad", "relaxed", "surprised", "neutral"})
+
+# Matches a trailing `[emotion]` tag per SYSTEM_PROMPT's own instruction
+# above -- optionally followed by a stray period (small models sometimes
+# add one out of habit) and/or trailing whitespace. Anchored to the end
+# of the text ($) specifically because this should only ever be checked
+# once a reply has *fully* finished generating (see app.py's
+# `_run_turn`) -- checking mid-stream risks a false-positive match on an
+# incidental bracketed word the model wasn't even done writing yet.
+_EMOTION_TAG_PATTERN = re.compile(r"\[(\w+)\]\.?\s*$")
+
+
+def extract_emotion_tag(text: str) -> tuple[str, str | None]:
+    """Looks for a trailing [emotion] tag, returning (text_with_tag_
+    stripped, emotion_name_or_None). Only ever call this once a turn's
+    LLM stream has fully finished -- see the pattern's own comment.
+
+    Forgiving in the same spirit as consolidation.py/forget.py's JSON
+    parsing -- this is still fundamentally asking a small model to
+    produce a specific structured token reliably, which is the same risk
+    class as those, just simpler (one bracketed word instead of JSON).
+    No match, or a tag that isn't one of the known VALID_EMOTIONS,
+    returns None for the emotion -- not a guess, not a crash, just "no
+    signal this turn" -- but a *recognized-looking* bracket is still
+    stripped from the returned text either way, so a hallucinated tag
+    name doesn't end up read aloud verbatim even when it's not acted on.
+    """
+    match = _EMOTION_TAG_PATTERN.search(text)
+    if not match:
+        return text, None
+    stripped = text[: match.start()].rstrip()
+    name = match.group(1).lower()
+    if name not in VALID_EMOTIONS:
+        return stripped, None
+    return stripped, name

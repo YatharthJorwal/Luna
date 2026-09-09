@@ -1501,4 +1501,84 @@ online VRM viewer to see if the same patch shows up there independent of
 this app's lighting entirely (which would confirm/rule out an asset
 issue vs. a lighting issue).
 
+## Phase 8 -- emotion system + expression control
+
+User picked this explicitly over the other proposed features after a
+discussion of feasibility/practicality (facial expressions: cheap, ready
+now; animation packs: split between near-term idle polish and
+Phase-10-gated real gesture packs; deeper personality: achievable but
+real ceiling given the model size; live conversation mode: substantial,
+deserves its own phase, not a small change).
+
+**Mapped to the real available expressions, not ROADMAP.md's original
+example list.** The original scoping note sketched "bored, angry,
+embarrassed, happy, sad, confused" as example categories -- but those
+aren't all standard VRM expression presets. VRoid Studio only exports
+`happy`/`angry`/`sad`/`relaxed`/`surprised`/`neutral` by default (`bored`/
+`embarrassed`/`confused` would need hand-authored custom expressions in
+VRoid Studio, which most exports -- including a first one with no extra
+polish work -- won't have). `VALID_EMOTIONS` in persona.py and
+`EMOTION_NAMES` in main.ts both use the real set, confirmed against an
+actual exported VRM file's expression list back during Phase 7's
+verification work, not assumed from the ROADMAP text.
+
+**Hybrid trigger design, per the original scoping note's own instinct.**
+The ROADMAP entry already anticipated "a small local model won't do
+reliably as structured output" and called for some hardcoded triggers
+rather than pure LLM self-report -- validated further this session by
+the dash-instruction and consolidation/forget JSON-parsing experience.
+Two paths: the LLM tags its own reply with a trailing `[emotion]` marker
+(persona.py's `extract_emotion_tag()`, same forgiving-parse philosophy as
+consolidation.py/forget.py -- no match or an unrecognized tag name
+returns None, not a guess, not a crash), and the two canned error-
+fallback lines (LLM unreachable, STT unreachable) get a hardcoded
+emotion instead of trying to fake an LLM-generated tag for text the LLM
+never actually produced.
+
+**Delivered once per whole turn, via `turn_end`, not per spoken
+sentence.** Considered tagging every individual chunk (heavier compliance
+ask, more chances to fail format per turn, for little benefit since the
+client-side blend is what actually makes the transition look gradual --
+matching ROADMAP's own "gradually shifting... rather than snapping
+per-line" instruction) -- one tag per turn, extracted only once the
+LLM's stream has *fully* finished (checking mid-stream risked a false-
+positive match on an incidental bracketed word the model wasn't done
+writing yet), sent alongside the existing `turn_end` message rather than
+inventing a new message type.
+
+**Found and fixed a real pre-existing bug while wiring this up, not
+related to Phase 8 itself:** the STT-failure path in `ws_endpoint` never
+sent `turn_end` at all -- it sends its fallback line and `continue`s
+without ever calling `_run_turn`. Since the frontend sets `turnActive =
+true` optimistically the moment audio is sent (before knowing whether
+STT will succeed), a failed transcription would leave `turnActive` stuck
+true forever: input permanently disabled, stop button stuck visible, no
+further signal ever coming to clear it. Not something anticipated up
+front -- found by tracing every `turn_end` call site while adding the
+emotion field to that message, the same way the shutdown/hard-kill bug
+was found by tracing an unrelated question earlier this session. Fixed
+by sending `turn_end` (with the hardcoded STT-unreachable emotion) from
+that path too.
+
+**Verified for real, not just typechecked.** `extract_emotion_tag()`
+tested directly against realistic sample text (a valid trailing tag, a
+valid tag with a stray period, no tag, an unrecognized tag name, and
+critically a bracketed word appearing *mid-sentence* rather than at the
+true end -- confirmed the `$`-anchored pattern correctly leaves that
+alone rather than false-matching). The full flow was driven through a
+real running server with a real websocket client and a stubbed LLM
+response ending in `[happy]`: confirmed the tag never leaked into any
+spoken `speak` message, and `turn_end` correctly carried `emotion:
+"happy"`. The client-side blend math (exponential decay toward whichever
+expression is current target) is standard, well-understood smoothing --
+traced by hand rather than needing an isolated test the way the Phase 7
+bone-rotation signs did, since there's no directional ambiguity in a
+lerp the way there was in "which axis, which sign, moves the arm down."
+Not verified: how this actually looks in motion (no browser in this
+sandbox), and whether qwen3.5:9b reliably produces a recognizable tag in
+practice across real conversations rather than the handful of synthetic
+cases tested here -- the parser is deliberately forgiving specifically
+because this is a real open question, same standing caveat as
+consolidation.py's/forget.py's own JSON-adjacent parsing.
+
 

@@ -1,16 +1,15 @@
 // Talks to the Python orchestrator (orchestrator/app.py) over a small JSON
 // protocol. Phase 1 only needed two message shapes; Phase 2.5 adds voice
-// input (user_audio / transcript); this round adds a "stop" button:
+// input (user_audio / transcript); a later round adds a "stop" button;
+// Phase 8 adds `emotion` on `turn_end`:
 //
 //   -> { type: "user_text", text: string }
 //   -> { type: "user_audio", audio_b64: string }
 //   -> { type: "stop" }
-//   <- { type: "speak", text: string, audio_b64: string, mime: string, emotion?: string }
+//   <- { type: "speak", text: string, audio_b64: string, mime: string }
 //   <- { type: "transcript", text: string }
-//   <- { type: "turn_end" }
+//   <- { type: "turn_end", emotion?: string }
 //
-// `emotion` is carried through already (Phase 6 will use it to pick a Live2D
-// expression) but Phase 1's orchestrator doesn't set it to anything yet.
 // `transcript` is sent once per `user_audio` message, always -- an empty
 // `text` means the orchestrator heard nothing intelligible (silence, noise),
 // which is distinct from a connection problem. `turn_end` is sent once a
@@ -18,6 +17,17 @@
 // short by a `stop` -- the frontend uses it to know when to re-enable input
 // and hide the stop button, since queued audio finishing playback isn't the
 // same signal (more chunks could still be on the way when audio catches up).
+// `emotion`, when present, is one of the six VRM expression names main.ts's
+// emotion-blend system knows about (see orchestrator/persona.py's
+// VALID_EMOTIONS) -- omitted (not a guessed default) whenever the LLM's own
+// reply didn't produce a recognizable tag, or the turn never got that far
+// (LLM unreachable, stopped mid-generation) -- the frontend leaves whatever
+// expression she's already wearing alone in that case, rather than snapping
+// to something arbitrary. Delivered once per whole turn, not per `speak`
+// chunk -- an early design considered tagging every sentence individually,
+// but that's a much heavier compliance ask for a small model for very
+// little benefit, since the blend itself is what makes expression changes
+// look gradual, not the tagging granularity.
 
 const ORCHESTRATOR_URL = "ws://127.0.0.1:8765/ws";
 const RECONNECT_DELAY_MS = 2000;
@@ -27,7 +37,6 @@ export type SpeakMessage = {
   text: string;
   audio_b64: string;
   mime: string;
-  emotion?: string;
 };
 
 export type TranscriptMessage = {
@@ -37,6 +46,7 @@ export type TranscriptMessage = {
 
 export type TurnEndMessage = {
   type: "turn_end";
+  emotion?: string;
 };
 
 export type ConnectionState = "offline" | "connected" | "listening";
@@ -44,7 +54,7 @@ export type ConnectionState = "offline" | "connected" | "listening";
 interface WsClientOptions {
   onSpeak: (msg: SpeakMessage) => void;
   onTranscript: (msg: TranscriptMessage) => void;
-  onTurnEnd: () => void;
+  onTurnEnd: (emotion?: string) => void;
   onStateChange: (state: ConnectionState) => void;
 }
 
@@ -78,7 +88,7 @@ export class WsClient {
       } else if (parsed.type === "transcript") {
         this.opts.onTranscript(parsed);
       } else if (parsed.type === "turn_end") {
-        this.opts.onTurnEnd();
+        this.opts.onTurnEnd(parsed.emotion);
       }
     });
 

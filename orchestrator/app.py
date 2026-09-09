@@ -50,7 +50,7 @@ import stt
 from chunking import extract_ready_chunks, flush
 from config import CONFIG
 from memory import consolidation, forget, recall
-from persona import SYSTEM_PROMPT, apply_persona_pass
+from persona import SYSTEM_PROMPT, apply_persona_pass, extract_emotion_tag
 from tts import synthesize
 
 app = FastAPI()
@@ -88,6 +88,15 @@ STT_UNREACHABLE_LINE = (
     "I-I can't hear anything right now, something's wrong with my ears. "
     "Check the orchestrator terminal?"
 )
+
+# Phase 8 -- hardcoded emotion for the two error-fallback lines above,
+# rather than trying to get the LLM to tag them: both LLM_UNREACHABLE_LINE
+# and STT_UNREACHABLE_LINE are canned text sent *instead of* a real LLM
+# call (the LLM is either unreachable, or was never consulted for the STT
+# failure path), so there's no model-generated [tag] to extract either
+# way -- this is app-level knowledge, not something to fake a tag for.
+EMOTION_LLM_UNREACHABLE = "sad"
+EMOTION_STT_UNREACHABLE = "sad"
 
 
 async def _send_speak(websocket: WebSocket, text: str) -> None:
@@ -145,6 +154,7 @@ async def _run_turn(
 
     buffer = ""
     reply_parts: list[str] = []
+    detected_emotion: str | None = None
     try:
         async for delta in llm.stream_reply(messages_for_llm):
             buffer += delta
@@ -152,11 +162,16 @@ async def _run_turn(
             for chunk in chunks:
                 reply_parts.append(chunk)
                 await _send_speak(websocket, apply_persona_pass(chunk))
+        # Stream's fully done now, not mid-flight -- only safe point to
+        # check for a trailing [emotion] tag (see extract_emotion_tag()'s
+        # own docstring on why mid-stream would risk a false match).
+        buffer, detected_emotion = extract_emotion_tag(buffer)
         for chunk in flush(buffer):
             reply_parts.append(chunk)
             await _send_speak(websocket, apply_persona_pass(chunk))
     except llm.LLMUnreachableError:
         await _send_speak(websocket, LLM_UNREACHABLE_LINE)
+        detected_emotion = EMOTION_LLM_UNREACHABLE
     finally:
         # In `finally`, not just after the try block, so a stop-button
         # cancellation (asyncio.CancelledError, raised into whichever
@@ -186,8 +201,14 @@ async def _run_turn(
     # CancelledError above propagates straight out of the function instead
     # of reaching this line) -- ws_endpoint's "stop" handler sends its own
     # turn_end right after successfully cancelling, once it's actually
-    # safe to send anything further over the socket.
-    await websocket.send_json({"type": "turn_end"})
+    # safe to send anything further over the socket. That stopped-turn
+    # case is also why detected_emotion can genuinely be None here even
+    # on a real reply -- either the tag-extraction step was never reached
+    # (LLM unreachable), or the model just didn't produce a recognized
+    # tag this time (see extract_emotion_tag()'s own docstring) -- the
+    # frontend leaves the current expression alone rather than guessing
+    # when this is omitted/None.
+    await websocket.send_json({"type": "turn_end", "emotion": detected_emotion})
 
 
 @app.post("/shutdown")
@@ -326,6 +347,18 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     print(f"[luna] STT failed: {exc}", file=sys.stderr)
                     await websocket.send_json({"type": "transcript", "text": ""})
                     await _send_speak(websocket, apply_persona_pass(STT_UNREACHABLE_LINE))
+                    # This path never reaches _run_turn (there's no
+                    # transcript to reply to), so it's the one other place
+                    # besides _run_turn/the stop handler that has to send
+                    # turn_end itself -- without it, the frontend's
+                    # turnActive flag (set optimistically the moment audio
+                    # was sent, before knowing whether STT would even
+                    # succeed) would stay stuck true forever: input
+                    # disabled, stop button stuck visible, no further
+                    # turn_end ever coming to clear it. Found while adding
+                    # Phase 8's emotion tagging, not something anticipated
+                    # up front -- see docs/DECISIONS.md.
+                    await websocket.send_json({"type": "turn_end", "emotion": EMOTION_STT_UNREACHABLE})
                     continue
 
                 # Always echo the transcript back, even empty, so the
