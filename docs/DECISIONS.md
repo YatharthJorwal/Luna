@@ -1581,6 +1581,7 @@ cases tested here -- the parser is deliberately forgiving specifically
 because this is a real open question, same standing caveat as
 consolidation.py's/forget.py's own JSON-adjacent parsing.
 
+<<<<<<< HEAD
 ## Emotion tags split into an app-facing name and an underlying VRM preset name
 
 Phase 8 originally treated `EMOTION_NAMES` in main.ts and `VALID_EMOTIONS`
@@ -1654,4 +1655,113 @@ the line doesn't keep growing) once it falls more than
 `CAPTION_TRAIL_WORDS` (4) behind the current highlight -- this, not the
 end-of-clip fade, is what actually keeps a long sentence from turning
 into one large block on screen.
+=======
+## Phase 10 (partial) -- full-body sandbox, isolated from the shell
+
+User asked for a dedicated place to develop full-body locomotion/animation
+work -- the desktop shell's bust-up framing has no floor and no legs to
+animate -- **without touching the shell itself** (`src/main.ts`,
+`index.html`, `style.css`, `src-tauri/`, `orchestrator/`). This maps to
+half of ROADMAP.md's existing Phase 10 entry ("a fuller sandbox scene she
+stands in") but deliberately *not* the other half (selectable
+classroom/home/park backgrounds) -- scoped down to exactly what was asked
+for: a full-body model, a plain white space, and walking, as groundwork
+the rest of Phase 10 and any real animation work can build on.
+
+**A parallel, self-contained entry point, not a shared module the shell
+also imports.** `sandbox.html` / `src/sandbox.ts` / `src/sandbox.css` sit
+alongside `index.html` / `src/main.ts` / `src/style.css` as a second,
+independent Vite page -- same pattern Vite supports for any root-level
+`.html` file with zero config changes in dev (`npm run dev`, then open
+`/sandbox.html`, or the new `npm run sandbox` shortcut). It isn't wired
+into `vite.config.ts`'s build inputs or `src-tauri/tauri.conf.json`'s
+window config, so it never ships in the packaged app and can't affect
+it -- confirmed by rebuilding the existing `npm run build` (index.html
+only, 16 modules, output unchanged) and separately smoke-building
+`sandbox.html` on its own (12 modules, clean bundle, both checked in this
+sandbox environment).
+
+This meant deliberately **duplicating a handful of small main.ts
+functions** (the GLTF/VRM loader setup, `applyIdlePose`'s arm-down rest
+pose, the blink loop) rather than extracting them into a shared module
+that main.ts would then also need to import from -- doing that would mean
+editing main.ts, which was explicitly out of scope. The duplication is
+small (well under 50 lines total) and the two files are likely to keep
+diverging anyway -- the sandbox needs bounding-box-based full-body camera
+framing where main.ts needs head-relative bust framing, a floor and
+lighting where main.ts needs transparency, and a locomotion loop main.ts
+has no use for at all. If this ever becomes worth de-duplicating, that's
+its own explicit follow-up, not something to sneak in here.
+
+**Two additive, non-behavioral changes to existing project files** (the
+brief's "don't touch anything else" is read as "don't touch the shell's
+behavior," not literally zero-byte-diff everywhere): `package.json` gained
+`@pixiv/three-vrm-animation` (official pixiv package, same publisher/
+version line as the already-installed `@pixiv/three-vrm`, see below) plus
+a `sandbox` script; `.gitignore` gained one entry for the new asset folder
+below, same pattern as the existing `public/vrm/*.vrm` line. Neither
+changes what `npm run tauri dev` or `npm run build` do.
+
+**Walking: camera-relative input, not world-fixed.** WASD/arrows read
+against the *camera's* current forward/right (`camera.getWorldDirection()`
+projected onto the floor plane), the standard third-person convention --
+not raw world XZ axes, which would feel wrong the moment the orbit camera
+has been dragged away from its start angle. The model turns to face its
+own movement direction (`Math.atan2(-move.x, -move.z)`, derived by hand
+from VRM's -Z-forward convention -- see the code comment for the actual
+sign derivation, not guessed) via a shortest-path angle lerp, not a
+snap. Movement is clamped to a fixed invisible square (`FLOOR_HALF_SIZE`)
+since there's no room geometry yet to collide against -- real bounds are
+part of the *other* half of Phase 10 (background/room selection), not
+this piece.
+
+**Animation: a real-clip path is wired up, but there's no clip to test it
+with.** `@pixiv/three-vrm-animation`'s documented pattern
+(`VRMAnimationLoaderPlugin` + `createVRMAnimationClip` +
+`THREE.AnimationMixer`) is implemented against a `walk.vrma` path under a
+new gitignored `public/vrm-animations/` folder (mirrors `public/vrm/`'s
+own existing pattern exactly, README.txt included) -- confirmed the
+package's actual exported API by downloading and reading its shipped
+`.d.ts` files rather than assuming the function signatures from memory,
+same discipline as Phase 7's VRM loader work. Not verified: this path
+actually running against a real `.vrma` file, since none exists in this
+sandbox (no browser, no GPU, no asset) -- same standing caveat as every
+prior phase's "not verified against real hardware" note. Until a real
+clip is dropped in, `ProceduralWalker` drives the walk cycle instead: sine-
+wave hip-swing on the leg bones (amplitude eased toward current speed, so
+starting/stopping blends rather than snaps), counter-swinging arms
+layered onto `applyRestPose`'s existing rotation (only the swing axis is
+touched, so the authored idle pose survives underneath it), and a small
+hip bob -- all driven by VRM's normalized humanoid bone nodes the same way
+`applyIdlePose` already does in main.ts, not a new mechanism. This exists
+specifically so locomotion/camera/room work is testable *today*, without
+waiting on a sourced animation asset the way the character model itself
+was already gitignored and waited-on back in Phase 7.
+
+**Idle<->walk crossfading deliberately left out of v1.** With only one
+optional clip (`walk.vrma`, no `idle.vrma`), the real-clip path pauses via
+`timeScale = 0` (freezing on the clip's current pose) rather than
+blending to a second authored idle animation -- simplest thing that could
+work with one clip, and proper crossfading is much easier to get right
+once there's an actual clip in hand to test blend timing against, rather
+than guessing at it now.
+
+**Verified in this sandbox:** `tsc --noEmit` clean across the whole
+project (existing files included -- confirms nothing here broke shell
+typechecking); `npm run build` (the real production build, index.html
+only) produces the same 16-module bundle as before this change;
+`sandbox.html` builds cleanly on its own via a throwaway Vite config
+(12 modules, no import/type errors) confirming every import -- `three`'s
+`OrbitControls`, `@pixiv/three-vrm`, `@pixiv/three-vrm-animation` -- and
+the loader plugin registration actually resolve. **Not verified:** the
+actual visual/gameplay feel (walking speed, turn responsiveness, camera
+framing, the procedural walk's cadence) against a real model in a real
+browser -- no GPU or browser in this sandbox, same limitation every
+rendering-facing phase since Phase 7 has had. Expect to tune
+`WALK_SPEED_MPS`, `TURN_RATE_RAD_S`, and the `LEG_SWING_RAD`/
+`ARM_SWING_RAD`/`WALK_CYCLE_RATE` constants near the top of
+`src/sandbox.ts` by eye on first real run, same spirit as main.ts's own
+hand-tuned camera constants.
+
+>>>>>>> incoming-sandbox
 

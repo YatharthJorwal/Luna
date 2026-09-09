@@ -1,0 +1,95 @@
+/* Opaque white "studio" page -- opposite of style.css's transparent
+   overlay on purpose (see sandbox.ts for why: a real page background
+   behind the canvas, not just the canvas's own scene.background, so
+   there's no dark flash before three.js finishes its first frame). */
+
+:root {
+  color-scheme: light;
+  --ink: #1c1c22;
+  --dim: rgba(28, 28, 34, 0.55);
+  --panel: rgba(255, 255, 255, 0.72);
+  --panel-border: rgba(28, 28, 34, 0.1);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #ffffff;
+  overflow: hidden;
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+  color: var(--ink);
+}
+
+#sandbox-stage {
+  position: absolute;
+  inset: 0;
+}
+
+#sandbox-canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  /* OrbitControls drags the camera, not the OS window -- this is a normal
+     browser tab, not the shell's draggable-region overlay, so there's no
+     -webkit-app-region trick needed here the way style.css has one. */
+  touch-action: none;
+}
+
+#sandbox-hud {
+  position: absolute;
+  top: 16px;
+  left: 16px;
+  padding: 10px 14px;
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 10px;
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+  font-size: 12px;
+  line-height: 1.5;
+  pointer-events: none;
+  user-select: none;
+  max-width: 320px;
+}
+
+#sandbox-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+
+#sandbox-help {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  color: var(--dim);
+}
+
+#sandbox-help kbd {
+  display: inline-block;
+  min-width: 1.1em;
+  padding: 0 4px;
+  margin-right: 2px;
+  border: 1px solid var(--panel-border);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  font-family: inherit;
+  font-size: 10px;
+  text-align: center;
+  background: rgba(28, 28, 34, 0.04);
+}
+
+#sandbox-status {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--panel-border);
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+}

@@ -64,6 +64,32 @@ your VRoid model in" below.
    file in a VRM viewer (e.g. https://hub.vroid.com/en/ has an online one)
    to confirm those expressions are actually present.
 
+## Full-body sandbox (Phase 10 groundwork)
+
+A separate, dev-only page for full-body work — the main shell only ever
+frames a bust-up view, so there's nowhere in it to see legs, walking, or
+full-body animation. Doesn't touch the shell or the packaged app at all.
+
+1. **Run it:** `npm run sandbox` (or `npm run dev` and open
+   `http://localhost:1420/sandbox.html` yourself). Same `public/vrm/luna.vrm`
+   model as the main shell — nothing extra to set up if that's already in
+   place.
+2. **Walk her around:** WASD or arrow keys move her, relative to whichever
+   way the camera's currently facing. Drag to orbit the camera, scroll to
+   zoom. She's boxed into a fixed invisible square on the floor for now —
+   real room bounds are a later Phase 10 step.
+3. **Animation:** with no animation file present, she walks via a small
+   procedural (code-only) walk cycle — good enough to test movement/camera
+   feel, not a real authored gait. Drop a `walk.vrma` file at
+   `public/vrm-animations/walk.vrma` (see that folder's own `README.txt`)
+   to use a real walk cycle instead; picked up automatically on reload, no
+   code changes needed.
+4. **Tuning:** if the walk speed, turn speed, or the procedural gait's
+   swing amplitude/cadence look off, the relevant constants are all at the
+   top of `src/sandbox.ts` (`WALK_SPEED_MPS`, `TURN_RATE_RAD_S`,
+   `LEG_SWING_RAD`, `ARM_SWING_RAD`, `WALK_CYCLE_RATE`) — same hand-tuned-
+   by-eye situation as the main shell's own `CAMERA_*` constants.
+
 ## What's actually been verified vs. not, honestly
 
 This was built in a Linux sandbox with no GUI, no Rust toolchain, no GPU,
