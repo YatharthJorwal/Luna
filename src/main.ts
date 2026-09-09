@@ -255,6 +255,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
   const statusDot = document.getElementById("status-dot") as HTMLDivElement;
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
   const actionButton = document.getElementById("action-button") as HTMLButtonElement;
+  const caption = document.getElementById("caption") as HTMLDivElement;
 
   const STOP_ICON =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>';
@@ -268,13 +269,25 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
   };
 
   // Toggled true right when a turn starts (sendUserText/sendUserAudio),
-  // false on turn_end -- independent of ConnectionState, which flips back
-  // to "connected" as soon as the *first* speak chunk arrives even though
-  // more chunks (and audio playback) can still be in flight for several
-  // more seconds after that. This is specifically "is there a reply
-  // actively being generated or spoken right now", which is the actual
-  // question the action button and input-disabling need answered.
+  // false once BOTH of two independent things have happened: the
+  // orchestrator has said turn_end, AND SpeakQueue has finished playing
+  // every chunk it was given. Those two used to be conflated (turnActive
+  // flipped false on turn_end alone), but turn_end only means "done
+  // generating" -- audio for earlier sentences can still be queued and
+  // playing for several more seconds after that arrives (see
+  // ws-client.ts's own protocol comment). Collapsing them made the
+  // button flip back to mic/send while she was still audibly mid-reply,
+  // so pressing "stop" was no longer possible for the tail end of a
+  // turn. orchestratorDone/audioIdle below are the two raw signals;
+  // turnActive is always their combination, recomputed through
+  // recomputeTurnActive() rather than set directly from either one.
+  let orchestratorDone = true;
+  let audioIdle = true;
   let turnActive = false;
+
+  function recomputeTurnActive(): void {
+    setTurnActive(!orchestratorDone || !audioIdle);
+  }
 
   // One button, not two sitting side by side -- it morphs between stop
   // and send (same element, same click handler, icon/label/behavior
@@ -316,7 +329,8 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
     if (!text) return;
     client.sendUserText(text);
     input.value = "";
-    setTurnActive(true);
+    orchestratorDone = false;
+    recomputeTurnActive();
   }
 
   // Matches the HTML's own default `hidden` attribute on action-button
@@ -325,13 +339,24 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
   // state instead of two places that have to agree by accident.
   updateInputButtons();
 
-  const queue = new SpeakQueue();
+  const queue = new SpeakQueue({
+    onCaption: (text) => setCaption(text),
+    onActive: () => {
+      audioIdle = false;
+      recomputeTurnActive();
+    },
+    onIdle: () => {
+      audioIdle = true;
+      recomputeTurnActive();
+    },
+  });
   const client = new WsClient({
     onStateChange: setState,
     onSpeak: (msg: SpeakMessage) => queue.push(msg),
     onTranscript: (msg: TranscriptMessage) => showTranscript(msg.text),
     onTurnEnd: (emotion) => {
-      setTurnActive(false);
+      orchestratorDone = true;
+      recomputeTurnActive();
       setTargetEmotion(emotion);
     },
   });
@@ -343,6 +368,25 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
   });
   input.addEventListener("input", updateInputButtons);
 
+  // "/" focuses the chatbox from anywhere in the window, same idea as
+  // Discord/Slack's own "/" shortcut, so typing to her doesn't need a
+  // click first. Listens on the whole document, not just window, since
+  // with nothing else focusable in this HUD, document.activeElement is
+  // normally <body> and keydown bubbles up to document either way.
+  // Ignored (falls through to being typed normally) whenever the input
+  // is already focused, so "/" still works as a literal character inside
+  // a message; also ignored with any modifier held, so this doesn't
+  // hijack an OS/browser-level Ctrl+/ or similar. A disabled input
+  // (mid-turn) simply can't receive focus, so this is a harmless no-op
+  // in that state rather than needing its own guard.
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "/") return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (document.activeElement === input) return;
+    event.preventDefault();
+    input.focus();
+  });
+
   actionButton.addEventListener("click", () => {
     if (turnActive) {
       // Both fire immediately, independently -- queue.stopAll() kills
@@ -350,12 +394,16 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
       // trip; sendStop() separately tells the orchestrator to cancel
       // generation server-side (saves compute, and records a truthful
       // partial reply in history instead of a full one nobody heard the
-      // end of). setTurnActive(false) doesn't wait for the server's own
-      // turn_end either -- the button disappearing should feel instant,
-      // same as the audio actually stopping.
+      // end of). orchestratorDone/audioIdle are set directly here rather
+      // than left for turn_end/onIdle to report back -- this is a manual
+      // override of both signals at once, not something that should wait
+      // on either arriving on its own; the button disappearing should
+      // feel instant, same as the audio actually stopping.
       queue.stopAll();
       client.sendStop();
-      setTurnActive(false);
+      orchestratorDone = true;
+      audioIdle = true;
+      recomputeTurnActive();
     } else {
       submitText();
     }
@@ -367,6 +415,29 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
   // ws-client.ts), so putting it in `value` would look like something
   // still waiting to be submitted. Reverts to the normal placeholder after
   // a few seconds either way.
+  // Drives the #caption bubble (see style.css): shows the sentence
+  // currently playing, one bubble reused for every line rather than a
+  // stack, since SpeakQueue only ever has one chunk actually audible at
+  // a time. `.visible` is a simple persistent on/off (CSS transition
+  // handles the fade/slide); `.pop` is a one-shot bounce re-applied on
+  // every text change so consecutive sentences each still feel like
+  // their own little arrival instead of the text just flatly swapping
+  // underneath a bubble that's already on screen. Removing then
+  // re-adding the class does nothing on its own if it's already applied
+  // -- forcing a reflow in between (reading offsetWidth) is what makes
+  // the browser treat it as a fresh animation start rather than a no-op.
+  function setCaption(text: string | null): void {
+    if (!text) {
+      caption.classList.remove("visible");
+      return;
+    }
+    caption.textContent = text;
+    caption.classList.add("visible");
+    caption.classList.remove("pop");
+    void caption.offsetWidth;
+    caption.classList.add("pop");
+  }
+
   const defaultPlaceholder = input.placeholder;
   let transcriptTimer: number | undefined;
   function showTranscript(text: string): void {
@@ -385,7 +456,8 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
     onClip: async (blob) => {
       const audioB64 = await blobToBase64(blob);
       client.sendUserAudio(audioB64);
-      setTurnActive(true);
+      orchestratorDone = false;
+      recomputeTurnActive();
     },
     onError: (err) => {
       // Most likely mic permission denied, or no input device -- nothing
@@ -427,6 +499,24 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): void {
 // reference needed here as of Phase 7 -- lipsync.ts's mouth-openness
 // value is read by main.ts's own single shared render loop, not pushed
 // into the model directly from here the way the old Live2D version did.
+interface SpeakQueueOptions {
+  /** Called with the sentence now playing, or null once nothing is. This
+   * is what drives the #caption bubble -- tied to actual playback
+   * start/end, not to when a `speak` message merely arrives, so captions
+   * stay in sync even when a chunk sits queued behind an earlier one. */
+  onCaption: (text: string | null) => void;
+  /** Fires once, on the 0-pending/not-playing -> playing transition
+   * (i.e. when this queue has something to say for the first time since
+   * it was last empty) -- not on every chunk, since chunks 2..n start
+   * from playNext()'s own "ended" callback, not from push(). */
+  onActive: () => void;
+  /** Fires once the queue has nothing left pending and nothing currently
+   * playing -- either the last chunk finished naturally, or stopAll()
+   * was called. This is the "audio side" half of main.ts's combined
+   * turnActive signal (see recomputeTurnActive). */
+  onIdle: () => void;
+}
+
 class SpeakQueue {
   private pending: SpeakMessage[] = [];
   private playing = false;
@@ -441,8 +531,12 @@ class SpeakQueue {
   // bursts.
   private static readonly GAP_MS = 150;
 
+  constructor(private opts: SpeakQueueOptions) {}
+
   push(msg: SpeakMessage): void {
+    const wasIdle = !this.playing && this.pending.length === 0;
     this.pending.push(msg);
+    if (wasIdle) this.opts.onActive();
     if (!this.playing) this.playNext();
   }
 
@@ -456,6 +550,11 @@ class SpeakQueue {
     this.currentHandle?.stop();
     this.currentHandle = null;
     this.playing = false;
+    this.opts.onCaption(null);
+    // Not routed through onIdle -- main.ts's stop handler sets its own
+    // idle/done flags directly and synchronously alongside this call, so
+    // firing onIdle here too would just be a redundant second
+    // recomputeTurnActive() call for the same outcome.
   }
 
   private playNext(): void {
@@ -463,9 +562,12 @@ class SpeakQueue {
     if (!msg) {
       this.playing = false;
       this.currentHandle = null;
+      this.opts.onCaption(null);
+      this.opts.onIdle();
       return;
     }
     this.playing = true;
+    this.opts.onCaption(msg.text);
 
     const blob = base64ToBlob(msg.audio_b64, msg.mime);
     const url = URL.createObjectURL(blob);

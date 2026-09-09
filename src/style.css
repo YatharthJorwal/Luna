@@ -48,6 +48,63 @@ body {
   display: block;
 }
 
+/* Captions: one bubble showing whatever sentence is currently playing,
+   synced to SpeakQueue in main.ts (not just to when a `speak` message
+   arrives -- that would desync captions from what's actually audible
+   whenever a sentence is still queued behind an earlier one). Sits above
+   the HUD pill rather than inside it since its width/height changes with
+   the line length and shouldn't push the pill around. Hidden (opacity 0,
+   slightly scaled down + dropped) at rest; `.visible` is the persistent
+   on/off state, `.pop` is a one-shot re-trigger applied every time the
+   text itself changes while already visible, so back-to-back sentences
+   each still get their own little bounce instead of just flatly
+   swapping text. */
+#caption {
+  position: absolute;
+  left: 50%;
+  bottom: 56px;
+  max-width: min(80%, 320px);
+  padding: 9px 16px;
+  border-radius: 18px;
+  background: linear-gradient(135deg, #a684e8, #e88ac0);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.4;
+  text-align: center;
+  text-shadow: 0 1px 2px rgba(60, 20, 80, 0.25);
+  box-shadow: 0 6px 20px rgba(140, 90, 210, 0.35);
+  -webkit-app-region: no-drag;
+  pointer-events: none;
+  opacity: 0;
+  transform: translate(-50%, 6px) scale(0.9);
+  transform-origin: bottom center;
+  transition:
+    opacity 200ms ease,
+    transform 200ms ease;
+}
+
+#caption.visible {
+  opacity: 1;
+  transform: translate(-50%, 0) scale(1);
+}
+
+#caption.pop {
+  animation: caption-pop 340ms cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+
+@keyframes caption-pop {
+  0% {
+    transform: translate(-50%, 4px) scale(0.9);
+  }
+  55% {
+    transform: translate(-50%, -3px) scale(1.05);
+  }
+  100% {
+    transform: translate(-50%, 0) scale(1);
+  }
+}
+
 #hud {
   position: absolute;
   left: 50%;
