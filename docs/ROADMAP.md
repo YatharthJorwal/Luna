@@ -224,13 +224,30 @@ awaiting on-machine confirmation · ⬜ not started)
   something more visually considered — color, less utilitarian chrome.
   Pure `index.html`/`style.css` work, no protocol or backend changes, no
   dependency on any other phase — can happen independently, any time.
-- ⬜ **Phase 10 — Environments.** Two of the three requested (VR explicitly
+- 🔶 **Phase 10 — Environments.** Two of the three requested (VR explicitly
   scoped out by the user themselves as currently unachievable): (1) desktop
   companion mode — draggable corner presence, reacting to cursor
   pokes/touches (Talking Tom-style); (2) a fuller sandbox scene she stands
   in, with selectable backgrounds (classroom, home, park, etc.) instead of
   a blank canvas. Both easier on a 3D VRM scene/camera than Live2D's flat
   compositing — depends on Phase 7.
+  **Groundwork for (2) started:** `sandbox.html` / `src/sandbox.ts` — a
+  full-body VRM preview in a plain white studio (floor + faint grid, no
+  selectable rooms yet), WASD/arrow-key walking with a camera-relative
+  third-person orbit camera, and a locomotion loop built to take a real
+  `walk.vrma` animation clip the moment one exists (falls back to a
+  procedural sine-wave walk cycle today, since no clip is sourced yet —
+  same situation the character model itself was in before Phase 7).
+  Deliberately isolated from the shell — new files only, `src/main.ts`/
+  `index.html`/`style.css`/`src-tauri/`/`orchestrator/` untouched, run via
+  `npm run sandbox` as its own dev-only page, not part of the packaged
+  app. See `docs/DECISIONS.md`'s "Phase 10 (partial)" entry for the full
+  reasoning and what's verified vs. not. Still open for this phase: the
+  desktop companion mode (1) entirely, room/background selection for (2),
+  a real sourced walk cycle (and others — idle, run, wave, sit) to replace
+  the procedural placeholder, and on-machine confirmation of all of the
+  above (this was built in the same no-GPU/no-browser sandbox every prior
+  rendering phase was).
 
 ## Open decisions
 

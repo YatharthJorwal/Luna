@@ -22,6 +22,11 @@ public/live2dcubismcore.min.js
 # public/vrm/README.txt (the setup note) but not the model itself.
 public/vrm/*.vrm
 
+# Sandbox's optional animation clips (src/sandbox.ts) -- same situation
+# as the .vrm export above: personal/sourced assets, not source. Keep
+# public/vrm-animations/README.txt but not the clips themselves.
+public/vrm-animations/*.vrma
+
 # Personal launcher scripts -- hardcode machine-specific absolute paths
 # (your GPT-SoVITS install location, etc.), so these stay local-only, same
 # as config.yaml's real ref_audio_path/prompt_text values.
