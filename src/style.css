@@ -61,8 +61,8 @@ body {
    word collapses into once it falls further than CAPTION_TRAIL_WORDS
    behind the highlight -- individually shrinking and fading out rather
    than sitting there forever until the whole line disappears at once.
-   `.pop` is the one-shot bounce a word gets the instant it's first
-   revealed. */
+   `.pop` is the one-shot soft ease-in a word gets the instant it's
+   first revealed. */
 #caption {
   position: absolute;
   left: 50%;
@@ -74,7 +74,7 @@ body {
   -webkit-app-region: no-drag;
   pointer-events: none;
   opacity: 0;
-  transition: opacity 260ms ease;
+  transition: opacity 420ms ease;
 }
 
 #caption.visible {
@@ -94,11 +94,11 @@ body {
   color: rgba(244, 240, 255, 0.65);
   text-shadow: none;
   transition:
-    color 220ms ease,
-    text-shadow 220ms ease,
-    opacity 420ms ease,
-    max-width 420ms ease,
-    margin-right 420ms ease;
+    color 380ms ease,
+    text-shadow 380ms ease,
+    opacity 600ms ease,
+    max-width 600ms ease,
+    margin-right 600ms ease;
 }
 
 /* The word currently "spoken" -- a soft purple/pink glow bleeding out of
@@ -136,17 +136,13 @@ body {
 }
 
 .caption-word.pop {
-  animation: caption-word-pop 260ms cubic-bezier(0.34, 1.56, 0.64, 1);
+  animation: caption-word-pop 480ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 @keyframes caption-word-pop {
   0% {
     opacity: 0;
-    transform: translateY(6px) scale(0.85);
-  }
-  60% {
-    opacity: 1;
-    transform: translateY(-2px) scale(1.08);
+    transform: translateY(5px) scale(0.94);
   }
   100% {
     opacity: 1;
