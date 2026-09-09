@@ -194,17 +194,32 @@ awaiting on-machine confirmation · ⬜ not started)
   to adjust. HUD/input shell (`#hud`, status dot, input box, buttons)
   deliberately untouched -- confirmed it doesn't need to change for this
   migration, only the canvas/rendering code underneath it does.
-- ⬜ **Phase 8 — Emotion system + expression control.** Finally uses the
+- 🔶 **Phase 8 — Emotion system + expression control.** Finally uses the
   `emotion` field that's been sitting unused in the `speak` WebSocket
-  message since Phase 1 (`ws-client.ts`'s `SpeakMessage.emotion`) to drive
-  VRM blendshapes/facial expressions (bored, angry, embarrassed, happy,
-  sad, confused, etc.), gradually shifting based on the conversation
-  rather than snapping per-line. Some triggers hardcoded (e.g. "confused"
-  on a request outside what she can actually do) rather than left entirely
-  to the LLM self-reporting emotional state, which a small local model
-  won't do reliably as structured output. Depends on Phase 7 (VRM) being
-  done first — mapping emotions to Live2D parameters would be
-  throwaway work otherwise.
+  message since Phase 1 -- moved to `turn_end` instead (see
+  `docs/DECISIONS.md`; delivered once per whole turn, not per sentence,
+  since the client-side blend is what makes the transition read as
+  gradual, not the tagging granularity). Mapped to the real standard VRM
+  expression presets (`happy`/`angry`/`sad`/`relaxed`/`surprised`/
+  `neutral`), not the more colorful example categories this entry
+  originally sketched -- those aren't real VRM presets a default VRoid
+  Studio export has. Hybrid trigger design per this entry's own original
+  instinct: the LLM tags its own reply with a trailing `[emotion]`
+  marker (forgiving parse, same philosophy as consolidation.py/
+  forget.py's JSON parsing), and the two canned error-fallback lines get
+  a hardcoded emotion instead of faking a tag for text the LLM never
+  produced. Found and fixed a real pre-existing bug while wiring this up
+  (unrelated to emotion itself): the STT-failure path never sent
+  `turn_end` at all, which would leave the frontend's input permanently
+  disabled after any failed transcription. Verified for real: tag
+  extraction tested against realistic cases (valid tag, stray period,
+  no tag, unrecognized tag, and a bracketed word appearing mid-sentence
+  rather than at the true end), and the full flow driven through a real
+  running server confirming the tag never leaks into spoken audio and
+  `turn_end` carries the right emotion. Not verified: how it actually
+  looks in motion (no browser in this sandbox), and whether qwen3.5:9b
+  reliably produces a recognizable tag across real conversations rather
+  than the synthetic cases tested here.
 - ⬜ **Phase 9 — UI overhaul.** Replace the plain input box/HUD with
   something more visually considered — color, less utilitarian chrome.
   Pure `index.html`/`style.css` work, no protocol or backend changes, no

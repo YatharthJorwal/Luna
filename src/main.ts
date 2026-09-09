@@ -188,11 +188,59 @@ async function boot(): Promise<void> {
     vrm.expressionManager.setValue("blink", t < 0.5 ? t * 2 : (1 - t) * 2);
   }
 
+  // Phase 8: gradual expression blending, not a per-line snap (matching
+  // docs/ROADMAP.md's own original scoping note for this phase). One
+  // named emotion is "current" at a time; every frame, each of the six
+  // expression weights eases toward 1 (if it's the current target) or 0
+  // (otherwise) rather than jumping there instantly -- reads as a
+  // gradual mood shift over a fraction of a second instead of a jarring
+  // instant switch. EMOTION_NAMES matches orchestrator/persona.py's
+  // VALID_EMOTIONS exactly -- the real standard VRM expression presets,
+  // not the more colorful "bored"/"embarrassed" language ROADMAP.md
+  // originally sketched this with (see persona.py's own comment on why).
+  const EMOTION_NAMES = ["happy", "angry", "sad", "relaxed", "surprised", "neutral"] as const;
+  type EmotionName = (typeof EMOTION_NAMES)[number];
+  let targetEmotion: EmotionName = "neutral";
+  const currentEmotionWeights: Record<EmotionName, number> = {
+    happy: 0,
+    angry: 0,
+    sad: 0,
+    relaxed: 0,
+    surprised: 0,
+    neutral: 1,
+  };
+  // Per-second blend rate -- at this rate a full swing between two
+  // expressions takes well under a second, reading as a smooth but
+  // prompt mood shift rather than a slow fade or an instant snap.
+  const EMOTION_BLEND_SPEED = 4;
+
+  function setTargetEmotion(emotion?: string): void {
+    // Absent or unrecognized -- see ws-client.ts's protocol comment on
+    // why this is common and expected, not an error: leave the current
+    // expression alone rather than guessing or snapping to "neutral"
+    // just because this particular turn didn't produce a usable tag.
+    if (!emotion) return;
+    if (!(EMOTION_NAMES as readonly string[]).includes(emotion)) return;
+    targetEmotion = emotion as EmotionName;
+  }
+
+  function updateEmotion(delta: number): void {
+    if (!vrm.expressionManager) return;
+    const step = Math.min(1, EMOTION_BLEND_SPEED * delta);
+    for (const name of EMOTION_NAMES) {
+      const target = name === targetEmotion ? 1 : 0;
+      const next = currentEmotionWeights[name] + (target - currentEmotionWeights[name]) * step;
+      currentEmotionWeights[name] = next;
+      vrm.expressionManager.setValue(name, next);
+    }
+  }
+
   const clock = new THREE.Clock();
   function animate(): void {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
     updateBlink(delta);
+    updateEmotion(delta);
     if (vrm.expressionManager) {
       vrm.expressionManager.setValue("aa", getMouthOpenValue());
     }
@@ -201,10 +249,10 @@ async function boot(): Promise<void> {
   }
   animate();
 
-  setupHud();
+  setupHud(setTargetEmotion);
 }
 
-function setupHud(): void {
+function setupHud(setTargetEmotion: (emotion?: string) => void): void {
   const input = document.getElementById("input-box") as HTMLInputElement;
   const statusDot = document.getElementById("status-dot") as HTMLDivElement;
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
@@ -284,7 +332,10 @@ function setupHud(): void {
     onStateChange: setState,
     onSpeak: (msg: SpeakMessage) => queue.push(msg),
     onTranscript: (msg: TranscriptMessage) => showTranscript(msg.text),
-    onTurnEnd: () => setTurnActive(false),
+    onTurnEnd: (emotion) => {
+      setTurnActive(false);
+      setTargetEmotion(emotion);
+    },
   });
   client.connect();
 
