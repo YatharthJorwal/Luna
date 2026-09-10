@@ -108,9 +108,9 @@ type VrmPresetName = (typeof VRM_PRESET_NAMES)[number];
 // -- tune both the 0.8 and the 0.3 up or down against the real model.
 const EMOTION_BLENDS: Record<EmotionName, Partial<Record<VrmPresetName, number>>> = {
   happy: { happy: 0.8 },
-  angry: { angry: 1 },
+  angry: { angry: 0.8 },
   sad: { sad: 1 },
-  teasing: { relaxed: 1, angry: 0.3 },
+  teasing: { relaxed: 1, sad: 0.05, angry: 0.05},
   surprised: { surprised: 1 },
   neutral: { neutral: 1 },
 };
