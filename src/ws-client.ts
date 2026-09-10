@@ -1,7 +1,11 @@
 // Talks to the Python orchestrator (orchestrator/app.py) over a small JSON
 // protocol. Phase 1 only needed two message shapes; Phase 2.5 adds voice
 // input (user_audio / transcript); a later round adds a "stop" button;
-// Phase 8 adds `emotion` on `turn_end`:
+// Phase 8 adds `emotion` on `turn_end`; the full-body sandbox round adds a
+// `surface` identifier on connect and a `surface_status` reply, so two
+// windows (the desktop shell and the sandbox) talking to the same
+// orchestrator at once don't both try to drive the same conversation --
+// see that message's own comment below and docs/DECISIONS.md:
 //
 //   -> { type: "user_text", text: string }
 //   -> { type: "user_audio", audio_b64: string }
@@ -9,6 +13,7 @@
 //   <- { type: "speak", text: string, audio_b64: string, mime: string }
 //   <- { type: "transcript", text: string }
 //   <- { type: "turn_end", emotion?: string }
+//   <- { type: "surface_status", role: "driver" | "observer" }
 //
 // `transcript` is sent once per `user_audio` message, always -- an empty
 // `text` means the orchestrator heard nothing intelligible (silence, noise),
@@ -28,6 +33,21 @@
 // but that's a much heavier compliance ask for a small model for very
 // little benefit, since the blend itself is what makes expression changes
 // look gradual, not the tagging granularity.
+//
+// `surface_status`: whichever window connects first becomes the "driver"
+// (the one actually allowed to start turns); a second window connecting
+// while the first is still open becomes an "observer" -- sent a
+// `surface_status` with role "observer" right after connecting, and gets a
+// canned in-character decline (not silence) if it tries to send
+// `user_text`/`user_audio` anyway, rather than either window's TTS audio
+// silently overlapping the other's. If the driver disconnects, the
+// orchestrator promotes the next still-open connection (if any) and sends
+// it a fresh `surface_status` with role "driver" -- see app.py's
+// `ws_endpoint` for the actual promotion logic. Each connection still has
+// its own conversation history (unchanged since Phase 2), so a promoted
+// observer starts a fresh conversation rather than inheriting the old
+// driver's mid-conversation state -- a known, accepted limitation, not an
+// oversight; see docs/DECISIONS.md.
 
 const ORCHESTRATOR_URL = "ws://127.0.0.1:8765/ws";
 const RECONNECT_DELAY_MS = 2000;
@@ -49,13 +69,32 @@ export type TurnEndMessage = {
   emotion?: string;
 };
 
+export type SurfaceRole = "driver" | "observer";
+
+export type SurfaceStatusMessage = {
+  type: "surface_status";
+  role: SurfaceRole;
+};
+
 export type ConnectionState = "offline" | "connected" | "listening";
 
 interface WsClientOptions {
+  /** Identifies which window this connection is from -- "shell" for the
+   * Tauri desktop pet (src/main.ts), "sandbox" for the full-body sandbox
+   * (src/sandbox.ts). Purely informational on the wire (a query param the
+   * orchestrator can log/key off of); the driver/observer decision itself
+   * is "whoever connected first," not based on which surface name this is
+   * -- see this file's own top-of-file comment. */
+  surface: "shell" | "sandbox";
   onSpeak: (msg: SpeakMessage) => void;
   onTranscript: (msg: TranscriptMessage) => void;
   onTurnEnd: (emotion?: string) => void;
   onStateChange: (state: ConnectionState) => void;
+  /** Optional since it's new -- a caller that doesn't care about
+   * driver/observer status (there isn't one today, but keeping this
+   * optional rather than required avoids forcing every future caller to
+   * handle a concern that may not apply to it) can simply omit it. */
+  onSurfaceStatus?: (role: SurfaceRole) => void;
 }
 
 export class WsClient {
@@ -68,14 +107,15 @@ export class WsClient {
   }
 
   connect(): void {
-    this.socket = new WebSocket(ORCHESTRATOR_URL);
+    const url = `${ORCHESTRATOR_URL}?surface=${encodeURIComponent(this.opts.surface)}`;
+    this.socket = new WebSocket(url);
 
     this.socket.addEventListener("open", () => {
       this.opts.onStateChange("connected");
     });
 
     this.socket.addEventListener("message", (event) => {
-      let parsed: SpeakMessage | TranscriptMessage | TurnEndMessage;
+      let parsed: SpeakMessage | TranscriptMessage | TurnEndMessage | SurfaceStatusMessage;
       try {
         parsed = JSON.parse(event.data);
       } catch {
@@ -89,6 +129,8 @@ export class WsClient {
         this.opts.onTranscript(parsed);
       } else if (parsed.type === "turn_end") {
         this.opts.onTurnEnd(parsed.emotion);
+      } else if (parsed.type === "surface_status") {
+        this.opts.onSurfaceStatus?.(parsed.role);
       }
     });
 

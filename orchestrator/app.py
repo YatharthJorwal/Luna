@@ -70,6 +70,29 @@ _shutdown_event = asyncio.Event()
 # already run consolidation), there's nothing left to wait for.
 _active_connections: set[WebSocket] = set()
 
+# Full-body sandbox round: two different windows (the Tauri shell,
+# src/main.ts, and the browser-tab sandbox, src/sandbox.ts) can now both
+# hold an open connection to this same orchestrator at once. Only one of
+# them should ever actually be allowed to start a turn -- otherwise both
+# could end up generating a reply and playing TTS audio at the same time,
+# which would be audibly broken, not just untidy. Whichever connects
+# first becomes the "driver"; anything else connecting while the driver
+# is still open is an "observer" (see ws_endpoint's connect/disconnect
+# handling below and ws-client.ts's protocol comment for the client side
+# of this). `_driver` is `None` whenever nobody's connected at all.
+_driver: WebSocket | None = None
+_connection_surface: dict[WebSocket, str] = {}
+
+# Sent (in character, same as LLM_UNREACHABLE_LINE/STT_UNREACHABLE_LINE
+# below) if an observer connection tries to start a turn anyway -- a
+# stray click on a UI that should already have disabled itself (see
+# main.ts's/sandbox.ts's own onSurfaceStatus handling), or a second
+# window opened after all. Declining audibly, not just silently dropping
+# the message, so it's obvious what happened rather than looking like a
+# hang.
+SURFACE_BUSY_LINE = "I'm already talking to you somewhere else right now -- finish up there first, hm?"
+EMOTION_SURFACE_BUSY = "teasing"
+
 # Said if the configured LLM server can't be reached at all -- most likely
 # it just isn't running yet. In character on purpose so a first-run miss
 # (forgot to start Ollama) feels like her, not a crash.
@@ -258,6 +281,21 @@ async def shutdown_endpoint() -> dict:
 async def ws_endpoint(websocket: WebSocket) -> None:
     await websocket.accept()
     _active_connections.add(websocket)
+
+    # Driver/observer assignment -- see _driver's own module-level comment
+    # above. Decided once, right here, at connect time: "whoever's already
+    # open wins" is a simple, honest rule that doesn't need to know
+    # anything about *which* surface either window is (shell vs sandbox);
+    # `surface` itself is only carried through for logging/debugging, not
+    # used in this decision.
+    global _driver
+    surface = websocket.query_params.get("surface", "unknown")
+    _connection_surface[websocket] = surface
+    is_driver = _driver is None
+    if is_driver:
+        _driver = websocket
+    await websocket.send_json({"type": "surface_status", "role": "driver" if is_driver else "observer"})
+
     history: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
     # The in-flight turn, if any -- run as its own task (not just awaited
     # inline) specifically so the main loop below can keep concurrently
@@ -307,6 +345,20 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # instead, now that the task has actually finished
                     # unwinding and it's safe to use the socket again.
                     await websocket.send_json({"type": "turn_end"})
+                continue
+
+            if msg_type in ("user_text", "user_audio") and websocket is not _driver:
+                # Observer window trying to start a turn -- the frontend
+                # should already have disabled its own input for this
+                # (see onSurfaceStatus in main.ts/sandbox.ts), so this is
+                # defense in depth, not the primary guard. Declined
+                # audibly rather than silently dropped, and still sends
+                # turn_end so that window's own turnActive-style flag
+                # (set optimistically the moment it sent something)
+                # doesn't get stuck waiting forever for a reply that's
+                # never coming.
+                await _send_speak(websocket, apply_persona_pass(SURFACE_BUSY_LINE))
+                await websocket.send_json({"type": "turn_end", "emotion": EMOTION_SURFACE_BUSY})
                 continue
 
             if msg_type == "user_text":
@@ -375,6 +427,23 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         pass
     finally:
         _active_connections.discard(websocket)
+        _connection_surface.pop(websocket, None)
+        # This connection was the driver -- promote whichever other
+        # connection is still open, if any, so a still-open second window
+        # (or a third one that connected while both were up) doesn't stay
+        # locked out just because the original driver happened to close
+        # first. Note this does *not* hand the promoted connection the old
+        # driver's `history` -- each connection keeps its own (unchanged
+        # since Phase 2) -- so a promoted observer starts a fresh
+        # conversation rather than continuing the old one mid-thread. A
+        # real shared-session handoff would need restructuring `history`
+        # to live per-character rather than per-connection; not done here
+        # -- see docs/DECISIONS.md.
+        if websocket is _driver:
+            _driver = next(iter(_active_connections), None)
+            if _driver is not None:
+                with contextlib.suppress(Exception):
+                    await _driver.send_json({"type": "surface_status", "role": "driver"})
         # A turn still running when the connection itself goes away (not
         # just a "stop" click) -- cancel it too, same reasoning as
         # above, so consolidation below reads a `history` that's finished

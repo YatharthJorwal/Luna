@@ -11,14 +11,36 @@
       <canvas id="sandbox-canvas"></canvas>
     </div>
 
-    <div id="sandbox-hud">
+    <div id="sandbox-info">
       <div id="sandbox-title">Luna — full-body sandbox</div>
       <div id="sandbox-help">
-        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> or arrows — walk</span>
-        <span>drag — orbit camera</span>
-        <span>scroll — zoom</span>
+        <span><kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> — fly</span>
+        <span><kbd>Space</kbd> up · <kbd>Shift</kbd> down</span>
+        <span>right-drag — look around</span>
+        <span>middle-drag — pan</span>
+        <span>scroll — fly speed</span>
       </div>
       <div id="sandbox-status">Loading…</div>
+    </div>
+
+    <div id="caption" aria-live="polite"></div>
+
+    <div id="hud">
+      <div id="status-dot" title="disconnected"></div>
+      <input
+        id="input-box"
+        type="text"
+        placeholder="Say something to Luna…"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <button id="mic-button" type="button" title="Voice input" aria-label="Voice input" aria-pressed="false">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M12 15a3 3 0 0 0 3-3V6a3 3 0 0 0-6 0v6a3 3 0 0 0 3 3Z" />
+          <path d="M6 11a1 1 0 1 1 2 0 4 4 0 0 0 8 0 1 1 0 1 1 2 0 6 6 0 0 1-5 5.917V19h2a1 1 0 1 1 0 2H9a1 1 0 1 1 0-2h2v-2.083A6 6 0 0 1 6 11Z" />
+        </svg>
+      </button>
+      <button id="action-button" type="button" hidden></button>
     </div>
 
     <script type="module" src="/src/sandbox.ts"></script>

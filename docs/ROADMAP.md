@@ -236,21 +236,34 @@ awaiting on-machine confirmation · ⬜ not started)
   in, with selectable backgrounds (classroom, home, park, etc.) instead of
   a blank canvas. Both easier on a 3D VRM scene/camera than Live2D's flat
   compositing — depends on Phase 7.
-  **Groundwork for (2) started:** `sandbox.html` / `src/sandbox.ts` — a
-  full-body VRM preview in a plain white studio (floor + faint grid, no
-  selectable rooms yet), WASD/arrow-key walking with a camera-relative
-  third-person orbit camera, and a locomotion loop built to take a real
-  `walk.vrma` animation clip the moment one exists (falls back to a
-  procedural sine-wave walk cycle today, since no clip is sourced yet —
-  same situation the character model itself was in before Phase 7).
-  Deliberately isolated from the shell — new files only, `src/main.ts`/
-  `index.html`/`style.css`/`src-tauri/`/`orchestrator/` untouched, run via
-  `npm run sandbox` as its own dev-only page, not part of the packaged
-  app. See `docs/DECISIONS.md`'s "Phase 10 (partial)" entry for the full
-  reasoning and what's verified vs. not. Still open for this phase: the
-  desktop companion mode (1) entirely, room/background selection for (2),
-  a real sourced walk cycle (and others — idle, run, wave, sit) to replace
-  the procedural placeholder, and on-machine confirmation of all of the
+  **Groundwork for (2), round 2:** the sandbox now has a real box room
+  (floor, four walls, a ceiling — no fog, no infinite-looking horizon),
+  a free-flying spectator camera (WASD + Space/Shift to fly, right-drag to
+  look, middle-drag to pan — not tied to the character at all), and her
+  movement is no longer player input: `WanderController` (an explicit,
+  labeled placeholder for real AI-driven navigation) picks where she walks
+  and when she stands still, same locomotion-and-clip machinery as round
+  1 otherwise (`walk.vrma` if present, procedural sine-wave walk if not).
+  The bigger change: the sandbox now has a *live* connection to the same
+  orchestrator the shell does — full chatbox/mic/captions/emotion-driven
+  expression (`src/sandbox-hud.ts`, ported from main.ts's own HUD, not
+  imported — kept in sync with the `teasing`-emotion/composite-blend and
+  individually-fading-caption work landed on `main.ts` in between) — with
+  both windows aware of each other so they can't both drive a conversation
+  at once (`ws-client.ts`'s `surface`/`surface_status`, `app.py`'s
+  driver/observer/promotion logic). This is the one piece that genuinely
+  required touching the shell: `main.ts` and `ws-client.ts` both needed a
+  small, explicit patch (identify which surface each is, handle being
+  locked out if the other connects first) — `index.html`/`style.css`/
+  `src-tauri/`/`persona.py` are still untouched. See `docs/DECISIONS.md`'s
+  "Phase 10 (partial), round 2" entry for the full reasoning and what's
+  verified vs. not. Still open for this phase: the desktop companion mode
+  (1) entirely, room/background selection for (2), real
+  orchestrator-driven navigation to replace `WanderController`, a real
+  sourced walk cycle (and others — idle, shy, joy, sad as actual body
+  language, not just facial expression) to replace the procedural
+  placeholder, shared/continuous conversation history across a
+  driver-observer handoff, and on-machine confirmation of all of the
   above (this was built in the same no-GPU/no-browser sandbox every prior
   rendering phase was).
 

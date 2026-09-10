@@ -348,6 +348,11 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   let orchestratorDone = true;
   let audioIdle = true;
   let turnActive = false;
+  // Full-body sandbox round: true whenever this window is the "observer"
+  // (the sandbox got there first) -- see ws-client.ts's top-of-file
+  // comment. Distinct from turnActive: this is about *which window* may
+  // talk to her at all, not whether a reply is currently in flight.
+  let observerLocked = false;
 
   function recomputeTurnActive(): void {
     setTurnActive(!orchestratorDone || !audioIdle);
@@ -361,6 +366,14 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   // state -- the mic button covers that case instead. Called on every
   // turnActive change and every keystroke in the input box.
   function updateInputButtons(): void {
+    // Observer-locked: neither button has anything to do (there's nowhere
+    // for a click to go -- the orchestrator will just decline it), so hide
+    // both rather than leaving one active-looking but non-functional.
+    if (observerLocked) {
+      actionButton.hidden = true;
+      micButton.hidden = true;
+      return;
+    }
     const hasText = input.value.trim().length > 0;
     if (turnActive) {
       actionButton.hidden = false;
@@ -384,7 +397,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
 
   function setTurnActive(active: boolean): void {
     turnActive = active;
-    input.disabled = active;
+    input.disabled = active || observerLocked;
     updateInputButtons();
   }
 
@@ -551,6 +564,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     },
   });
   const client = new WsClient({
+    surface: "shell",
     onStateChange: setState,
     onSpeak: (msg: SpeakMessage) => queue.push(msg),
     onTranscript: (msg: TranscriptMessage) => showTranscript(msg.text),
@@ -558,6 +572,17 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       orchestratorDone = true;
       recomputeTurnActive();
       setTargetEmotion(emotion);
+    },
+    // Sandbox connected first -- she's already talking there. Lock input
+    // here rather than let both windows race to start a turn (which would
+    // mean two TTS clips potentially playing over each other -- see
+    // ws-client.ts's top-of-file comment). Flips back the moment the
+    // sandbox disconnects and the orchestrator promotes this connection.
+    onSurfaceStatus: (role) => {
+      observerLocked = role === "observer";
+      input.disabled = observerLocked || turnActive;
+      updateInputButtons();
+      if (observerLocked) flashPlaceholder("Luna's active in the sandbox right now…");
     },
   });
   client.connect();
@@ -654,7 +679,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   // hotkey, not a click on the (now-hidden) mic button -- hiding the
   // button doesn't stop F9 from still firing while a reply's in flight.
   listen<string>("hotkey-talk", (event) => {
-    if (turnActive) return;
+    if (turnActive || observerLocked) return;
     if (event.payload === "pressed") {
       mic.start();
     } else if (event.payload === "released") {

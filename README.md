@@ -66,29 +66,37 @@ your VRoid model in" below.
 
 ## Full-body sandbox (Phase 10 groundwork)
 
-A separate, dev-only page for full-body work — the main shell only ever
-frames a bust-up view, so there's nowhere in it to see legs, walking, or
-full-body animation. Doesn't touch the shell or the packaged app at all.
+A separate, dev-only page — a second, real way to see and talk to Luna,
+not just a static preview. Her space, not yours: you're a spectator here,
+flying a free camera around; she's the one who decides where she stands
+and walks (today, via a simple placeholder wander behavior — see
+`docs/DECISIONS.md` — real AI-driven navigation is a later step).
 
 1. **Run it:** `npm run sandbox` (or `npm run dev` and open
    `http://localhost:1420/sandbox.html` yourself). Same `public/vrm/luna.vrm`
-   model as the main shell — nothing extra to set up if that's already in
-   place.
-2. **Walk her around:** WASD or arrow keys move her, relative to whichever
-   way the camera's currently facing. Drag to orbit the camera, scroll to
-   zoom. She's boxed into a fixed invisible square on the floor for now —
-   real room bounds are a later Phase 10 step.
-3. **Animation:** with no animation file present, she walks via a small
-   procedural (code-only) walk cycle — good enough to test movement/camera
-   feel, not a real authored gait. Drop a `walk.vrma` file at
+   model as the main shell.
+2. **Camera (you):** WASD flies, relative to wherever you're currently
+   looking. Space/Shift move straight up/down. Right-click-drag looks
+   around in place; middle-click-drag pans; scroll adjusts fly speed.
+   You're not tied to her at all — fly wherever.
+3. **Her (not you):** she wanders the room on her own and stands still
+   while actually mid-conversation. There's nothing here that lets you
+   move her directly, on purpose.
+4. **Talk to her:** same chatbox/mic/captions as the desktop shell, `/` to
+   focus the input. If the shell is *also* open and connected, whichever
+   one connected first is the one that can actually talk to her — the
+   other shows a status message and won't let you send anything, rather
+   than both windows racing to reply at once. See `docs/DECISIONS.md`'s
+   "Phase 10 (partial), round 2" entry for exactly how that's decided.
+5. **Animation:** with no animation file present, she walks via a small
+   procedural (code-only) walk cycle. Drop a `walk.vrma` file at
    `public/vrm-animations/walk.vrma` (see that folder's own `README.txt`)
    to use a real walk cycle instead; picked up automatically on reload, no
    code changes needed.
-4. **Tuning:** if the walk speed, turn speed, or the procedural gait's
-   swing amplitude/cadence look off, the relevant constants are all at the
-   top of `src/sandbox.ts` (`WALK_SPEED_MPS`, `TURN_RATE_RAD_S`,
-   `LEG_SWING_RAD`, `ARM_SWING_RAD`, `WALK_CYCLE_RATE`) — same hand-tuned-
-   by-eye situation as the main shell's own `CAMERA_*` constants.
+6. **Tuning:** movement/room constants are at the top of `src/sandbox.ts`
+   (`WALK_SPEED_MPS`, `TURN_RATE_RAD_S`, `ROOM_HALF_SIZE`, fly-camera speed
+   constants, etc.) — hand-tuned by eye, same spirit as the main shell's
+   own `CAMERA_*` constants.
 
 ## What's actually been verified vs. not, honestly
 

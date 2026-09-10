@@ -1581,7 +1581,6 @@ cases tested here -- the parser is deliberately forgiving specifically
 because this is a real open question, same standing caveat as
 consolidation.py's/forget.py's own JSON-adjacent parsing.
 
-<<<<<<< HEAD
 ## Emotion tags split into an app-facing name and an underlying VRM preset name
 
 Phase 8 originally treated `EMOTION_NAMES` in main.ts and `VALID_EMOTIONS`
@@ -1655,7 +1654,7 @@ the line doesn't keep growing) once it falls more than
 `CAPTION_TRAIL_WORDS` (4) behind the current highlight -- this, not the
 end-of-clip fade, is what actually keeps a long sentence from turning
 into one large block on screen.
-=======
+
 ## Phase 10 (partial) -- full-body sandbox, isolated from the shell
 
 User asked for a dedicated place to develop full-body locomotion/animation
@@ -1763,5 +1762,162 @@ rendering-facing phase since Phase 7 has had. Expect to tune
 `src/sandbox.ts` by eye on first real run, same spirit as main.ts's own
 hand-tuned camera constants.
 
->>>>>>> incoming-sandbox
+## Phase 10 (partial), round 2 -- spectator camera, AI-owned movement, real box room, live chat in the sandbox
 
+Follow-up to the entry above, after actually seeing the first round
+running (two screenshots): direct feedback was "this is her space, I
+don't control her model," the gray sheen on the jacket, "don't make the
+horizon blurry and infinite, it's supposed to be a box," a completely
+different camera scheme (WASD-fly + right-drag-look + middle-drag-pan,
+spectator-only), and -- the bigger one -- bringing the shell's actual
+chat/voice/caption features into the sandbox so this becomes a second,
+real way to talk to her, with the two windows aware of each other.
+
+Also found and fixed on the way in: the merge that landed the round-1
+entry above into `main` left literal, uncleaned `<<<<<<<`/`=======`/
+`>>>>>>>` conflict markers sitting in this file (both sides' content was
+there, just never actually reconciled) -- removed; both entries survive
+intact, nothing was dropped.
+
+**Movement is no longer player input.** The previous round's
+`CharacterController` read WASD directly; that's gone. `WanderController`
+(new, in `src/sandbox.ts`) is an explicit, clearly-labeled placeholder for
+"the AI decides where she walks and stays" -- it picks a random point in
+the room, walks her there, waits a random beat, repeats, and pauses (without
+picking a new destination mid-wait) whenever `sandbox-hud.ts` reports a
+conversation turn is actually active. `CharacterController` itself only
+ever asks "where should she be walking to, if anywhere" and steers toward
+that -- swapping in real orchestrator-driven navigation later (a
+`walk_to`/`play_animation` message over the same WebSocket connection
+`sandbox-hud.ts` already opens) means replacing this one class, nothing
+downstream of it. Not built now because there's no such message type or
+navigation-brain on the orchestrator side yet -- the user's own phrasing
+("the AI *will* handle her future animations") reads as forward-looking,
+not a request to fake real decision-making today.
+
+**The camera is a from-scratch fly cam, not OrbitControls.** OrbitControls
+always orbits around a target point, which stopped being the right shape
+once she's no longer something to keep centered -- the person is a pure
+spectator now. `FlyCamera` (new, in `src/sandbox.ts`) hand-implements
+WASD-relative-to-view-direction flight, Space/Shift for pure vertical
+movement, right-drag look-in-place (yaw/pitch via `THREE.Euler`'s `"YXZ"`
+order, the standard non-gimbal-locking approach for a first-person-style
+camera), middle-drag pan, and scroll-to-adjust-fly-speed. WASD is
+suppressed while any `<input>`/`<textarea>` is focused (`isTypingTarget()`)
+so typing in the chatbox doesn't also fly the camera around.
+
+**The room is now an actual box: floor, four walls, a ceiling, no fog.**
+The previous round used `scene.fog` to fade a much-larger floor into the
+white background at a distance -- exactly the "blurry infinite horizon"
+the user called out, not a subtle issue to tune, so it's removed outright
+rather than just toned down. `ROOM_HALF_SIZE`/`ROOM_HEIGHT` define real
+wall geometry now (`THREE.DoubleSide` on every surface, since the camera
+can now fly outside the box entirely and there's no reason for that view
+to show through the wall). Her wander bounds (`WANDER_MARGIN_M` inset from
+the walls) are separate from the room geometry itself, not inferred from
+it -- deliberately, since a real decorated room (the *other* half of
+ROADMAP.md's Phase 10 entry) will want its own, possibly-irregular
+walkable area later.
+
+**Lighting: reduced fill, neutralized the hemisphere's tint.** The
+screenshots showed a flat gray sheen across the jacket, consistent with
+Phase 7's already-documented "jacket artifact" (MToon's toon shading reads
+lit/shadow bands off the light direction; too much ambient/hemisphere fill
+flattens those bands into a uniform wash instead of a clean split) --
+same root cause, same style of fix: the previous round's
+`HemisphereLight(0xffffff, 0xd8d8e0, 1.15)` (slightly blue-gray ground
+tint, fairly strong) is now `HemisphereLight(0xffffff, 0xf3f3f3, 0.5)`
+(near-neutral, much dimmer), and the directional key light dropped from
+0.9 to 0.55. The key light is also no longer positioned relative to the
+camera (that reasoning stopped making sense the moment the camera became
+free-flying) -- it's a fixed point in the room now, which is fine for a
+`DirectionalLight` specifically since only its angle matters, not its
+distance from what it's lighting. Not independently re-verified against a
+real render -- no GPU/browser in this sandbox, same limitation as Phase
+7's own version of this exact fix.
+
+**The sandbox now has a real, live connection to the orchestrator, not
+just a silent 3D view.** `src/sandbox-hud.ts` (new) ports main.ts's
+chatbox, mic button, captions, "/"-to-focus, and the emotion blend over to
+the sandbox -- same duplication-over-shared-module reasoning as the first
+round (a `WsClient`/`MicInput`/`lipsync.ts` import is fine, those are
+already pure reusable modules main.ts itself doesn't own exclusively; the
+HUD *logic* -- SpeakQueue, caption timing, the emotion blend -- is copied
+and adapted, not imported, so `main.ts` stays untouched beyond the one
+patch described below). Ported against `main.ts`'s *current* state, not
+the snapshot round 1 was written against -- the user's own intervening
+commits (`8306d5e`) had already renamed the `relaxed` emotion tag to
+`teasing` with a composite `EMOTION_BLENDS` map and reworked captions to
+individually fade trailing words, both of which this round's
+`sandbox-hud.ts`/`sandbox.css` now match exactly rather than silently
+drifting out of sync. No F9 push-to-talk here: that's wired through a
+Tauri global-shortcut event that only exists inside the Tauri webview, and
+this page is a plain browser tab (confirmed by the user's own screenshot
+-- Chrome, with tabs, not a borderless Tauri window). The mic button
+itself is functionally identical to the shell's for now -- the user
+flagged that the sandbox's mic will eventually mean something more than
+"record and transcribe," without saying what; the seam (`MicInput`'s
+`onClip` callback handing a blob to `client.sendUserAudio`) doesn't assume
+anything about *why* a clip was captured, so whatever that turns out to be
+should still slot in without protocol changes.
+
+**Two windows, one Luna, only one may drive at a time.** This is the one
+piece that genuinely couldn't stay sandbox-only: "aware of where I'm
+running her so neither collide" needs both ends of the WebSocket to agree
+on it. `ws-client.ts` gained a required `surface: "shell" | "sandbox"`
+constructor field (sent as a `?surface=` query param) and an optional
+`onSurfaceStatus` callback for a new `surface_status` message.
+`orchestrator/app.py` gained `_driver`/`_connection_surface` module-level
+state: whichever connection opens first becomes the "driver" (allowed to
+send `user_text`/`user_audio`); anything else connecting while the driver
+is still open is an "observer," gets told so immediately, and if it tries
+to start a turn anyway gets a canned in-character decline
+(`SURFACE_BUSY_LINE`, tagged `teasing` -- not `relaxed`, which no longer
+exists as a valid app-facing tag as of the rename above) rather than
+either silently doing nothing or -- the actual failure mode being
+prevented -- both windows generating a reply and playing TTS audio over
+each other. If the driver disconnects, the orchestrator promotes whichever
+other connection is still open and tells it so. `main.ts` needed a small,
+explicit patch for this (a new `observerLocked` flag gating input/the F9
+hotkey alongside the existing `turnActive` flag, plus `surface: "shell"`
+on its `WsClient` construction) -- the only shell-file edit in this whole
+round, made because the feature genuinely requires both ends to
+participate, not because the isolation approach from round 1 was
+abandoned. `index.html`, `style.css`, `src-tauri/`, `persona.py` remain
+untouched.
+
+**Known, accepted limitation, not an oversight:** conversation `history`
+is still tracked per-connection (unchanged since Phase 2), not per-
+character. A promoted observer starts a *fresh* conversation rather than
+inheriting the old driver's mid-thread state -- continuous handoff would
+mean restructuring history to live per-character across connections
+instead, a bigger change than this round's scope. Also unaddressed:
+nothing stops a *third* simultaneous connection (it'd just also be an
+"observer," which is at least safe, if not maximally useful); and
+`_active_connections`/`_driver` are plain module-level state with no
+per-process-restart persistence, same as everything else `app.py` already
+tracks this way.
+
+**Verified in this sandbox:** `tsc --noEmit` clean across the whole
+project (rebuilt from the actual current `origin/main`, not the stale
+branch round 1 was written against -- see the merge-marker note above for
+why that distinction mattered here); `npm run build` (index.html only)
+still produces the same 16-module shell bundle; `sandbox.html` builds
+cleanly standalone via a throwaway Vite config (15 modules now, up from
+12, expected given `sandbox-hud.ts`/`mic.ts`/`lipsync.ts`/`ws-client.ts`
+joining the graph). `orchestrator/app.py`'s actual driver/observer/
+promotion/decline logic -- the real `ws_endpoint` function, not a
+reimplementation -- was exercised directly under a hand-driven `asyncio`
+event loop against a minimal fake WebSocket object (Starlette's own
+`TestClient` hit a cross-event-loop error against this file's
+module-level `_shutdown_event`, a test-harness quirk of this sandbox's
+installed Starlette version, not a bug in `app.py` -- a real
+single-process `uvicorn` run only ever has one loop). Confirmed: first
+connection gets `"driver"`, a second gets `"observer"` and is declined in
+character (with the right canned line and the correct `teasing` emotion
+tag) if it tries to send `user_text` anyway, and the observer is promoted
+to `"driver"` the moment the original driver disconnects. **Not
+verified:** any of this against the real `pyttsx3`/`faster-whisper`/
+`sqlite-vec` stack (all three stubbed out for the test above, same
+reasoning as every prior phase's "no GPU/no native deps in this sandbox"
+caveat) or against two real browser windows actually open at once.
