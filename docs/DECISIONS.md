@@ -1921,3 +1921,99 @@ verified:** any of this against the real `pyttsx3`/`faster-whisper`/
 `sqlite-vec` stack (all three stubbed out for the test above, same
 reasoning as every prior phase's "no GPU/no native deps in this sandbox"
 caveat) or against two real browser windows actually open at once.
+
+## Phase 7/8/10 confirmed clean on the user's machine
+
+The user confirmed, from a real screenshot (Tauri-free browser tab
+running the full-body sandbox, room + HUD rendering correctly, model
+loaded, status line showing the procedural-walk fallback message): the
+VRM avatar migration (Phase 7), the sandbox environment (Phase 10's
+round 1 + round 2 work), and the emotion/expression system (Phase 8) all
+render and work as designed on real hardware, not just sandbox-verified
+as before. `docs/ROADMAP.md` updated accordingly -- Phase 7 and Phase 8
+move to ✅, confirmed rather than 🔶. Phase 10 stays 🔶: the rendering
+itself is now confirmed, but the phase's remaining open items (desktop
+companion mode, background selection, real orchestrator-driven
+navigation replacing `WanderController`, a sourced walk cycle and other
+real body-language clips) are unrelated to what was just confirmed and
+still unbuilt.
+
+## Gesture clips (Angry/Blush/Clapping/Goodbye/Jump/LookAround/Relax/Sad/Sleepy/Surprised/Thinking.vrma) wired into the sandbox
+
+The user dropped eleven real `.vrma` files into
+`public/vrm-animations/` (more to come, per the user) and asked whether
+these should *replace* the VRoid-default facial expression system
+(`EMOTION_BLENDS` in `main.ts`/`sandbox-hud.ts`) rather than sit
+alongside it. They don't, and can't cleanly: facial expression is a
+continuous per-frame morph-target blend with no notion of "playing" or
+"finishing" -- it's just whatever weight `updateEmotion()` currently
+eases toward. A `.vrma` gesture is the opposite shape: a fixed-duration
+authored animation clip that plays once and ends. One can't substitute
+for the other's job. What actually makes sense, and what's built here,
+is additive: the facial blend keeps running exactly as before, and a
+matching one-shot *body* gesture now plays on top of it when a turn ends
+with an emotion tag, giving the reaction both a face and a body instead
+of a face alone.
+
+`sandbox.ts` is the only file touched this round (main.ts still has no
+`AnimationMixer` at all -- it never needed one before this, since it
+only ever drove facial blends -- porting gestures to the shell is real
+but separate follow-up work, not done here). Two new tables sit next to
+the existing `WALK_CLIP_PATH`: `GESTURE_CLIP_FILES` (gesture name →
+filename, all eleven current files registered, loaded best-effort
+exactly like `walk.vrma` already was -- a missing file just means that
+one gesture never registers, not a boot failure) and
+`GESTURE_FOR_EMOTION` (a *separate* table mapping the six app-facing
+emotion tags to a gesture name, kept independent of
+`GESTURE_CLIP_FILES`'s keys on purpose so gesture files can be
+renamed/re-picked later without touching the emotion vocabulary
+`persona.py` actually sends). Only five of the six emotions got a
+gesture assigned: `angry`→Angry, `sad`→Sad, `surprised`→Surprised,
+`teasing`→Relax (closest authored body language on hand to the
+model's own "relaxed"-preset-plus-a-hint-of-angry composite), and, as a
+stand-in only, `happy`→Blush, since no dedicated joy/happy body clip
+exists yet -- worth swapping the moment one does. `neutral` has no
+gesture on purpose: returning to idle/wander already reads as neutral.
+The other six files (Clapping/Goodbye/Jump/LookAround/Sleepy/Thinking)
+don't correspond to any emotion tag at all and have no trigger wired up
+yet -- they're loaded and available through
+`CharacterController.playGesture()` (see below), just not fired by
+anything yet. Natural next signals for them once they exist: a
+goodbye-on-disconnect hook, a thinking-while-generating indicator, idle
+variety during long stretches of `WanderController` inactivity, and so
+on.
+
+`CharacterController` (previously walk-only) now always owns an
+`AnimationMixer` -- it used to only construct one conditionally, when a
+walk clip actually loaded, since gestures didn't exist yet to need one
+either way. It gained `registerGesture(name, clip)` (called once per
+successfully-loaded clip from `boot()`'s loop, sets `LoopOnce` +
+`clampWhenFinished` so a gesture holds its last pose rather than
+snapping back to bind pose the instant it ends) and `playGesture(name)`
+(silently no-ops for an unregistered name, same tolerance-of-absence
+philosophy as everything else gesture-related here; fades out
+whichever gesture was already running, if any, rather than layering
+two). While a gesture is active, `update()` freezes position/facing and
+skips driving the walk/procedural-walk path entirely for that duration
+-- letting a walk cycle keep running underneath an authored full-body
+clip would just be two systems fighting over the same bones. **Known,
+accepted rough edge:** if she's already mid-stride when a gesture
+fires, she freezes mid-step rather than easing to a stop first; not
+solved here, worth a look once there's a real model/browser to actually
+see it against. The trigger itself lives at the same `turn_end` signal
+the facial blend already reacts to: `sandbox-hud.ts`'s
+`setupSandboxHud` now takes an optional `opts.onEmotion` callback,
+fired once per turn right alongside `setTargetEmotion(emotion)` inside
+`onTurnEnd` (and *not* fired from the other `setTargetEmotion("neutral")`
+call sites -- stop button, audio-idle reset -- since those are UI resets,
+not a reaction worth replaying a gesture for). `boot()` wires that
+callback to `GESTURE_FOR_EMOTION` → `character.playGesture(...)`, both
+lookups tolerant of a miss.
+
+**Verified in this sandbox:** `tsc --noEmit` clean across the whole
+project after these changes. **Not verified:** any of it visually --
+same "no GPU/browser in this sandbox" caveat as every rendering-related
+entry above. In particular: whether the freeze-in-place behavior during
+a gesture actually looks right, whether the `happy`→Blush stand-in reads
+as intended, and whether 0.2s fade in/out is the right timing for these
+particular clips -- all first-guess values pending a real look.

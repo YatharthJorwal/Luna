@@ -49,7 +49,19 @@ export interface SandboxHud {
   isTurnActive(): boolean;
 }
 
-export function setupSandboxHud(vrm: VRM): SandboxHud {
+export interface SandboxHudOptions {
+  /** Fired once per whole turn when the orchestrator's turn_end message
+   * carries an emotion tag (same event setTargetEmotion below reacts to
+   * for the facial blend) -- lets sandbox.ts's boot() trigger a matching
+   * one-shot body gesture (see CharacterController.playGesture there)
+   * without this file needing to know anything about gestures, mixers,
+   * or vrma clips itself. Not fired for the "neutral" resets below (turn
+   * end with no tag, stop button, audio-idle) -- those are UI resets,
+   * not a reaction worth a body gesture. */
+  onEmotion?: (emotion?: string) => void;
+}
+
+export function setupSandboxHud(vrm: VRM, opts: SandboxHudOptions = {}): SandboxHud {
   const input = document.getElementById("input-box") as HTMLInputElement;
   const statusDot = document.getElementById("status-dot") as HTMLDivElement;
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
@@ -340,6 +352,7 @@ export function setupSandboxHud(vrm: VRM): SandboxHud {
       orchestratorDone = true;
       recomputeTurnActive();
       setTargetEmotion(emotion);
+      opts.onEmotion?.(emotion);
     },
     // Shell connected first -- she's already talking there. See
     // ws-client.ts's top-of-file comment and app.py's ws_endpoint.

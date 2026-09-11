@@ -165,7 +165,7 @@ awaiting on-machine confirmation · ⬜ not started)
   (roommate-tsundere framing, flustered-at-flirtation, anti-repetition —
   see `docs/DECISIONS.md`) already done ad hoc, ahead of the rest of this
   phase.
-- 🔶 **Phase 7 — VRM avatar migration.** Replaced the Live2D rendering
+- ✅ **Phase 7 — VRM avatar migration.** Replaced the Live2D rendering
   stack (`pixi-live2d5` + Cubism) with `three` + `@pixiv/three-vrm` --
   `public/live2d/`, `public/cubism5/`, `vendor/pixi-live2d5/`, and the
   Cubism Core script tag are all gone. `src/main.ts` now sets up a
@@ -194,7 +194,11 @@ awaiting on-machine confirmation · ⬜ not started)
   to adjust. HUD/input shell (`#hud`, status dot, input box, buttons)
   deliberately untouched -- confirmed it doesn't need to change for this
   migration, only the canvas/rendering code underneath it does.
-- 🔶 **Phase 8 — Emotion system + expression control.** Finally uses the
+  **Confirmed on the user's real machine:** rendering, the loading
+  pipeline, and camera framing all look correct (real screenshot,
+  browser tab running the sandbox) -- the "not verified" gap noted above
+  is closed.
+- ✅ **Phase 8 — Emotion system + expression control.** Finally uses the
   `emotion` field that's been sitting unused in the `speak` WebSocket
   message since Phase 1 -- moved to `turn_end` instead (see
   `docs/DECISIONS.md`; delivered once per whole turn, not per sentence,
@@ -221,10 +225,12 @@ awaiting on-machine confirmation · ⬜ not started)
   no tag, unrecognized tag, and a bracketed word appearing mid-sentence
   rather than at the true end), and the full flow driven through a real
   running server confirming the tag never leaks into spoken audio and
-  `turn_end` carries the right emotion. Not verified: how it actually
-  looks in motion (no browser in this sandbox), and whether qwen3.5:9b
-  reliably produces a recognizable tag across real conversations rather
-  than the synthetic cases tested here.
+  `turn_end` carries the right emotion. **Confirmed on the user's real
+  machine:** the expression blends actually look right in motion --
+  closes the "not verified: how it looks in motion" gap noted above.
+  Still open, not blocking: whether qwen3.5:9b reliably produces a
+  recognizable tag across real conversations rather than the synthetic
+  cases tested here.
 - ⬜ **Phase 9 — UI overhaul.** Replace the plain input box/HUD with
   something more visually considered — color, less utilitarian chrome.
   Pure `index.html`/`style.css` work, no protocol or backend changes, no
@@ -260,12 +266,26 @@ awaiting on-machine confirmation · ⬜ not started)
   verified vs. not. Still open for this phase: the desktop companion mode
   (1) entirely, room/background selection for (2), real
   orchestrator-driven navigation to replace `WanderController`, a real
-  sourced walk cycle (and others — idle, shy, joy, sad as actual body
-  language, not just facial expression) to replace the procedural
-  placeholder, shared/continuous conversation history across a
-  driver-observer handoff, and on-machine confirmation of all of the
-  above (this was built in the same no-GPU/no-browser sandbox every prior
+  sourced walk cycle to replace the procedural placeholder,
+  shared/continuous conversation history across a driver-observer
+  handoff, and on-machine confirmation of the round-2 scene/lighting
+  work (this was built in the same no-GPU/no-browser sandbox every prior
   rendering phase was).
+  **Round 3, gesture clips:** the "others — idle, shy, joy, sad as actual
+  body language" half of the walk-cycle item above is now partly
+  underway — the user supplied eleven real `.vrma` gesture files
+  (`Angry`/`Blush`/`Clapping`/`Goodbye`/`Jump`/`LookAround`/`Relax`/`Sad`/
+  `Sleepy`/`Surprised`/`Thinking`, more to come). `CharacterController`
+  loads all of them best-effort and plays a matching one-shot body
+  gesture (`playGesture()`) alongside the facial expression blend
+  whenever a turn ends carrying one of five of the six emotion tags —
+  see `docs/DECISIONS.md`'s gesture-clips entry for the full mapping,
+  the `happy`→Blush stand-in, and what's still unwired
+  (`Clapping`/`Goodbye`/`Jump`/`LookAround`/`Sleepy`/`Thinking` have no
+  trigger yet). Not ported to `main.ts` (the desktop shell) — that file
+  has no `AnimationMixer` at all yet; separate follow-up work. Not
+  verified on-machine — no GPU/browser in this sandbox, same caveat as
+  the round-2 lighting/scene work above.
 
 ## Open decisions
 

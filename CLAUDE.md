@@ -47,6 +47,21 @@ compiling and running end-to-end (needed a `PYTHONIOENCODING`/
 `PYTHONUTF8` fix the user found themselves for a Windows console-encoding
 crash). Not yet confirmed: a full voice turn actually completing now that
 STT is on CPU with the model-reuse bug fixed — next real-machine round.
+Since confirmed on the user's real machine, from an actual screenshot:
+the VRM avatar migration (Phase 7) and the emotion/expression system
+(Phase 8), both previously sandbox-verified only. The full-body sandbox
+(Phase 10) render/scene itself looks correct too, though the phase's
+other open items (companion mode, backgrounds, real navigation) remain
+unbuilt. **New this round:** the user is dropping real `.vrma` gesture
+clips into `public/vrm-animations/` (eleven so far — Angry/Blush/
+Clapping/Goodbye/Jump/LookAround/Relax/Sad/Sleepy/Surprised/Thinking,
+more coming) — `sandbox.ts`'s `CharacterController` now loads them and
+plays a matching one-shot body gesture alongside (not instead of) the
+facial expression blend when a turn ends with an emotion tag; see
+`docs/DECISIONS.md`'s gesture-clips entry for the mapping and what's
+still unwired. Not yet sandbox-verified visually (no GPU/browser here)
+and not ported to the desktop shell (`main.ts` has no `AnimationMixer`
+yet).
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

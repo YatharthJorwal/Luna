@@ -20,6 +20,64 @@ const MODEL_PATH = "/vrm/luna.vrm";
 // changes required.
 const WALK_CLIP_PATH = "/vrm-animations/walk.vrma";
 
+// ---------------------------------------------------------------------
+// Gesture clips -- one-shot full-body reactions, distinct from walk.vrma
+// above (a *looping locomotion* clip blended continuously by speed) and
+// from the facial expression system (EMOTION_BLENDS in sandbox-hud.ts,
+// a continuous per-frame morph blend with no concept of "playing" or
+// "finishing"). These are real authored animations dropped into
+// public/vrm-animations/ -- see that directory's own files. Same
+// optional/best-effort loading philosophy as walk.vrma: each entry is
+// loaded individually and a missing file just means that one gesture
+// never registers, not a hard failure (see the loop in boot() below).
+//
+// Not every gesture maps onto one of the six emotion tags the LLM sends
+// (EMOTION_NAMES in sandbox-hud.ts) -- Clapping/Goodbye/Jump/LookAround/
+// Sleepy/Thinking don't correspond to an emotion at all, they're
+// contextual reactions with no trigger wired up yet (goodbye-on-
+// disconnect, thinking-while-generating, idle variety, etc. are natural
+// next increments once there's a signal in the protocol to drive them
+// from -- see docs/DECISIONS.md's "gesture clips vs. facial expression"
+// entry for the reasoning on why this stays additive rather than
+// replacing the facial system). They're still loaded here and available
+// via CharacterController.playGesture() so wiring a real trigger later
+// is a one-line addition, not a new loading path.
+const GESTURE_CLIP_FILES: Record<string, string> = {
+  angry: "Angry.vrma",
+  sad: "Sad.vrma",
+  surprised: "Surprised.vrma",
+  // "relaxed" VRM preset backs both the model's own idle look and the
+  // "teasing" app-facing emotion (see EMOTION_BLENDS) -- Relax.vrma is
+  // the closest authored body language on hand for a "teasing" beat.
+  teasing: "Relax.vrma",
+  // No dedicated "happy"/"joy" body clip exists yet; Blush.vrma is
+  // presently the closest bashful-pleased body language available and
+  // is used as a stand-in -- revisit if a real happy/joy gesture gets
+  // added later (see this file's own note above, "gonna add even more").
+  happy: "Blush.vrma",
+  clapping: "Clapping.vrma",
+  goodbye: "Goodbye.vrma",
+  jump: "Jump.vrma",
+  lookAround: "LookAround.vrma",
+  sleepy: "Sleepy.vrma",
+  thinking: "Thinking.vrma",
+};
+
+// Which gesture key (above) auto-fires when a given app-facing emotion
+// arrives on turn_end -- deliberately a *separate* table from
+// GESTURE_CLIP_FILES rather than reusing emotion names as gesture keys
+// directly, so a future gesture can be renamed/re-mapped independently
+// of the LLM-facing vocabulary in persona.py. "neutral" has no entry on
+// purpose: returning to idle/wander already reads as neutral, and there
+// isn't an authored "neutral" gesture to play.
+const GESTURE_FOR_EMOTION: Partial<Record<string, string>> = {
+  angry: "angry",
+  sad: "sad",
+  surprised: "surprised",
+  teasing: "teasing",
+  happy: "happy",
+};
+
 const WALK_SPEED_MPS = 1.4; // roughly an average adult's walking pace
 const TURN_RATE_RAD_S = 10; // how fast she reorients to face her movement direction
 const ARRIVE_RADIUS_M = 0.08; // "close enough" to a wander target to call it arrived
@@ -308,16 +366,26 @@ function lerpAngle(a: number, b: number, t: number): number {
 class CharacterController {
   private facing = 0;
   private readonly walker: ProceduralWalker;
-  private mixer: THREE.AnimationMixer | null = null;
+  // Always created now (used to be conditional on walkClip existing) --
+  // gestures need a mixer on vrm.scene regardless of whether a walk clip
+  // was ever found, so the "no clip loaded at all" case now just means
+  // an empty mixer with nothing registered on it, not a null one.
+  private readonly mixer: THREE.AnimationMixer;
   private walkAction: THREE.AnimationAction | null = null;
+  private readonly gestureActions = new Map<string, THREE.AnimationAction>();
+  // The one gesture allowed to be "in flight" at a time -- a second
+  // playGesture() call while one is already running crossfades into the
+  // new one rather than layering both (same one-target-at-a-time
+  // philosophy as main.ts/sandbox-hud.ts's facial emotion blend).
+  private activeGesture: THREE.AnimationAction | null = null;
 
   constructor(
     private vrm: VRM,
     walkClip: THREE.AnimationClip | null,
   ) {
     this.walker = new ProceduralWalker(collectWalkBones(vrm));
+    this.mixer = new THREE.AnimationMixer(vrm.scene);
     if (walkClip) {
-      this.mixer = new THREE.AnimationMixer(vrm.scene);
       this.walkAction = this.mixer.clipAction(walkClip);
       this.walkAction.play();
       // No separate idle clip yet -- freezing the walk clip's timeScale
@@ -327,16 +395,63 @@ class CharacterController {
       // clip in hand to test blend timing against.
       this.walkAction.timeScale = 0;
     }
+    // Clears activeGesture once its clip actually finishes playing (not
+    // just when a new one interrupts it -- that path is handled
+    // directly in playGesture below) so update() knows to hand movement
+    // back to the walk/procedural path again.
+    this.mixer.addEventListener("finished", (event) => {
+      if (event.action === this.activeGesture) this.activeGesture = null;
+    });
   }
 
   get usingRealClip(): boolean {
     return this.walkAction !== null;
   }
 
+  get gestureCount(): number {
+    return this.gestureActions.size;
+  }
+
+  /** Registers a loaded gesture clip under `name` (one of
+   * GESTURE_CLIP_FILES's keys) so playGesture(name) can trigger it
+   * later. Call once per clip after boot()'s best-effort load loop. */
+  registerGesture(name: string, clip: THREE.AnimationClip): void {
+    const action = this.mixer.clipAction(clip);
+    action.setLoop(THREE.LoopOnce, 1);
+    action.clampWhenFinished = true; // holds the clip's last pose instead of popping back to bind pose the instant it ends
+    this.gestureActions.set(name, action);
+  }
+
+  /** Plays a registered one-shot gesture immediately, if one exists
+   * under that name -- silently does nothing for an unregistered name
+   * (e.g. a gesture file that never got dropped into
+   * public/vrm-animations/, or an emotion with no GESTURE_FOR_EMOTION
+   * entry) rather than throwing, same tolerance-of-absence philosophy
+   * as walk.vrma. While a gesture is playing, update() below stands her
+   * still and lets it read clearly instead of fighting the walk cycle. */
+  playGesture(name: string): void {
+    const next = this.gestureActions.get(name);
+    if (!next) return;
+    if (this.activeGesture && this.activeGesture !== next) {
+      this.activeGesture.fadeOut(0.2);
+    }
+    next.reset().fadeIn(0.2).play();
+    this.activeGesture = next;
+  }
+
   update(delta: number, target: THREE.Vector3 | null): void {
     let speedFraction = 0;
+    const gesturing = this.activeGesture !== null;
 
-    if (target) {
+    // A gesture in flight takes over the whole body for its duration --
+    // freeze position/facing and skip driving the walk/procedural path
+    // entirely rather than layering a walk cycle underneath an authored
+    // full-body clip (both would be fighting for the same bones). Known
+    // rough edge, not yet solved: if she happens to already be mid-walk
+    // when a gesture fires, she'll freeze mid-stride rather than easing
+    // to a stop first -- fine for now, worth revisiting once there's a
+    // real model to actually see it against.
+    if (!gesturing && target) {
       const toTarget = new THREE.Vector3(
         target.x - this.vrm.scene.position.x,
         0,
@@ -359,13 +474,15 @@ class CharacterController {
       }
     }
 
-    if (this.walkAction && this.mixer) {
-      this.walkAction.setEffectiveWeight(speedFraction);
-      this.walkAction.timeScale = speedFraction;
-      this.mixer.update(delta);
-    } else {
-      this.walker.update(delta, speedFraction);
+    if (!gesturing) {
+      if (this.walkAction) {
+        this.walkAction.setEffectiveWeight(speedFraction);
+        this.walkAction.timeScale = speedFraction;
+      } else {
+        this.walker.update(delta, speedFraction);
+      }
     }
+    this.mixer.update(delta);
   }
 }
 
@@ -568,17 +685,47 @@ async function boot(): Promise<void> {
   }
 
   const character = new CharacterController(vrm, walkClip);
+
+  // Best-effort gesture load -- same tolerance as walk.vrma just above:
+  // each file is tried individually so a missing one (not yet dropped
+  // in, or a typo in GESTURE_CLIP_FILES) just means that single gesture
+  // never registers rather than aborting the whole loop or the boot.
+  for (const [name, filename] of Object.entries(GESTURE_CLIP_FILES)) {
+    try {
+      const clipGltf = await loader.loadAsync(`/vrm-animations/${filename}`);
+      const vrmAnimations = clipGltf.userData.vrmAnimations as VRMAnimation[] | undefined;
+      if (vrmAnimations?.[0]) {
+        const clip = createVRMAnimationClip(vrmAnimations[0], vrm);
+        clip.name = name;
+        character.registerGesture(name, clip);
+      }
+    } catch {
+      // Not present yet -- expected default for anything not dropped
+      // into public/vrm-animations/ under that exact filename.
+    }
+  }
+
   const wander = new WanderController(ROOM_HALF_SIZE - WANDER_MARGIN_M);
   statusEl.textContent = character.usingRealClip
-    ? "Model loaded · playing walk.vrma"
-    : "Model loaded · procedural walk (drop a walk.vrma into public/vrm-animations/ to use a real clip)";
+    ? `Model loaded · playing walk.vrma · ${character.gestureCount} gesture(s) loaded`
+    : `Model loaded · procedural walk (drop a walk.vrma into public/vrm-animations/ to use a real clip) · ${character.gestureCount} gesture(s) loaded`;
 
   // Full chat/caption/mic HUD -- connects to the same orchestrator
   // main.ts does, identifying itself as "sandbox" so the two windows
   // don't both try to drive a conversation at once. See
   // src/sandbox-hud.ts and ws-client.ts's/app.py's surface_status
-  // handling.
-  const hud = setupSandboxHud(vrm);
+  // handling. onEmotion fires once per whole turn (same turn_end signal
+  // the facial blend already reacts to, see setupSandboxHud's own
+  // comment) and triggers the matching one-shot body gesture, if
+  // GESTURE_FOR_EMOTION has an entry for it and that gesture actually
+  // loaded above -- both silently no-op otherwise.
+  const hud = setupSandboxHud(vrm, {
+    onEmotion: (emotion) => {
+      if (!emotion) return;
+      const gestureName = GESTURE_FOR_EMOTION[emotion];
+      if (gestureName) character.playGesture(gestureName);
+    },
+  });
 
   const clock = new THREE.Clock();
   function animate(): void {
