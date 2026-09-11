@@ -9,52 +9,114 @@ import { setupSandboxHud } from "./sandbox-hud";
 // file itself, only about how it's staged and moved around once loaded.
 const MODEL_PATH = "/vrm/luna.vrm";
 
-// Optional walk cycle, entirely absent by default (see
-// public/vrm-animations/README.txt) -- gitignored the same way
-// public/vrm/luna.vrm is, since it's a personal/sourced asset, not
-// something this repo can generate. Loading it is wrapped in a try/catch
-// below and its absence is expected, not an error: without it, a
-// procedural (code-driven, no-asset-needed) walk cycle takes over instead
-// -- see updateProceduralWalk(). Drop a real VRMA export here whenever
-// one exists and the mixer path below picks it up automatically, no code
-// changes required.
-const WALK_CLIP_PATH = "/vrm-animations/walk.vrma";
+const ANIM_BASE_PATH = "/vrm-animations/";
 
 // ---------------------------------------------------------------------
-// Gesture clips -- one-shot full-body reactions, distinct from walk.vrma
-// above (a *looping locomotion* clip blended continuously by speed) and
-// from the facial expression system (EMOTION_BLENDS in sandbox-hud.ts,
-// a continuous per-frame morph blend with no concept of "playing" or
-// "finishing"). These are real authored animations dropped into
-// public/vrm-animations/ -- see that directory's own files. Same
-// optional/best-effort loading philosophy as walk.vrma: each entry is
-// loaded individually and a missing file just means that one gesture
-// never registers, not a hard failure (see the loop in boot() below).
+// Locomotion: real, measured gait data instead of a guessed constant.
+// Every number in this block is hand-copied from the "Hanami" VRMA
+// pack's own world.json (Overte animations, Apache-2.0 -- see
+// public/vrm-animations/NOTICE.md and docs/DECISIONS.md's "go big"
+// entry for the full license/engineering writeup), not read from that
+// file at runtime -- see the same DECISIONS.md entry for why that's a
+// deliberate scope cut this round, not an oversight.
 //
-// Not every gesture maps onto one of the six emotion tags the LLM sends
-// (EMOTION_NAMES in sandbox-hud.ts) -- Clapping/Goodbye/Jump/LookAround/
-// Sleepy/Thinking don't correspond to an emotion at all, they're
-// contextual reactions with no trigger wired up yet (goodbye-on-
-// disconnect, thinking-while-generating, idle variety, etc. are natural
-// next increments once there's a signal in the protocol to drive them
-// from -- see docs/DECISIONS.md's "gesture clips vs. facial expression"
-// entry for the reasoning on why this stays additive rather than
-// replacing the facial system). They're still loaded here and available
-// via CharacterController.playGesture() so wiring a real trigger later
-// is a one-line addition, not a new loading path.
+// world-walk.vrma is a CYCLE played *in place* (its own translation
+// track is zero) -- moving her through the room is code's job, driven
+// by the clip's own measured speed rather than a guess. The reference
+// rig this was measured on has its hips at 1.0167 m; scaling by this
+// model's own hip height is what actually fixes "moonwalking" for
+// good, replacing the round-4 patch's untested guess with real data.
+const WORLD_WALK_LOOP_FILE = "world-walk.vrma";
+const WORLD_WALK_LOOP_DURATION_S = 1.0; // world.json: clips["world-walk"].dureeS
+const WORLD_WALK_SPEED_MPS_AT_REFERENCE_HIPS = 1.421; // world.json: clips["world-walk"].deplacement.vitesseMS
+const REFERENCE_RIG_HIPS_M = 1.0167; // world.json: rigDeMesure.hanchesAuReposM
+
+// world-walk-start's LAST frame is deliberately identical to
+// world-walk's pose at this phase, not at t=0 -- the loop has already
+// "started" mid-stride by the time the wind-up ends. Entering the loop
+// anywhere else pops by up to 81 cm at the reference rig, per the
+// pack's own measurement.
+const WORLD_WALK_START_FILE = "world-walk-start.vrma";
+const WORLD_WALK_START_DURATION_S = 0.4; // world.json: clips["world-walk-start"].dureeS
+const WORLD_WALK_START_ENTRY_PHASE_S = 0.2; // world.json: clips["world-walk-start"].enchaine.phaseEntreeCibleS
+
+// The mirror image on the way out: every stop clip's FIRST frame is
+// identical to world-walk's pose at its cycle seam (t=0, same point as
+// t=duration) -- leaving the loop anywhere else pops by up to 46 cm.
+// All five stops share this same exit contract, given here as a
+// tolerance window that wraps across the loop seam -- that's why one
+// can be picked at random with no other bookkeeping once she's inside
+// the window.
+const WORLD_WALK_STOP_EXIT_PHASE_WINDOW_S: readonly [number, number] = [0.967, 0.033];
+// Four "long stop" variants (picked at random) for a walk that actually
+// covered ground, one "small stop" for a walk that barely moved (a
+// wander target that landed almost where she already was) -- same
+// long-vs-small distinction the source pack's own player makes, using
+// its own threshold (Overte switches on whether she'd picked up
+// "momentum", over 2.2 m/s -- our only gait never reaches that, so the
+// distinction here is drawn on distance covered instead).
+const WORLD_WALK_STOP_FILES: ReadonlyArray<{ file: string; durationS: number }> = [
+  { file: "world-walk-stop.vrma", durationS: 1.9 },
+  { file: "world-walk-stop-2.vrma", durationS: 1.27 },
+  { file: "world-walk-stop-3.vrma", durationS: 1.97 },
+  { file: "world-walk-stop-4.vrma", durationS: 2.7 },
+];
+const WORLD_WALK_STOP_SMALL_FILE = "world-walk-stop-small.vrma";
+const WORLD_WALK_STOP_SMALL_DURATION_S = 1.27;
+const WALK_BOUT_SMALL_STOP_THRESHOLD_M = 1.0; // below this much ground covered, she gets the small stop instead of a long one
+
+// Last-resort fallback constants, used only when world-walk.vrma itself
+// didn't load (ProceduralWalker's crude sine-swing path, unchanged from
+// before this round) -- everything above this comment assumes the real
+// clip is present.
+const FALLBACK_WALK_SPEED_MPS = 1.4; // roughly an average adult's walking pace, a guess
+const FALLBACK_SLOWDOWN_RADIUS_M = 0.6; // starts easing speed down inside this distance from the target
+
+// ---------------------------------------------------------------------
+// Idle base poses -- what she stands in when there's nothing else going
+// on, redrawn periodically (real per-clip looping poses now, not a walk
+// clip frozen at timeScale 0 like before this round). Two separate
+// pools: the default standing idle, and a version played specifically
+// while a reply is being written (hud.isTurnActive()) -- the "during
+// dialogues, idles" distinction the user asked for, and a real role the
+// source pack defines (idle-talking.vrma), not something invented here.
+// idle-5/-6 are missing on purpose in both -- they became
+// world-idle-alt1/2 in the source pack (a different standing stance,
+// not wired up this round -- see docs/DECISIONS.md).
+const IDLE_BASE_FILES = ["idle.vrma", "idle-2.vrma", "idle-3.vrma", "idle-4.vrma", "idle-7.vrma"];
+const IDLE_TALKING_FILES = [
+  "idle-talking.vrma",
+  "idle-talking-4.vrma",
+  "idle-talking-5.vrma",
+  "idle-talking-6.vrma",
+  "idle-talking-7.vrma",
+];
+// Redrawn on roughly these intervals while she stays in one state long
+// enough to matter -- the same cadence the source pack's own player
+// uses (idle every 10-30s, talking idle every 7-12s), so a long silence
+// or a long reply doesn't visibly loop forever.
+const IDLE_VARIETY_MIN_S = 10;
+const IDLE_VARIETY_MAX_S = 30;
+const IDLE_TALKING_VARIETY_MIN_S = 7;
+const IDLE_TALKING_VARIETY_MAX_S = 12;
+const IDLE_CROSSFADE_S = 0.4; // matches the source pack's own documented out-fade for its transitions
+
+// ---------------------------------------------------------------------
+// Emotion gestures -- swapped this round to the source pack's fitted,
+// licensed face-to-face family wherever it has a matching role (each
+// one's seam to idle/idle-talking was measured under 10 cm before it
+// shipped -- see NOTICE.md); the user's own custom clips from the
+// previous two rounds fill the two roles the pack doesn't cover at all
+// (it has no "surprised" clip, and no "teasing" role either).
 const GESTURE_CLIP_FILES: Record<string, string> = {
-  angry: "Angry.vrma",
-  sad: "Sad.vrma",
-  surprised: "Surprised.vrma",
-  // "relaxed" VRM preset backs both the model's own idle look and the
-  // "teasing" app-facing emotion (see EMOTION_BLENDS) -- Relax.vrma is
-  // the closest authored body language on hand for a "teasing" beat.
-  teasing: "Relax.vrma",
-  // No dedicated "happy"/"joy" body clip exists yet; Blush.vrma is
-  // presently the closest bashful-pleased body language available and
-  // is used as a stand-in -- revisit if a real happy/joy gesture gets
-  // added later (see this file's own note above, "gonna add even more").
-  happy: "Blush.vrma",
+  happy: "happy.vrma",
+  sad: "sad.vrma",
+  angry: "angry.vrma",
+  teasing: "relaxed.vrma", // closest the pack has to "teasing"; same reasoning as round 3, new source file
+  surprised: "Surprised.vrma", // the user's own -- the pack has none at all, see above
+  // Idle-variety extras carried over from round 3/4, unrelated to
+  // emotions -- still loaded, played by IdleGestureScheduler below, not
+  // by GESTURE_FOR_EMOTION.
   clapping: "Clapping.vrma",
   goodbye: "Goodbye.vrma",
   jump: "Jump.vrma",
@@ -63,25 +125,34 @@ const GESTURE_CLIP_FILES: Record<string, string> = {
   thinking: "Thinking.vrma",
 };
 
+// Per-gesture hold time after the clip's own animation ends, before it
+// fades back to idle (see GESTURE_FADE_S / the hold-then-fade lifecycle
+// in CharacterController). The source pack's clips are already measured
+// to land close to idle -- see the acceptance-rule note in its
+// README.md -- so they don't need the artificial pause the round-4 fix
+// gave the user's own, unmeasured custom clips to let a reaction "land"
+// before dissolving.
+const PACK_GESTURE_NAMES = new Set(["happy", "sad", "angry", "teasing"]);
+const PACK_GESTURE_HOLD_S = 0.3;
+const CUSTOM_GESTURE_HOLD_S = 1.4;
+const GESTURE_FADE_S = 0.4;
+
 // Which gesture key (above) auto-fires when a given app-facing emotion
 // arrives on turn_end -- deliberately a *separate* table from
 // GESTURE_CLIP_FILES rather than reusing emotion names as gesture keys
 // directly, so a future gesture can be renamed/re-mapped independently
 // of the LLM-facing vocabulary in persona.py. "neutral" has no entry on
-// purpose: returning to idle/wander already reads as neutral, and there
-// isn't an authored "neutral" gesture to play.
+// purpose: returning to idle already reads as neutral.
 const GESTURE_FOR_EMOTION: Partial<Record<string, string>> = {
-  angry: "angry",
-  sad: "sad",
-  surprised: "surprised",
-  teasing: "teasing",
   happy: "happy",
+  sad: "sad",
+  angry: "angry",
+  teasing: "teasing",
+  surprised: "surprised",
 };
 
-const WALK_SPEED_MPS = 1.4; // roughly an average adult's walking pace
 const TURN_RATE_RAD_S = 10; // how fast she reorients to face her movement direction
-const ARRIVE_RADIUS_M = 0.08; // "close enough" to a wander target to call it arrived
-const SLOWDOWN_RADIUS_M = 0.6; // starts easing speed down inside this distance from the target
+const ARRIVE_RADIUS_M = 0.08; // "close enough" to a wander target for WanderController to call it arrived
 
 // ---------------------------------------------------------------------
 // Room -- a real bounded box now (floor + four walls + ceiling), not an
@@ -396,85 +467,145 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
-// A gesture holds its final pose for this long after the clip itself
-// finishes playing before easing back to normal -- the "bring her back
-// to normal after a few seconds" the user asked for. Then fades back
-// over GESTURE_FADE_S rather than snapping, so the hand-off to
-// walk/idle doesn't pop.
-const GESTURE_HOLD_S = 1.4;
-const GESTURE_FADE_S = 0.4;
+/** Best-effort single-clip loader shared by every animation load in
+ * boot() below (walk loop/start/stop, idle base/talking, gestures) --
+ * a missing file just resolves to null rather than throwing, same
+ * tolerance-of-absence philosophy this file has had since walk.vrma was
+ * the only optional clip. */
+async function loadClip(loader: GLTFLoader, vrm: VRM, filename: string): Promise<THREE.AnimationClip | null> {
+  try {
+    const clipGltf = await loader.loadAsync(`${ANIM_BASE_PATH}${filename}`);
+    const vrmAnimations = clipGltf.userData.vrmAnimations as VRMAnimation[] | undefined;
+    if (!vrmAnimations?.[0]) return null;
+    const clip = createVRMAnimationClip(vrmAnimations[0], vrm);
+    clip.name = filename;
+    return clip;
+  } catch {
+    return null; // not present -- expected default for anything not dropped into public/vrm-animations/ under that exact filename
+  }
+}
 
 // ---------------------------------------------------------------------
 // Character controller: steers vrm.scene toward whatever target
-// WanderController hands it (or stands idle if there isn't one), and
-// drives either the real walk.vrma clip or the procedural fallback.
-// No player input reaches this class at all -- see the brief: this is
-// Luna's space, not something to joystick around by hand.
+// WanderController hands it (or stands idle if there isn't one), drives
+// a real phase-locked walk cycle when the source pack's clips loaded
+// (falling back to the old procedural sway if they didn't), plays a
+// randomly-varied idle/idle-talking loop the rest of the time, and
+// layers one-shot gestures on top of all of it. No player input reaches
+// this class at all -- see the brief: this is Luna's space, not
+// something to joystick around by hand.
 // ---------------------------------------------------------------------
 class CharacterController {
   private facing = 0;
   private readonly walker: ProceduralWalker;
-  // Always created now (used to be conditional on walkClip existing) --
-  // gestures need a mixer on vrm.scene regardless of whether a walk clip
-  // was ever found, so the "no clip loaded at all" case now just means
-  // an empty mixer with nothing registered on it, not a null one.
   private readonly mixer: THREE.AnimationMixer;
-  private walkAction: THREE.AnimationAction | null = null;
+
+  // --- one-shot emotion/idle-variety gestures (rounds 3-4; the
+  // hold-then-fade lifecycle below is unchanged, only which clip backs
+  // which name and how long it holds are new this round) ---
   private readonly gestureActions = new Map<string, THREE.AnimationAction>();
-  // The one gesture allowed to be "in flight" at a time -- a second
-  // playGesture() call while one is already running crossfades into the
-  // new one rather than layering both (same one-target-at-a-time
-  // philosophy as main.ts/sandbox-hud.ts's facial emotion blend).
+  private readonly gestureHoldSeconds = new Map<THREE.AnimationAction, number>();
   private activeGesture: THREE.AnimationAction | null = null;
-  // Real bug found from a real screenshot (user report, not guessed):
-  // `clampWhenFinished` holds a finished clip's last frame *forever*
-  // unless something explicitly fades/stops it -- and `mixer.update()`
-  // below runs every frame regardless of gesture state, so that frozen
-  // pose kept overwriting the walk/idle pose right after it, every
-  // frame, permanently. This little state machine is what actually
-  // releases it: "hold" starts the moment the clip's own animation ends
-  // (see the `finished` listener below), counts down GESTURE_HOLD_S,
-  // then "fade" explicitly fades the action's weight to 0 over
-  // GESTURE_FADE_S and stops it, at which point activeGesture finally
-  // clears and update() resumes driving movement.
   private gesturePhase: "hold" | "fade" | null = null;
   private gestureTimer = 0;
 
+  // --- idle base loops (new this round) ---
+  private readonly idleBaseActions: THREE.AnimationAction[] = [];
+  private readonly idleTalkingActions: THREE.AnimationAction[] = [];
+  private currentIdleAction: THREE.AnimationAction | null = null;
+  private currentIdleIsTalking = false;
+  private idleVarietyElapsed = 0;
+  private idleVarietyNextAt = 0;
+
+  // --- real walk cycle (new this round -- phase-locked start/loop/stop
+  // replacing round 4's flat-speed translation). null fields mean that
+  // particular clip never loaded; walkLoopAction null specifically means
+  // "fall back to ProceduralWalker entirely", checked once in update(). ---
+  private readonly walkLoopAction: THREE.AnimationAction | null;
+  private readonly walkStartAction: THREE.AnimationAction | null;
+  private readonly walkStopActions: THREE.AnimationAction[] = [];
+  private readonly walkStopSmallAction: THREE.AnimationAction | null;
+  private readonly walkStopDurations = new Map<THREE.AnimationAction, number>();
+  private readonly walkSpeedMps: number;
+  // In real-walk mode this cycles through all five states below; in
+  // fallback mode (no walkLoopAction) updateFallbackLocomotion only ever
+  // sets it to "none" or "looping", skipping start/arriving/stopping --
+  // there's no start/stop clip to sequence without the real pack, but
+  // reusing the same field keeps isWalking/updateIdleBase uniform across
+  // both modes rather than needing a second parallel flag.
+  private walkPhase: "none" | "starting" | "looping" | "arriving" | "stopping" = "none";
+  private walkPhaseTimer = 0;
+  private readonly walkDir = new THREE.Vector3(0, 0, -1);
+  private walkBoutDistanceM = 0;
+  private currentStopAction: THREE.AnimationAction | null = null;
+
   constructor(
     private vrm: VRM,
-    walkClip: THREE.AnimationClip | null,
+    clips: {
+      walkLoop: THREE.AnimationClip | null;
+      walkStart: THREE.AnimationClip | null;
+      walkStops: Array<{ clip: THREE.AnimationClip; durationS: number }>;
+      walkStopSmall: { clip: THREE.AnimationClip; durationS: number } | null;
+    },
   ) {
     this.walker = new ProceduralWalker(collectWalkBones(vrm));
     this.mixer = new THREE.AnimationMixer(vrm.scene);
-    if (walkClip) {
-      this.walkAction = this.mixer.clipAction(walkClip);
-      this.walkAction.play();
-      // No separate idle clip yet -- freezing the walk clip's timeScale
-      // at 0 while stopped holds its current pose rather than needing a
-      // second authored clip to blend toward. A proper idle<->walk
-      // crossfade is a natural next increment once there's an actual
-      // clip in hand to test blend timing against.
-      this.walkAction.timeScale = 0;
+
+    // Real per-model speed, not a guess -- see the WORLD_WALK_* comments
+    // above. normalizedRestPose is exactly the API the pack's own
+    // world.json cites for this scaling.
+    const hipsY = vrm.humanoid.normalizedRestPose.hips?.position?.[1] ?? REFERENCE_RIG_HIPS_M;
+    this.walkSpeedMps = WORLD_WALK_SPEED_MPS_AT_REFERENCE_HIPS * (hipsY / REFERENCE_RIG_HIPS_M);
+
+    this.walkLoopAction = clips.walkLoop ? this.mixer.clipAction(clips.walkLoop) : null;
+    // Not played here -- enterWalkLoop() below explicitly sets its phase
+    // every time she starts walking, so it must stay unplayed (and thus
+    // uncontrolled-drift-free) until then rather than free-running from
+    // boot.
+    this.walkStartAction = clips.walkStart ? this.mixer.clipAction(clips.walkStart) : null;
+    if (this.walkStartAction) {
+      this.walkStartAction.setLoop(THREE.LoopOnce, 1);
+      this.walkStartAction.clampWhenFinished = true;
     }
+    for (const { clip, durationS } of clips.walkStops) {
+      const action = this.mixer.clipAction(clip);
+      action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+      this.walkStopActions.push(action);
+      this.walkStopDurations.set(action, durationS);
+    }
+    if (clips.walkStopSmall) {
+      const action = this.mixer.clipAction(clips.walkStopSmall.clip);
+      action.setLoop(THREE.LoopOnce, 1);
+      action.clampWhenFinished = true;
+      this.walkStopSmallAction = action;
+      this.walkStopDurations.set(action, clips.walkStopSmall.durationS);
+    } else {
+      this.walkStopSmallAction = null;
+    }
+
     // Fires once when a gesture's own clip reaches its end (LoopOnce) --
     // NOT when playGesture() interrupts one early (that path fades the
-    // old action out directly in playGesture, so this event either
-    // never fires for it or fires after `activeGesture` has already
-    // moved on to a different action, in which case the `!==` check
-    // below correctly ignores it).
+    // old action out directly, so this event either never fires for it
+    // or fires after `activeGesture` has already moved on, in which case
+    // the `!==` check below correctly ignores it).
     this.mixer.addEventListener("finished", (event) => {
       if (event.action !== this.activeGesture) return;
       this.gesturePhase = "hold";
-      this.gestureTimer = GESTURE_HOLD_S;
+      this.gestureTimer = this.gestureHoldSeconds.get(event.action) ?? CUSTOM_GESTURE_HOLD_S;
     });
   }
 
-  get usingRealClip(): boolean {
-    return this.walkAction !== null;
+  get usingRealWalk(): boolean {
+    return this.walkLoopAction !== null;
   }
 
   get gestureCount(): number {
     return this.gestureActions.size;
+  }
+
+  get idleBaseCount(): number {
+    return this.idleBaseActions.length + this.idleTalkingActions.length;
   }
 
   /** True while a gesture is playing, held, or fading back -- lets
@@ -484,36 +615,66 @@ class CharacterController {
     return this.activeGesture !== null;
   }
 
+  /** True through the whole walk lifecycle (starting/looping/arriving/
+   * stopping, or just "looping" in fallback mode) -- lets boot()'s
+   * idle-variety scheduler avoid firing a random idle gesture mid-walk. */
+  get isWalking(): boolean {
+    return this.walkPhase !== "none";
+  }
+
   /** Registers a loaded gesture clip under `name` (one of
    * GESTURE_CLIP_FILES's keys) so playGesture(name) can trigger it
    * later. Call once per clip after boot()'s best-effort load loop. */
   registerGesture(name: string, clip: THREE.AnimationClip): void {
     const action = this.mixer.clipAction(clip);
     action.setLoop(THREE.LoopOnce, 1);
-    action.clampWhenFinished = true; // holds the clip's last pose during GESTURE_HOLD_S instead of popping back to bind pose the instant it ends
+    action.clampWhenFinished = true; // holds the clip's last pose during its hold phase instead of popping back to bind pose the instant it ends
     this.gestureActions.set(name, action);
+    this.gestureHoldSeconds.set(action, PACK_GESTURE_NAMES.has(name) ? PACK_GESTURE_HOLD_S : CUSTOM_GESTURE_HOLD_S);
+  }
+
+  /** Registers a looping idle clip into the base ("standing around") or
+   * talking ("a reply is being written") pool. Call once per clip after
+   * boot()'s best-effort load loop. */
+  registerIdleBase(clip: THREE.AnimationClip, talking: boolean): void {
+    const action = this.mixer.clipAction(clip);
+    action.setLoop(THREE.LoopRepeat, Infinity);
+    action.setEffectiveWeight(0);
+    (talking ? this.idleTalkingActions : this.idleBaseActions).push(action);
   }
 
   /** Plays a registered one-shot gesture immediately, if one exists
    * under that name -- silently does nothing for an unregistered name
    * (e.g. a gesture file that never got dropped into
    * public/vrm-animations/, or an emotion with no GESTURE_FOR_EMOTION
-   * entry) rather than throwing, same tolerance-of-absence philosophy
-   * as walk.vrma. While a gesture is playing/held/fading, update()
-   * below stands her still and lets it read clearly instead of fighting
-   * the walk cycle. */
+   * entry) rather than throwing, same tolerance-of-absence philosophy as
+   * everything else here. Interrupts and resets whatever walk/idle state
+   * she was in -- known simplification, same as round 3/4: a gesture
+   * mid-walk resets her to standing once it ends rather than resuming
+   * the walk in progress. */
   playGesture(name: string): void {
     const next = this.gestureActions.get(name);
     if (!next) return;
     if (this.activeGesture && this.activeGesture !== next) {
-      this.activeGesture.fadeOut(0.2);
+      this.activeGesture.fadeOut(0.3);
     }
-    next.reset().fadeIn(0.2).play();
+    this.suppressLocomotionAndIdle();
+    next.reset().fadeIn(0.3).play();
     this.activeGesture = next;
     // Fresh play -- clear any hold/fade state left over from whatever
     // was previously active so this one gets its own full lifecycle.
     this.gesturePhase = null;
     this.gestureTimer = 0;
+  }
+
+  private suppressLocomotionAndIdle(): void {
+    this.fadeOutIdleBase();
+    if (this.walkLoopAction?.isRunning()) this.walkLoopAction.fadeOut(0.3);
+    if (this.walkStartAction?.isRunning()) this.walkStartAction.fadeOut(0.3);
+    if (this.currentStopAction?.isRunning()) this.currentStopAction.fadeOut(0.3);
+    this.currentStopAction = null;
+    this.walkPhase = "none";
+    this.walkBoutDistanceM = 0;
   }
 
   private updateGestureLifecycle(delta: number): void {
@@ -534,20 +695,152 @@ class CharacterController {
     }
   }
 
-  update(delta: number, target: THREE.Vector3 | null): void {
+  update(delta: number, target: THREE.Vector3 | null, isTalking: boolean): void {
     this.updateGestureLifecycle(delta);
-    let speedFraction = 0;
-    const gesturing = this.activeGesture !== null;
+    if (this.activeGesture) {
+      // A gesture in flight takes over the whole body for its duration
+      // -- skip locomotion/idle entirely rather than layering a walk or
+      // idle loop underneath an authored full-body clip (both would be
+      // fighting for the same bones).
+      this.mixer.update(delta);
+      return;
+    }
 
-    // A gesture in flight takes over the whole body for its duration --
-    // freeze position/facing and skip driving the walk/procedural path
-    // entirely rather than layering a walk cycle underneath an authored
-    // full-body clip (both would be fighting for the same bones). Known
-    // rough edge, not yet solved: if she happens to already be mid-walk
-    // when a gesture fires, she'll freeze mid-stride rather than easing
-    // to a stop first -- fine for now, worth revisiting once there's a
-    // real model to actually see it against.
-    if (!gesturing && target) {
+    if (this.walkLoopAction) {
+      this.updateRealLocomotion(delta, target);
+    } else {
+      this.updateFallbackLocomotion(delta, target);
+    }
+    this.updateIdleBase(delta, isTalking);
+    this.mixer.update(delta);
+  }
+
+  // --- real walk cycle -------------------------------------------------
+
+  private updateRealLocomotion(delta: number, target: THREE.Vector3 | null): void {
+    switch (this.walkPhase) {
+      case "none":
+        if (target) this.beginWalkStart();
+        break;
+      case "starting":
+        this.walkPhaseTimer -= delta;
+        if (this.walkPhaseTimer <= 0) this.enterWalkLoop();
+        break;
+      case "looping":
+        if (target) {
+          this.stepToward(target, delta);
+        } else {
+          // WanderController just declared arrival (dist < ARRIVE_RADIUS_M
+          // -- see WanderController.getTarget). Don't cut the stride
+          // short: keep walking in the same direction until the loop
+          // reaches the seam the stop clips are anchored to.
+          this.walkPhase = "arriving";
+        }
+        break;
+      case "arriving":
+        this.stepAlong(this.walkDir, delta);
+        if (this.atStopExitPhase()) this.beginWalkStop();
+        break;
+      case "stopping":
+        this.walkPhaseTimer -= delta;
+        if (this.walkPhaseTimer <= 0) this.endWalk();
+        break;
+    }
+  }
+
+  private stepToward(target: THREE.Vector3, delta: number): void {
+    const toTarget = new THREE.Vector3(
+      target.x - this.vrm.scene.position.x,
+      0,
+      target.z - this.vrm.scene.position.z,
+    );
+    const dist = toTarget.length();
+    if (dist < 0.001) return;
+    const dir = toTarget.normalize();
+    this.walkDir.copy(dir);
+    this.stepAlong(dir, delta);
+  }
+
+  private stepAlong(dir: THREE.Vector3, delta: number): void {
+    const step = this.walkSpeedMps * delta;
+    this.vrm.scene.position.x += dir.x * step;
+    this.vrm.scene.position.z += dir.z * step;
+    this.walkBoutDistanceM += step;
+    const targetFacing = Math.atan2(-dir.x, -dir.z);
+    this.facing = lerpAngle(this.facing, targetFacing, Math.min(1, TURN_RATE_RAD_S * delta));
+    this.vrm.scene.rotation.y = this.facing;
+  }
+
+  private beginWalkStart(): void {
+    this.fadeOutIdleBase();
+    this.walkBoutDistanceM = 0;
+    if (this.walkStartAction) {
+      this.walkStartAction.reset().fadeIn(IDLE_CROSSFADE_S).play();
+      this.walkPhase = "starting";
+      this.walkPhaseTimer = WORLD_WALK_START_DURATION_S;
+    } else {
+      // No start clip loaded -- skip straight into the loop at its
+      // documented entry phase; still phase-correct, just without the
+      // wind-up beat.
+      this.enterWalkLoop();
+    }
+  }
+
+  private enterWalkLoop(): void {
+    if (this.walkStartAction) this.walkStartAction.fadeOut(IDLE_CROSSFADE_S);
+    if (this.walkLoopAction) {
+      this.walkLoopAction.reset().play();
+      this.walkLoopAction.time = WORLD_WALK_START_ENTRY_PHASE_S;
+      this.walkLoopAction.setEffectiveWeight(1);
+    }
+    this.walkPhase = "looping";
+  }
+
+  private atStopExitPhase(): boolean {
+    if (!this.walkLoopAction) return true;
+    const t = this.walkLoopAction.time % WORLD_WALK_LOOP_DURATION_S;
+    const [lo, hi] = WORLD_WALK_STOP_EXIT_PHASE_WINDOW_S;
+    return t >= lo || t <= hi;
+  }
+
+  private pickStopAction(): THREE.AnimationAction | null {
+    if (this.walkBoutDistanceM < WALK_BOUT_SMALL_STOP_THRESHOLD_M && this.walkStopSmallAction) {
+      return this.walkStopSmallAction;
+    }
+    if (this.walkStopActions.length > 0) {
+      return this.walkStopActions[Math.floor(Math.random() * this.walkStopActions.length)]!;
+    }
+    return this.walkStopSmallAction;
+  }
+
+  private beginWalkStop(): void {
+    const stopAction = this.pickStopAction();
+    if (!stopAction) {
+      this.endWalk();
+      return;
+    }
+    stopAction.reset().fadeIn(IDLE_CROSSFADE_S).play();
+    this.currentStopAction = stopAction;
+    if (this.walkLoopAction) this.walkLoopAction.fadeOut(IDLE_CROSSFADE_S);
+    this.walkPhase = "stopping";
+    this.walkPhaseTimer = this.walkStopDurations.get(stopAction) ?? 1.5;
+  }
+
+  private endWalk(): void {
+    if (this.currentStopAction) this.currentStopAction.fadeOut(IDLE_CROSSFADE_S);
+    this.currentStopAction = null;
+    this.walkPhase = "none";
+    this.walkBoutDistanceM = 0;
+    // currentIdleAction is already null (fadeOutIdleBase ran back in
+    // beginWalkStart) -- updateIdleBase picks a fresh one the very next
+    // frame since walkPhase is "none" again, no extra bookkeeping needed.
+  }
+
+  // --- fallback (no walk pack loaded) -----------------------------------
+
+  private updateFallbackLocomotion(delta: number, target: THREE.Vector3 | null): void {
+    let speedFraction = 0;
+    if (target) {
       const toTarget = new THREE.Vector3(
         target.x - this.vrm.scene.position.x,
         0,
@@ -556,36 +849,61 @@ class CharacterController {
       const dist = toTarget.length();
       if (dist > 0.001) {
         const dir = toTarget.clone().normalize();
-
-        // Real bug found from a real on-machine report ("moonwalking"):
-        // this used to step at a flat WALK_SPEED_MPS regardless of
-        // speedFraction below, while speedFraction only ever scaled the
-        // *animation* (leg-swing amplitude / walk-clip weight). Near the
-        // arrival point her legs would visually slow to a stop while her
-        // body kept gliding forward at full speed underneath -- a
-        // classic skate/moonwalk artifact. speedFraction is now computed
-        // first and actually scales the translation step too, so
-        // movement and leg animation slow down together.
-        speedFraction = Math.min(1, dist / SLOWDOWN_RADIUS_M);
-        const step = Math.min(dist, WALK_SPEED_MPS * speedFraction * delta);
+        speedFraction = Math.min(1, dist / FALLBACK_SLOWDOWN_RADIUS_M);
+        const step = Math.min(dist, FALLBACK_WALK_SPEED_MPS * speedFraction * delta);
         this.vrm.scene.position.x += dir.x * step;
         this.vrm.scene.position.z += dir.z * step;
-
         const targetFacing = Math.atan2(-dir.x, -dir.z);
         this.facing = lerpAngle(this.facing, targetFacing, Math.min(1, TURN_RATE_RAD_S * delta));
         this.vrm.scene.rotation.y = this.facing;
       }
     }
+    this.walker.update(delta, speedFraction);
+    // No start/stop clips to sequence without the real pack -- this is
+    // just a binary flag here, unlike the five-state machine above.
+    if (target && this.walkPhase === "none") this.fadeOutIdleBase();
+    this.walkPhase = target ? "looping" : "none";
+  }
 
-    if (!gesturing) {
-      if (this.walkAction) {
-        this.walkAction.setEffectiveWeight(speedFraction);
-        this.walkAction.timeScale = speedFraction;
-      } else {
-        this.walker.update(delta, speedFraction);
-      }
+  // --- idle base variety -------------------------------------------------
+
+  private fadeOutIdleBase(): void {
+    if (this.currentIdleAction) {
+      this.currentIdleAction.fadeOut(IDLE_CROSSFADE_S);
+      this.currentIdleAction = null;
     }
-    this.mixer.update(delta);
+  }
+
+  private updateIdleBase(delta: number, isTalking: boolean): void {
+    if (this.walkPhase !== "none") return; // walking (any sub-phase) owns the body
+    const pool = isTalking ? this.idleTalkingActions : this.idleBaseActions;
+    if (pool.length === 0) return; // nothing loaded for this pool -- leaves whatever pose she's already in, same as before this round
+    const poolChanged = this.currentIdleIsTalking !== isTalking;
+    this.idleVarietyElapsed += delta;
+    if (!this.currentIdleAction || poolChanged || this.idleVarietyElapsed >= this.idleVarietyNextAt) {
+      this.pickNewIdle(pool, isTalking);
+    }
+  }
+
+  private pickNewIdle(pool: THREE.AnimationAction[], isTalking: boolean): void {
+    const next = pool[Math.floor(Math.random() * pool.length)]!;
+    const [min, max] = isTalking
+      ? [IDLE_TALKING_VARIETY_MIN_S, IDLE_TALKING_VARIETY_MAX_S]
+      : [IDLE_VARIETY_MIN_S, IDLE_VARIETY_MAX_S];
+    if (next === this.currentIdleAction) {
+      // Redrawn the same clip by chance -- just re-roll the timer rather
+      // than restarting a loop that's already playing (a reset() here
+      // would pop back to frame 0 for no visible reason).
+      this.idleVarietyElapsed = 0;
+      this.idleVarietyNextAt = min + Math.random() * (max - min);
+      return;
+    }
+    if (this.currentIdleAction) this.currentIdleAction.fadeOut(IDLE_CROSSFADE_S);
+    next.reset().fadeIn(IDLE_CROSSFADE_S).play();
+    this.currentIdleAction = next;
+    this.currentIdleIsTalking = isTalking;
+    this.idleVarietyElapsed = 0;
+    this.idleVarietyNextAt = min + Math.random() * (max - min);
   }
 }
 
@@ -733,20 +1051,6 @@ async function boot(): Promise<void> {
   scene.add(vrm.scene);
   scene.add(buildContactShadow());
 
-  // Optional walk clip -- absence is the expected default, not an error.
-  // See WALK_CLIP_PATH's own comment above.
-  let walkClip: THREE.AnimationClip | null = null;
-  try {
-    const clipGltf = await loader.loadAsync(WALK_CLIP_PATH);
-    const vrmAnimations = clipGltf.userData.vrmAnimations as VRMAnimation[] | undefined;
-    if (vrmAnimations?.[0]) {
-      walkClip = createVRMAnimationClip(vrmAnimations[0], vrm);
-      walkClip.name = "walk";
-    }
-  } catch {
-    walkClip = null; // no file dropped in at public/vrm-animations/walk.vrma yet
-  }
-
   function layout(): void {
     renderer.setSize(window.innerWidth, window.innerHeight);
     camera.aspect = window.innerWidth / window.innerHeight;
@@ -787,32 +1091,45 @@ async function boot(): Promise<void> {
     vrm.expressionManager.setValue("blink", t < 0.5 ? t * 2 : (1 - t) * 2);
   }
 
-  const character = new CharacterController(vrm, walkClip);
+  // Best-effort load throughout this section -- see loadClip's own
+  // comment above. A missing file just means that one clip/gesture/idle
+  // pose never registers, not a boot failure.
+  const walkLoopClip = await loadClip(loader, vrm, WORLD_WALK_LOOP_FILE);
+  const walkStartClip = await loadClip(loader, vrm, WORLD_WALK_START_FILE);
+  const walkStopClips: Array<{ clip: THREE.AnimationClip; durationS: number }> = [];
+  for (const { file, durationS } of WORLD_WALK_STOP_FILES) {
+    const clip = await loadClip(loader, vrm, file);
+    if (clip) walkStopClips.push({ clip, durationS });
+  }
+  const walkStopSmallClip = await loadClip(loader, vrm, WORLD_WALK_STOP_SMALL_FILE);
 
-  // Best-effort gesture load -- same tolerance as walk.vrma just above:
-  // each file is tried individually so a missing one (not yet dropped
-  // in, or a typo in GESTURE_CLIP_FILES) just means that single gesture
-  // never registers rather than aborting the whole loop or the boot.
+  const character = new CharacterController(vrm, {
+    walkLoop: walkLoopClip,
+    walkStart: walkStartClip,
+    walkStops: walkStopClips,
+    walkStopSmall: walkStopSmallClip
+      ? { clip: walkStopSmallClip, durationS: WORLD_WALK_STOP_SMALL_DURATION_S }
+      : null,
+  });
+
   for (const [name, filename] of Object.entries(GESTURE_CLIP_FILES)) {
-    try {
-      const clipGltf = await loader.loadAsync(`/vrm-animations/${filename}`);
-      const vrmAnimations = clipGltf.userData.vrmAnimations as VRMAnimation[] | undefined;
-      if (vrmAnimations?.[0]) {
-        const clip = createVRMAnimationClip(vrmAnimations[0], vrm);
-        clip.name = name;
-        character.registerGesture(name, clip);
-      }
-    } catch {
-      // Not present yet -- expected default for anything not dropped
-      // into public/vrm-animations/ under that exact filename.
-    }
+    const clip = await loadClip(loader, vrm, filename);
+    if (clip) character.registerGesture(name, clip);
+  }
+  for (const filename of IDLE_BASE_FILES) {
+    const clip = await loadClip(loader, vrm, filename);
+    if (clip) character.registerIdleBase(clip, false);
+  }
+  for (const filename of IDLE_TALKING_FILES) {
+    const clip = await loadClip(loader, vrm, filename);
+    if (clip) character.registerIdleBase(clip, true);
   }
 
   const wander = new WanderController(ROOM_HALF_SIZE - WANDER_MARGIN_M);
   const idleGestures = new IdleGestureScheduler();
-  statusEl.textContent = character.usingRealClip
-    ? `Model loaded · playing walk.vrma · ${character.gestureCount} gesture(s) loaded`
-    : `Model loaded · procedural walk (drop a walk.vrma into public/vrm-animations/ to use a real clip) · ${character.gestureCount} gesture(s) loaded`;
+  statusEl.textContent = character.usingRealWalk
+    ? `Model loaded · real walk cycle · ${character.idleBaseCount} idle pose(s) · ${character.gestureCount} gesture(s) loaded`
+    : `Model loaded · procedural walk (world-walk.vrma not found in public/vrm-animations/) · ${character.idleBaseCount} idle pose(s) · ${character.gestureCount} gesture(s) loaded`;
 
   // Full chat/caption/mic HUD -- connects to the same orchestrator
   // main.ts does, identifying itself as "sandbox" so the two windows
@@ -839,15 +1156,16 @@ async function boot(): Promise<void> {
     updateBlink(delta);
     hud.tick(delta);
     const target = wander.getTarget(delta, vrm.scene.position, hud.isTurnActive());
-    character.update(delta, target);
+    character.update(delta, target, hud.isTurnActive());
     // Eligible only once everything else has had first say this frame:
-    // not walking anywhere (target is null), not mid-turn, and not
-    // already gesturing (character.update() just above may have moved
-    // an emotion-triggered gesture through hold/fade, so this reads its
-    // post-update state).
+    // not walking anywhere (target is null AND she's not still finishing
+    // a stride/start/stop -- see CharacterController.isWalking), not
+    // mid-turn, and not already gesturing (character.update() just above
+    // may have moved an emotion-triggered gesture through hold/fade, so
+    // this reads its post-update state).
     idleGestures.update(
       delta,
-      target === null && !hud.isTurnActive() && !character.isGesturing,
+      target === null && !character.isWalking && !hud.isTurnActive() && !character.isGesturing,
       (name) => character.playGesture(name),
     );
     vrm.update(delta);

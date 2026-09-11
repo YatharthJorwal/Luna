@@ -2078,3 +2078,139 @@ whether 1.4s is the right hold duration, whether the moonwalk fix
 actually reads as fixed, and whether the idle-gesture interval (8-20s)
 feels natural rather than too frequent or too rare are all pending a
 real look on the user's machine.
+
+## Round 5, "go big": adopting the Hanami VRMA pack wholesale
+
+The user sourced a much larger animation pack (from an open-source VRM
+companion app, "Hanami") and asked to go all-in: real walk-cycle data,
+idle variety, and swapping the emotion gestures over to the pack's own
+family, in one round rather than split across several.
+
+**License check first, as always with third-party assets.** Three
+sources feed the pack: Overte (Apache-2.0), Microsoft Rocketbox (MIT),
+Quaternius (CC0). All three are permissive and redistributable; the
+obligation that actually matters is Apache-2.0/MIT's requirement to keep
+copyright/license notices with any redistribution. `public/vrm-animations/`
+now has `NOTICE.md` (the pack's own full per-file attribution, kept
+verbatim, not edited), `PACK-README.md` (its engineering documentation --
+seam measurements, phase contracts, the `world.json`/`transitions.json`
+schema), and a `LICENSES/` folder with the full Apache-2.0 and MIT texts.
+Rocketbox's `rb-*` family (38 files, an alternate, unused body/face style)
+and the pack's own `extra/` folder (15 files its authors explicitly set
+aside) were **not** copied in -- `NOTICE.md` still documents them by name
+in case they're wanted later, but there's no reason to carry ~12 MB of
+files nothing in this codebase loads. What did get copied: the active
+Overte set plus two Quaternius world-clips, 113 files, alongside the
+user's own capitalized-filename clips from rounds 3/4.
+
+**A real bug caught before it shipped, not after:** two of the user's
+own clips from round 3 (`Angry.vrma`, `Sad.vrma`) are, byte for byte,
+different files from the pack's `angry.vrma`/`sad.vrma` -- but identical
+*names* once case is ignored. Harmless on the Linux filesystem this
+sandbox runs on, but the user is on Windows, where the filesystem is
+case-insensitive by default: committing both would silently collide on
+checkout. Both roles are superseded by the pack's fitted versions this
+round anyway (see below), so the fix was straightforward: `Angry.vrma`
+and `Sad.vrma` are removed from the repo (along with `Blush.vrma` and
+`Relax.vrma`, which don't collide by name but became just as unreferenced
+once `happy`/`teasing` also moved to the pack's clips). `Surprised.vrma`,
+`Clapping.vrma`, `Goodbye.vrma`, `Jump.vrma`, `LookAround.vrma`,
+`Sleepy.vrma`, `Thinking.vrma` are untouched -- still in use, no
+case-collision with anything in the pack. See
+`public/vrm-animations/README.md` for the fuller explanation, written so
+this doesn't get rediscovered the hard way later.
+
+**Real walk-cycle data, replacing the round-4 patch's guesswork.**
+`world-walk.vrma` is a cycle played *in place* (zero baked translation);
+its `world.json` entry records a *measured* speed (1.421 m/s) on a
+reference rig with hips at 1.0167 m, meant to be scaled by
+`vrm.humanoid.normalizedRestPose.hips.position[1] / 1.0167` for any other
+model -- exactly the API `world.json` itself cites. `CharacterController`
+now computes that real per-model speed once at construction, instead of
+the flat guessed constant round 4 was still using (round 4 only fixed
+*that* guess decelerating consistently with the animation; this replaces
+the guess itself with a measured number). These numbers are hand-copied
+into `sandbox.ts` as named constants citing their `world.json` origin,
+not read from that file at runtime -- a deliberate scope cut this round
+(see "Deferred" below), not an oversight.
+
+**Phase-locked start/stop, not just a faster loop.** `world-walk-start`'s
+last frame is authored to match `world-walk`'s pose 0.2s into the cycle,
+not at t=0 -- entering anywhere else pops by up to 81cm at the reference
+rig, per the pack's own measurement. The mirror image: every stop clip's
+first frame matches the loop's pose at its cycle seam (t=0/t=duration),
+with up to 46cm of pop if entered elsewhere. `CharacterController` now
+runs a five-state machine (`none -> starting -> looping -> arriving ->
+stopping -> none`) to honor both contracts: `starting` plays the wind-up
+once and enters the loop at exactly t=0.2s; when `WanderController`
+declares arrival (target goes `null`), the new `arriving` state doesn't
+cut the stride short -- it keeps walking the same direction, watching
+`world-walk`'s own `time % 1.0` against a `[0.967, 0.033]` tolerance
+window (wrapping across the seam), and only then plays a stop clip. Which
+stop: four "long stop" variants picked at random for a walk that covered
+real ground, or a dedicated small-stop clip if the bout covered under 1m
+(mirroring the pack's own long-vs-small distinction, which the source
+player draws on momentum/speed -- our only gait never reaches its 2.2 m/s
+threshold, so distance covered is the stand-in signal here instead).
+**Known, accepted simplification:** she doesn't cover any *remaining*
+distance-to-target during the stop clip itself (no data for that), so
+she can land up to about one arrival-radius short/long of the exact wander
+point -- invisible in practice given `ARRIVE_RADIUS_M` is already 8cm and
+the room is 9m across, but worth stating rather than implying frame-perfect
+foot-planting throughout.
+
+**Idle variety, both the "during idles" and "during dialogues" halves of
+the ask.** She now stands in a real looping idle pose instead of a walk
+clip frozen at `timeScale=0` (round 3/4's placeholder) -- drawn randomly
+from five variants (`idle`/`idle-2/3/4/7`) and redrawn every 10-30s if
+she stays put that long, the same cadence the source pack's own player
+uses. A second pool (`idle-talking` + four numbered variants) plays
+instead, on a faster 7-12s redraw, whenever `hud.isTurnActive()` is true
+-- giving a reply-in-progress a visibly different idle than plain
+silence, which is exactly the "during dialogues, idles" distinction the
+user pointed at in Genshin/MiSide. `idle-5`/`idle-6` are missing from both
+pools on purpose (the source pack repurposed them as `world-idle-alt1/2`,
+a different standing stance -- not wired up this round, see "Deferred").
+
+**Emotion gestures swapped to the pack's fitted family.** `happy`→
+`happy.vrma`, `sad`→`sad.vrma`, `angry`→`angry.vrma`, `teasing`→
+`relaxed.vrma` (closest available role) now play the pack's own clips,
+each measured to land within 10cm of idle/idle-talking before it shipped
+-- replacing round 3's untested placeholders for those four. `surprised`
+keeps the user's own `Surprised.vrma`: the pack has no surprised clip at
+all (documented gap in its own `NOTICE.md`), same as it has no "teasing"
+role either. Per-gesture hold time (how long she holds the final pose
+before fading back to idle) is now two-tiered: 0.3s for the pack's
+measured-fit clips, versus the 1.4s round 4 gave the user's own untested
+ones to let a reaction visibly land before dissolving -- no longer
+appropriate to apply that same long pause to clips already proven to
+land close to idle. `happy-2/3/6` and `angry-2` (extra variants the pack
+ships for those two emotions) are copied into the repo but not wired up
+to anything yet -- a natural, low-risk follow-up (random pick among
+variants, same pattern idle variety already uses) once this round's core
+plumbing is confirmed working.
+
+**Deferred, explicitly, not silently:** reading `world.json`/
+`transitions.json` at runtime instead of hand-copied constants (more
+maintainable long-term, meaningfully more plumbing now); `world-turn-left/
+right` (in-place rotation clips -- facing still just interpolates smoothly
+as before); `world-idle-alt1/2` (a second standing stance with its own
+enter/exit clips); the seated domain (no chair in the sandbox yet);
+`nod`/`shake`/`raise-hand`/`think` (loaded, unwired -- no click/agree/
+disagree signal in the protocol to drive them from yet); `world-afk-texting`,
+`world-clap-*`, `world-jog*`, `world-point-*`, `world-run-*` and the rest
+of the world-domain clips visible in the repo now but not referenced by
+any code path. All of these are sitting in the repo already (see the file
+list `git log` will show), so wiring any one of them up later is a
+follow-up round, not another asset hunt.
+
+**Verified in this sandbox:** `tsc --noEmit` clean; `npm run build`
+(shell) and a standalone `sandbox.html` build both produce clean
+bundles; the case-collision check was run directly against the actual
+committed filenames (not assumed). **Not verified:** everything visual,
+same recurring caveat -- whether the phase-locked start/stop actually
+reads seamlessly, whether five idle variants feel varied enough or too
+samey, whether the emotion swap's timing (0.3s hold) feels too abrupt
+compared to the old 1.4s, and whether `normalizedRestPose.hips` actually
+returns a sane value for this specific VRM model are all pending a real
+look on the user's machine.

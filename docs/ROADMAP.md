@@ -298,6 +298,21 @@ awaiting on-machine confirmation · ⬜ not started)
   while she's just standing still, via a new `IdleGestureScheduler`. See
   `docs/DECISIONS.md` for the full trail. Moonwalk fix not yet
   re-confirmed on-machine.
+  **Round 5 ("go big"):** adopted the user's much larger "Hanami" VRMA
+  pack wholesale (Overte/Quaternius, Apache-2.0/CC0, properly attributed
+  in `public/vrm-animations/NOTICE.md` + `LICENSES/`) — real measured
+  walk-cycle speed and phase-locked start/loop/stop replacing round 4's
+  guessed-constant patch, five-variant idle + idle-talking pools (the
+  "during dialogues, idles" ask), and emotion gestures swapped to the
+  pack's fitted `happy`/`sad`/`angry`/`relaxed` clips (the user's own
+  `Surprised.vrma` stays — the pack has no equivalent). Two of the user's
+  round-3 clips (`Angry.vrma`/`Sad.vrma`) were removed: superseded by the
+  swap, and case-collided with the pack's `angry.vrma`/`sad.vrma` on
+  Windows. Full writeup, including everything explicitly deferred
+  (`world.json` read at runtime instead of hardcoded, turn clips, alt-idle
+  stance, seated domain, nod/shake/raise-hand/think), in
+  `docs/DECISIONS.md`. Not verified on-machine — no GPU/browser in this
+  sandbox, same caveat as every round before this one.
 
 ## Open decisions
 

@@ -52,16 +52,17 @@ the VRM avatar migration (Phase 7) and the emotion/expression system
 (Phase 8), both previously sandbox-verified only. The full-body sandbox
 (Phase 10) render/scene itself looks correct too, though the phase's
 other open items (companion mode, backgrounds, real navigation) remain
-unbuilt. **New this round:** the user is dropping real `.vrma` gesture
-clips into `public/vrm-animations/` (eleven so far — Angry/Blush/
-Clapping/Goodbye/Jump/LookAround/Relax/Sad/Sleepy/Surprised/Thinking,
-more coming) — `sandbox.ts`'s `CharacterController` now loads them and
-plays a matching one-shot body gesture alongside (not instead of) the
-facial expression blend when a turn ends with an emotion tag; see
-`docs/DECISIONS.md`'s gesture-clips entry for the mapping and what's
-still unwired. Not yet sandbox-verified visually (no GPU/browser here)
-and not ported to the desktop shell (`main.ts` has no `AnimationMixer`
-yet).
+unbuilt. **Current animation system (round 5, "go big"):** the sandbox
+now uses the "Hanami" VRMA pack (Overte/Quaternius, Apache-2.0/CC0,
+attribution in `public/vrm-animations/NOTICE.md`) for a real
+measured-speed, phase-locked walk cycle (replacing the earlier
+guessed-constant approach), five-variant idle + idle-talking loops, and
+`happy`/`sad`/`angry`/`relaxed` emotion gestures. The user's own
+`Surprised`/`Clapping`/`Goodbye`/`Jump`/`LookAround`/`Sleepy`/`Thinking`
+clips fill the roles the pack doesn't cover. Not yet sandbox-verified
+visually (no GPU/browser here) and not ported to the desktop shell
+(`main.ts` has no `AnimationMixer` yet). Full writeup, including what
+was explicitly deferred, in `docs/DECISIONS.md`'s "go big" entry.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map
