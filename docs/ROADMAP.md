@@ -281,11 +281,23 @@ awaiting on-machine confirmation · ⬜ not started)
   whenever a turn ends carrying one of five of the six emotion tags —
   see `docs/DECISIONS.md`'s gesture-clips entry for the full mapping,
   the `happy`→Blush stand-in, and what's still unwired
-  (`Clapping`/`Goodbye`/`Jump`/`LookAround`/`Sleepy`/`Thinking` have no
-  trigger yet). Not ported to `main.ts` (the desktop shell) — that file
-  has no `AnimationMixer` at all yet; separate follow-up work. Not
-  verified on-machine — no GPU/browser in this sandbox, same caveat as
-  the round-2 lighting/scene work above.
+  (`Clapping`/`Goodbye`/`Jump` have no trigger yet — `LookAround`/
+  `Sleepy`/`Thinking` picked up a trigger in round 4 below). Not ported
+  to `main.ts` (the desktop shell) — that file has no `AnimationMixer` at
+  all yet; separate follow-up work. Not verified on-machine — no
+  GPU/browser in this sandbox, same caveat as the round-2 lighting/scene
+  work above.
+  **Round 4 (first real test results):** the user's first on-machine run
+  of round 3 surfaced two real bugs, both fixed — a gesture holding its
+  final pose forever instead of releasing back to normal (missing
+  fade/stop after `clampWhenFinished`), and "moonwalking" (root
+  translation wasn't scaled by the same `speedFraction` the leg
+  animation was, so her body kept gliding at full speed while her legs
+  visually slowed near a target). Also added: occasional idle-variety
+  gestures (`lookAround`/`sleepy`/`thinking`, random 8-20s interval)
+  while she's just standing still, via a new `IdleGestureScheduler`. See
+  `docs/DECISIONS.md` for the full trail. Moonwalk fix not yet
+  re-confirmed on-machine.
 
 ## Open decisions
 

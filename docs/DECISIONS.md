@@ -2017,3 +2017,64 @@ entry above. In particular: whether the freeze-in-place behavior during
 a gesture actually looks right, whether the `happy`→Blush stand-in reads
 as intended, and whether 0.2s fade in/out is the right timing for these
 particular clips -- all first-guess values pending a real look.
+
+## Two real bugs from the user's first on-machine gesture test, plus idle variety
+
+First real-hardware run of the gesture system from the previous round
+surfaced two bugs, both found by re-reading the code against the user's
+report/screenshot rather than guessed at blind -- same "trust the report,
+trace the actual logic" approach as every other on-machine bug fix in
+this doc.
+
+**Bug 1: a finished gesture froze her permanently ("gets stuck like
+this").** `registerGesture()` sets `clampWhenFinished = true`, which
+holds a clip's last frame forever once it ends -- nothing was ever
+un-clamping it. Compounding that: `CharacterController.update()` calls
+`this.mixer.update(delta)` unconditionally every frame, gesture-or-not,
+so the frozen action kept reapplying its held pose over whatever the
+walk/idle path had just set, every single frame, forever. Clearing
+`activeGesture` on the `finished` event (previous round's fix) only
+stopped *new* gestures from being blocked -- it did nothing to release
+the old action's grip on the bones. Fixed with an explicit hold/fade
+state machine: `finished` now starts a `"hold"` phase
+(`GESTURE_HOLD_S` = 1.4s, holding the pose on purpose, per the user's
+own "bring her back to normal after a few seconds" -- not a snap-back),
+then a `"fade"` phase (`GESTURE_FADE_S` = 0.4s, `fadeOut()` easing the
+weight down) that ends in an actual `action.stop()` -- the step that was
+missing before, and the one that actually releases the bones.
+
+**Bug 2: "moonwalking."** `update()`'s translation step was a flat
+`WALK_SPEED_MPS * delta` regardless of `speedFraction`; `speedFraction`
+only ever scaled the *animation* (leg-swing amplitude, or the walk
+clip's mixer weight/timeScale). Near a wander target, her legs would
+visually ease down to a stop (animation slowing via speedFraction) while
+her body kept translating toward the target at full, undiminished
+speed underneath -- exactly the skating/moonwalk look reported. Fixed by
+computing `speedFraction` first and using it to scale the actual
+translation step too, so root motion and leg animation now slow down
+together rather than only one of them. Not yet re-confirmed on the
+user's machine -- this was diagnosed and fixed from reading the logic,
+not from a repro in this sandbox (no GPU/browser here); it's a real
+inconsistency in the math either way, not a guess, but the user should
+still confirm it reads right in motion.
+
+**Idle variety, the user's other ask.** A new `IdleGestureScheduler`
+(next to `WanderController`, not folded into it, so their timers stay
+independent) rolls a random 8-20s interval and plays a random pick from
+`lookAround`/`sleepy`/`thinking` whenever she's just standing there --
+not walking, not mid-turn, not already gesturing. The other loaded
+gestures (`Clapping`/`Goodbye`/`Jump`) are left out of the random pool
+since they read as reactive/contextual rather than ambient idle flavor
+-- same reasoning as why they had no `GESTURE_FOR_EMOTION` entry either.
+`boot()`'s `animate()` loop checks eligibility *after*
+`character.update()` runs for the frame, so it sees the real
+post-lifecycle gesture state rather than stale info from before this
+frame's hold/fade bookkeeping.
+
+**Verified in this sandbox:** `tsc --noEmit` clean; `npm run build`
+(shell) and a standalone `sandbox.html` build both produce clean
+bundles. **Not verified:** any of it visually, same recurring caveat --
+whether 1.4s is the right hold duration, whether the moonwalk fix
+actually reads as fixed, and whether the idle-gesture interval (8-20s)
+feels natural rather than too frequent or too rare are all pending a
+real look on the user's machine.

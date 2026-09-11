@@ -350,11 +350,59 @@ function flatDistance(a: THREE.Vector3, b: THREE.Vector3): number {
   return Math.hypot(a.x - b.x, a.z - b.z);
 }
 
+// ---------------------------------------------------------------------
+// Idle-variety scheduler: occasionally plays a small, non-reactive
+// gesture while she's just standing there with nothing else going on --
+// the user's own "we gotta add occasional idles too" ask. Deliberately
+// separate from WanderController (which only ever decides *where to
+// walk*, on its own 3-8s idle timer) rather than folded into it, so the
+// two don't have to agree on a shared timer or either one's tuning
+// affects the other. Only three of the loaded gesture files are used
+// here (lookAround/sleepy/thinking) -- Clapping/Goodbye/Jump read as
+// reactive/contextual rather than ambient idle flavor, so they're left
+// for a real trigger later rather than firing at random.
+const IDLE_GESTURE_NAMES = ["lookAround", "sleepy", "thinking"];
+const IDLE_GESTURE_MIN_S = 8;
+const IDLE_GESTURE_MAX_S = 20;
+
+class IdleGestureScheduler {
+  private elapsed = 0;
+  private nextAt = IdleGestureScheduler.rollInterval();
+
+  private static rollInterval(): number {
+    return IDLE_GESTURE_MIN_S + Math.random() * (IDLE_GESTURE_MAX_S - IDLE_GESTURE_MIN_S);
+  }
+
+  /** Call once a frame. `eligible` should be true only while she's
+   * standing still with nothing else claiming her body -- not walking
+   * (no wander target), not mid-turn, and not already gesturing --
+   * otherwise the countdown just freezes rather than firing the moment
+   * she becomes free (so a long walk/turn doesn't "bank" an idle
+   * gesture to fire the instant it ends). */
+  update(delta: number, eligible: boolean, playGesture: (name: string) => void): void {
+    if (!eligible) return;
+    this.elapsed += delta;
+    if (this.elapsed < this.nextAt) return;
+    const name = IDLE_GESTURE_NAMES[Math.floor(Math.random() * IDLE_GESTURE_NAMES.length)]!;
+    playGesture(name);
+    this.elapsed = 0;
+    this.nextAt = IdleGestureScheduler.rollInterval();
+  }
+}
+
 function lerpAngle(a: number, b: number, t: number): number {
   let diff = ((b - a + Math.PI) % (Math.PI * 2)) - Math.PI;
   if (diff < -Math.PI) diff += Math.PI * 2;
   return a + diff * t;
 }
+
+// A gesture holds its final pose for this long after the clip itself
+// finishes playing before easing back to normal -- the "bring her back
+// to normal after a few seconds" the user asked for. Then fades back
+// over GESTURE_FADE_S rather than snapping, so the hand-off to
+// walk/idle doesn't pop.
+const GESTURE_HOLD_S = 1.4;
+const GESTURE_FADE_S = 0.4;
 
 // ---------------------------------------------------------------------
 // Character controller: steers vrm.scene toward whatever target
@@ -378,6 +426,19 @@ class CharacterController {
   // new one rather than layering both (same one-target-at-a-time
   // philosophy as main.ts/sandbox-hud.ts's facial emotion blend).
   private activeGesture: THREE.AnimationAction | null = null;
+  // Real bug found from a real screenshot (user report, not guessed):
+  // `clampWhenFinished` holds a finished clip's last frame *forever*
+  // unless something explicitly fades/stops it -- and `mixer.update()`
+  // below runs every frame regardless of gesture state, so that frozen
+  // pose kept overwriting the walk/idle pose right after it, every
+  // frame, permanently. This little state machine is what actually
+  // releases it: "hold" starts the moment the clip's own animation ends
+  // (see the `finished` listener below), counts down GESTURE_HOLD_S,
+  // then "fade" explicitly fades the action's weight to 0 over
+  // GESTURE_FADE_S and stops it, at which point activeGesture finally
+  // clears and update() resumes driving movement.
+  private gesturePhase: "hold" | "fade" | null = null;
+  private gestureTimer = 0;
 
   constructor(
     private vrm: VRM,
@@ -395,12 +456,16 @@ class CharacterController {
       // clip in hand to test blend timing against.
       this.walkAction.timeScale = 0;
     }
-    // Clears activeGesture once its clip actually finishes playing (not
-    // just when a new one interrupts it -- that path is handled
-    // directly in playGesture below) so update() knows to hand movement
-    // back to the walk/procedural path again.
+    // Fires once when a gesture's own clip reaches its end (LoopOnce) --
+    // NOT when playGesture() interrupts one early (that path fades the
+    // old action out directly in playGesture, so this event either
+    // never fires for it or fires after `activeGesture` has already
+    // moved on to a different action, in which case the `!==` check
+    // below correctly ignores it).
     this.mixer.addEventListener("finished", (event) => {
-      if (event.action === this.activeGesture) this.activeGesture = null;
+      if (event.action !== this.activeGesture) return;
+      this.gesturePhase = "hold";
+      this.gestureTimer = GESTURE_HOLD_S;
     });
   }
 
@@ -412,13 +477,20 @@ class CharacterController {
     return this.gestureActions.size;
   }
 
+  /** True while a gesture is playing, held, or fading back -- lets
+   * boot()'s idle-variety scheduler avoid firing a random idle gesture
+   * on top of one already in progress. */
+  get isGesturing(): boolean {
+    return this.activeGesture !== null;
+  }
+
   /** Registers a loaded gesture clip under `name` (one of
    * GESTURE_CLIP_FILES's keys) so playGesture(name) can trigger it
    * later. Call once per clip after boot()'s best-effort load loop. */
   registerGesture(name: string, clip: THREE.AnimationClip): void {
     const action = this.mixer.clipAction(clip);
     action.setLoop(THREE.LoopOnce, 1);
-    action.clampWhenFinished = true; // holds the clip's last pose instead of popping back to bind pose the instant it ends
+    action.clampWhenFinished = true; // holds the clip's last pose during GESTURE_HOLD_S instead of popping back to bind pose the instant it ends
     this.gestureActions.set(name, action);
   }
 
@@ -427,8 +499,9 @@ class CharacterController {
    * (e.g. a gesture file that never got dropped into
    * public/vrm-animations/, or an emotion with no GESTURE_FOR_EMOTION
    * entry) rather than throwing, same tolerance-of-absence philosophy
-   * as walk.vrma. While a gesture is playing, update() below stands her
-   * still and lets it read clearly instead of fighting the walk cycle. */
+   * as walk.vrma. While a gesture is playing/held/fading, update()
+   * below stands her still and lets it read clearly instead of fighting
+   * the walk cycle. */
   playGesture(name: string): void {
     const next = this.gestureActions.get(name);
     if (!next) return;
@@ -437,9 +510,32 @@ class CharacterController {
     }
     next.reset().fadeIn(0.2).play();
     this.activeGesture = next;
+    // Fresh play -- clear any hold/fade state left over from whatever
+    // was previously active so this one gets its own full lifecycle.
+    this.gesturePhase = null;
+    this.gestureTimer = 0;
+  }
+
+  private updateGestureLifecycle(delta: number): void {
+    if (!this.activeGesture || !this.gesturePhase) return;
+    this.gestureTimer -= delta;
+    if (this.gestureTimer > 0) return;
+    if (this.gesturePhase === "hold") {
+      this.activeGesture.fadeOut(GESTURE_FADE_S);
+      this.gesturePhase = "fade";
+      this.gestureTimer = GESTURE_FADE_S;
+    } else {
+      // Fade's finished -- actually stop it (fadeOut alone eases weight
+      // to 0 but leaves the action technically still "running" at zero
+      // weight; stop() is what fully releases it) and hand control back.
+      this.activeGesture.stop();
+      this.activeGesture = null;
+      this.gesturePhase = null;
+    }
   }
 
   update(delta: number, target: THREE.Vector3 | null): void {
+    this.updateGestureLifecycle(delta);
     let speedFraction = 0;
     const gesturing = this.activeGesture !== null;
 
@@ -460,13 +556,20 @@ class CharacterController {
       const dist = toTarget.length();
       if (dist > 0.001) {
         const dir = toTarget.clone().normalize();
-        const step = Math.min(dist, WALK_SPEED_MPS * delta);
+
+        // Real bug found from a real on-machine report ("moonwalking"):
+        // this used to step at a flat WALK_SPEED_MPS regardless of
+        // speedFraction below, while speedFraction only ever scaled the
+        // *animation* (leg-swing amplitude / walk-clip weight). Near the
+        // arrival point her legs would visually slow to a stop while her
+        // body kept gliding forward at full speed underneath -- a
+        // classic skate/moonwalk artifact. speedFraction is now computed
+        // first and actually scales the translation step too, so
+        // movement and leg animation slow down together.
+        speedFraction = Math.min(1, dist / SLOWDOWN_RADIUS_M);
+        const step = Math.min(dist, WALK_SPEED_MPS * speedFraction * delta);
         this.vrm.scene.position.x += dir.x * step;
         this.vrm.scene.position.z += dir.z * step;
-
-        // Eases speed down near the target instead of walking at full
-        // pace right up until she snaps to a stop.
-        speedFraction = Math.min(1, dist / SLOWDOWN_RADIUS_M);
 
         const targetFacing = Math.atan2(-dir.x, -dir.z);
         this.facing = lerpAngle(this.facing, targetFacing, Math.min(1, TURN_RATE_RAD_S * delta));
@@ -706,6 +809,7 @@ async function boot(): Promise<void> {
   }
 
   const wander = new WanderController(ROOM_HALF_SIZE - WANDER_MARGIN_M);
+  const idleGestures = new IdleGestureScheduler();
   statusEl.textContent = character.usingRealClip
     ? `Model loaded · playing walk.vrma · ${character.gestureCount} gesture(s) loaded`
     : `Model loaded · procedural walk (drop a walk.vrma into public/vrm-animations/ to use a real clip) · ${character.gestureCount} gesture(s) loaded`;
@@ -736,6 +840,16 @@ async function boot(): Promise<void> {
     hud.tick(delta);
     const target = wander.getTarget(delta, vrm.scene.position, hud.isTurnActive());
     character.update(delta, target);
+    // Eligible only once everything else has had first say this frame:
+    // not walking anywhere (target is null), not mid-turn, and not
+    // already gesturing (character.update() just above may have moved
+    // an emotion-triggered gesture through hold/fade, so this reads its
+    // post-update state).
+    idleGestures.update(
+      delta,
+      target === null && !hud.isTurnActive() && !character.isGesturing,
+      (name) => character.playGesture(name),
+    );
     vrm.update(delta);
     renderer.render(scene, camera);
   }
