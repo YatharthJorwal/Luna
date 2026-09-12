@@ -505,6 +505,26 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
+// EXPERIMENTAL FLIP (round 6, second attempt): the facing/travel
+// diagnostic above proved facing and travel direction always agreed
+// with each other -- but that only proves self-consistency, not that
+// the underlying "-Z is forward" assumption it (and updateFacing()) was
+// built on is actually correct. If that assumption is backward for this
+// model, both sides of the comparison shift together and still match,
+// while she visually faces opposite her travel direction the entire
+// time -- a blind spot the diagnostic can't see past, since it checks
+// this formula against itself, not against the rendered result. The
+// user asked to just try flipping it and confirm by eye, since it's a
+// one-line, trivially-revertible change (`git restore` back to the
+// unflipped version if this makes it worse instead of better -- see
+// docs/DECISIONS.md for exactly which commit that is). Was
+// `Math.atan2(-x, -z)`; every direction-to-angle conversion in
+// CharacterController now goes through this one function so there's
+// only one sign to flip back if this guess is wrong.
+function directionToFacingAngle(x: number, z: number): number {
+  return Math.atan2(x, z);
+}
+
 /** Best-effort single-clip loader shared by every animation load in
  * boot() below (walk loop/start/stop, idle base/talking, gestures) --
  * a missing file just resolves to null rather than throwing, same
@@ -713,7 +733,7 @@ class CharacterController {
     this.debugPrevPos.set(pos.x, pos.y, pos.z);
     if (movedX * movedX + movedZ * movedZ < 1e-10) return null;
     const facingDeg = ((this.facing * 180) / Math.PI).toFixed(0);
-    const travelDeg = ((Math.atan2(-movedX, -movedZ) * 180) / Math.PI).toFixed(0);
+    const travelDeg = ((directionToFacingAngle(movedX, movedZ) * 180) / Math.PI).toFixed(0);
     return `[debug] facing ${facingDeg}° · travel ${travelDeg}° (should match; ~180° apart = inverted; anything else = a different axis mixup)`;
   }
 
@@ -924,7 +944,7 @@ class CharacterController {
   }
 
   private updateFacing(dir: THREE.Vector3, delta: number): void {
-    const targetFacing = Math.atan2(-dir.x, -dir.z);
+    const targetFacing = directionToFacingAngle(dir.x, dir.z);
     this.facing = lerpAngle(this.facing, targetFacing, Math.min(1, TURN_RATE_RAD_S * delta));
     this.vrm.scene.rotation.y = this.facing;
   }

@@ -2475,3 +2475,48 @@ on-screen line, same style as the first.
 **Not verified:** everything about the actual gait quality -- this
 entry adds a way to *measure* the problem, it doesn't yet claim to have
 found or fixed it.
+
+## Round 6, third attempt: the diagnostic's blind spot, and an experimental facing flip
+
+The user ran both diagnostics: `facing 445°` (=85° mod 360) vs
+`travel 85°` (matching, same as the first run), and both feet showing
+healthy lift ranges (0.099m and 0.126m, both well above the ~0.02m
+"dragging" floor). **Both diagnostics came back clean, and she's still
+visibly sliding backward.** The user's own read of this: the
+diagnostic itself has a blind spot, and it does.
+
+They're right. `debugFacingTravelText` checks whether `facing` and
+`travel` agree *with each other*, both computed through the same
+assumed "-Z is forward" convention `updateFacing()` was built on. If
+that whole convention is backward for this model, both sides of the
+comparison shift by the same 180° and *still agree* -- the diagnostic
+proves internal self-consistency, not correctness against the actual
+rendered orientation. It was never capable of catching this specific
+class of bug, and continuing to point at "the numbers match" would have
+kept missing it.
+
+Since there's no way to check the real rendered orientation from this
+sandbox (no GPU/browser, the recurring caveat), and the two clean
+diagnostic results have exhausted what static/self-referential checking
+can offer here, the user proposed the obvious next experiment: flip the
+convention and confirm by eye, since it's a one-line, trivially
+revertible change. Implemented as `directionToFacingAngle(x, z)`, a
+single shared function (`Math.atan2(x, z)`, dropping the negation
+`Math.atan2(-x, -z)` had) that both `updateFacing()` and
+`debugFacingTravelText`'s travel computation now go through -- routing
+both through one function means there's only one sign to flip back if
+this guess is wrong, and the diagnostic still checks out as
+self-consistent afterward (same blind spot as before, now just
+confirming the flip didn't introduce a *new* mismatch on top of the
+old, unprovable-from-here one).
+
+**If this makes it worse, not better:** `git restore` (or `git checkout
+--`) `src/sandbox.ts` back to commit `16bbf59` (the previous commit,
+before this flip) undoes just this change, keeping everything else from
+rounds 5/6.
+
+**Verified in this sandbox:** `tsc --noEmit` clean; both builds clean.
+**Not verified, by design this time:** whether the flip actually looks
+right -- that's exactly the one thing this sandbox cannot check, which
+is the whole reason this is framed as an experiment for the user to
+confirm by eye rather than another confident claim of a fix.
