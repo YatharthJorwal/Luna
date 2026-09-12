@@ -577,6 +577,17 @@ class CharacterController {
   private walkBoutDistanceM = 0;
   private currentStopAction: THREE.AnimationAction | null = null;
 
+  // TEMPORARY diagnostic fields -- see debugFootTraceText's own comment
+  // below for what these are for.
+  private readonly leftFootBone: THREE.Object3D | null;
+  private readonly rightFootBone: THREE.Object3D | null;
+  private footTraceTimer = 0;
+  private footTraceMinL = Infinity;
+  private footTraceMaxL = -Infinity;
+  private footTraceMinR = Infinity;
+  private footTraceMaxR = -Infinity;
+  private footTraceText: string | null = null;
+
   constructor(
     private vrm: VRM,
     clips: {
@@ -588,6 +599,8 @@ class CharacterController {
   ) {
     this.walker = new ProceduralWalker(collectWalkBones(vrm));
     this.mixer = new THREE.AnimationMixer(vrm.scene);
+    this.leftFootBone = vrm.humanoid.getRawBoneNode("leftFoot");
+    this.rightFootBone = vrm.humanoid.getRawBoneNode("rightFoot");
 
     // Real per-model speed, not a guess -- see the WORLD_WALK_* comments
     // above. normalizedRestPose is exactly the API the pack's own
@@ -672,9 +685,18 @@ class CharacterController {
    * class's own bookkeeping (walkDir etc.), using the exact same
    * atan2(-x,-z) convention updateFacing() uses, so a correctly-behaving
    * frame reports two matching numbers. Null whenever she's not actually
-   * translating (nothing useful to compare yet). Remove this getter and
-   * its boot()-side readout once the actual bug is found -- see
-   * docs/DECISIONS.md.
+   * translating (nothing useful to compare yet).
+   *
+   * ROUND 6 RESULT (from the user's own screenshot): facing 417°
+   * (= 57° mod 360) vs travel 58° -- a 1° difference, i.e. these already
+   * match. This rules out a facing/direction inversion entirely --
+   * flipping the formula would introduce a real bug where there
+   * currently isn't one. The "moonwalk" look must be a different kind of
+   * problem (foot-plant/gait quality, not direction) -- see
+   * debugFootTraceText below, added specifically because of this result.
+   *
+   * Remove this getter and its boot()-side readout once the actual bug
+   * is found -- see docs/DECISIONS.md.
    */
   get debugFacingTravelText(): string | null {
     if (this.walkPhase !== "looping" && this.walkPhase !== "arriving") {
@@ -693,6 +715,51 @@ class CharacterController {
     const facingDeg = ((this.facing * 180) / Math.PI).toFixed(0);
     const travelDeg = ((Math.atan2(-movedX, -movedZ) * 180) / Math.PI).toFixed(0);
     return `[debug] facing ${facingDeg}° · travel ${travelDeg}° (should match; ~180° apart = inverted; anything else = a different axis mixup)`;
+  }
+
+  /** TEMPORARY diagnostic, round 6 addition -- direction is confirmed
+   * correct (see debugFacingTravelText's own result above), so "moonwalk"
+   * must be a foot-plant/gait problem instead: something that would make
+   * a foot look like it's sliding along the ground rather than lifting
+   * and resetting between steps, independent of which way she's actually
+   * heading. Samples each foot bone's real world-space height (not
+   * anything retargeted or computed -- the actual bone the mixer is
+   * driving) once a frame, and reports the min/max range it swept over
+   * roughly every 1.5s. A healthy walk cycle should show both feet
+   * regularly sweeping through a real range (one foot planted near its
+   * low point while the other arcs up mid-swing, alternating); a foot
+   * stuck at a near-zero range for a stretch means it's dragging instead
+   * of lifting -- direct, numeric evidence instead of eyeballing a still
+   * image, which can't show a fundamentally time-based artifact like
+   * sliding at all. Remove alongside debugFacingTravelText once resolved. */
+  get debugFootTraceText(): string | null {
+    return this.footTraceText;
+  }
+
+  private updateFootTrace(delta: number): void {
+    if (!this.leftFootBone || !this.rightFootBone) return;
+    if (this.walkPhase !== "looping" && this.walkPhase !== "arriving") {
+      this.footTraceText = null;
+      return;
+    }
+    const lp = new THREE.Vector3();
+    this.leftFootBone.getWorldPosition(lp);
+    const rp = new THREE.Vector3();
+    this.rightFootBone.getWorldPosition(rp);
+    this.footTraceMinL = Math.min(this.footTraceMinL, lp.y);
+    this.footTraceMaxL = Math.max(this.footTraceMaxL, lp.y);
+    this.footTraceMinR = Math.min(this.footTraceMinR, rp.y);
+    this.footTraceMaxR = Math.max(this.footTraceMaxR, rp.y);
+    this.footTraceTimer += delta;
+    if (this.footTraceTimer < 1.5) return;
+    const lRange = this.footTraceMaxL - this.footTraceMinL;
+    const rRange = this.footTraceMaxR - this.footTraceMinR;
+    this.footTraceText = `[debug] L foot y-range ${lRange.toFixed(3)}m (${this.footTraceMinL.toFixed(3)}-${this.footTraceMaxL.toFixed(3)}) · R foot y-range ${rRange.toFixed(3)}m (${this.footTraceMinR.toFixed(3)}-${this.footTraceMaxR.toFixed(3)}) -- a healthy stride should show both well above ~0.02m; a foot stuck near its minimum is dragging`;
+    this.footTraceTimer = 0;
+    this.footTraceMinL = Infinity;
+    this.footTraceMaxL = -Infinity;
+    this.footTraceMinR = Infinity;
+    this.footTraceMaxR = -Infinity;
   }
 
   /** Registers a loaded gesture clip under `name` (one of
@@ -786,6 +853,9 @@ class CharacterController {
     }
     this.updateIdleBase(delta, isTalking);
     this.mixer.update(delta);
+    // Sampled after mixer.update() so the foot bones reflect this frame's
+    // actual applied pose, not last frame's.
+    this.updateFootTrace(delta);
   }
 
   // --- real walk cycle -------------------------------------------------
@@ -1138,13 +1208,18 @@ async function boot(): Promise<void> {
   const canvas = document.getElementById("sandbox-canvas") as HTMLCanvasElement;
   const statusEl = document.getElementById("sandbox-status") as HTMLDivElement;
 
-  // TEMPORARY diagnostic element -- see CharacterController's
-  // debugFacingTravelText getter for what this shows and why. Remove
-  // both once the "walks backward" report is actually resolved.
+  // TEMPORARY diagnostic elements -- see CharacterController's
+  // debugFacingTravelText / debugFootTraceText getters for what these
+  // show and why. Remove all three once the "walks backward" report is
+  // actually resolved.
   const debugEl = document.createElement("div");
   debugEl.style.cssText =
     "position:fixed;left:8px;bottom:8px;font:11px monospace;color:#0f0;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;z-index:1000;";
   document.body.appendChild(debugEl);
+  const footTraceEl = document.createElement("div");
+  footTraceEl.style.cssText =
+    "position:fixed;left:8px;bottom:34px;font:11px monospace;color:#0f0;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;z-index:1000;";
+  document.body.appendChild(footTraceEl);
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
@@ -1279,6 +1354,9 @@ async function boot(): Promise<void> {
     const debugText = character.debugFacingTravelText;
     debugEl.style.display = debugText ? "block" : "none";
     if (debugText) debugEl.textContent = debugText;
+    const footTraceText = character.debugFootTraceText;
+    footTraceEl.style.display = footTraceText ? "block" : "none";
+    if (footTraceText) footTraceEl.textContent = footTraceText;
     // Eligible only once everything else has had first say this frame:
     // not walking anywhere (target is null AND she's not still finishing
     // a stride/start/stop -- see CharacterController.isWalking), not

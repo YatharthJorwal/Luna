@@ -350,6 +350,12 @@ awaiting on-machine confirmation · ⬜ not started)
   not just read. Not verified: whether the wall-clamp/turn-rate changes
   actually read as fixed, and the facing/direction complaint is
   explicitly still open pending the diagnostic's real numbers.
+  **Result:** the user ran it -- facing and travel direction matched
+  (417°≡57° vs 58°), ruling out a facing/direction bug entirely. A
+  second diagnostic (`debugFootTraceText`, each foot's real world-space
+  height range over time) was added to chase the likely real cause
+  instead: a foot-plant/gait-quality problem, not a direction one. See
+  `docs/DECISIONS.md`.
   **Round 7 (planning only, full apartment) — not built yet, renumbered
   from a parallel session.** The user ran a separate planning
   conversation in parallel with this session's round-5 build work, off

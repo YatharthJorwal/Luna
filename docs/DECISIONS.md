@@ -2439,3 +2439,39 @@ model to reason about, same principle as the trivial cursor-event
 handling from Phase 0/M2.
 
 **Verified:** none of this -- planning-only entry, nothing built yet.
+
+## Round 6 result: direction confirmed correct, not a facing bug
+
+The user ran round 6's diagnostic and reported back real numbers:
+`facing 417°` (= 57° mod 360) vs `travel 58°` -- a 1° difference, i.e.
+these already match. **This settles it: the facing formula is not
+inverted, and was never the bug.** The user's own read of the situation
+("flip it or smth") would have introduced a real, confirmed-wrong
+inversion into code that's currently correct -- declined for that
+reason, with the numbers to back it up, rather than complying just
+because it was asked.
+
+Since direction is ruled out, "moonwalk" must be a foot-plant/gait
+quality problem instead -- a fundamentally different, more specific
+class of bug (something making a foot look like it's sliding along the
+ground rather than lifting and resetting between steps), independent of
+which way she's actually heading. A single screenshot can't show this at
+all -- sliding is inherently a *time-based* artifact, not something a
+still frame captures, which is part of why three rounds of guessing
+based on screenshots alone hasn't landed on it.
+
+Added a second temporary diagnostic, `debugFootTraceText`: samples both
+foot bones' real world-space height directly (`vrm.humanoid.getRawBoneNode`,
+not anything retargeted or computed) once a frame, sampled *after*
+`mixer.update()` so it reflects the actually-applied pose, and reports
+each foot's min/max height range roughly every 1.5s. A healthy stride
+should show both feet regularly sweeping through a real range as they
+alternate planting/lifting; a foot stuck at a near-zero range for a
+stretch is direct, numeric evidence it's dragging rather than lifting --
+this is the next real lead, not another guess. Rendered as a second
+on-screen line, same style as the first.
+
+**Verified in this sandbox:** `tsc --noEmit` clean; both builds clean.
+**Not verified:** everything about the actual gait quality -- this
+entry adds a way to *measure* the problem, it doesn't yet claim to have
+found or fixed it.
