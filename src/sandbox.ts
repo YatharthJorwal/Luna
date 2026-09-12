@@ -601,6 +601,7 @@ class CharacterController {
   // below for what these are for.
   private readonly leftFootBone: THREE.Object3D | null;
   private readonly rightFootBone: THREE.Object3D | null;
+  private readonly hipsBone: THREE.Object3D | null;
   private footTraceTimer = 0;
   private footTraceMinL = Infinity;
   private footTraceMaxL = -Infinity;
@@ -621,6 +622,7 @@ class CharacterController {
     this.mixer = new THREE.AnimationMixer(vrm.scene);
     this.leftFootBone = vrm.humanoid.getRawBoneNode("leftFoot");
     this.rightFootBone = vrm.humanoid.getRawBoneNode("rightFoot");
+    this.hipsBone = vrm.humanoid.getRawBoneNode("hips");
 
     // Real per-model speed, not a guess -- see the WORLD_WALK_* comments
     // above. normalizedRestPose is exactly the API the pack's own
@@ -782,6 +784,35 @@ class CharacterController {
     this.footTraceMaxR = -Infinity;
   }
 
+  /** TEMPORARY diagnostic, round 6 fourth attempt -- the user directly
+   * confirmed (from their own video, verified independently here too
+   * against static-camera frames) that the facing-formula flip had zero
+   * visible effect: she still visibly translates toward the camera while
+   * consistently facing away from it. Since the flip only changes
+   * `vrm.scene.rotation.y` -- the outermost transform -- and had no
+   * effect, the actual visual-orientation bug likely isn't at that layer
+   * at all. This checks the next layer down: the hips bone's *actual
+   * composed world orientation* (scene rotation AND whatever the
+   * retargeted animation clip itself applies to the bone, together) --
+   * not what we told the scene node to do, but what the render actually
+   * ends up showing. If this disagrees with the scene-level `facing`
+   * while `travel` (ground truth, from debugFacingTravelText) agrees
+   * with `facing`, that's real evidence the animation clip itself is
+   * rotating her hips independent of -- and overriding the visual effect
+   * of -- vrm.scene.rotation.y. Expect some natural noise from ordinary
+   * hip sway during a stride (a few degrees); a bug would show much
+   * closer to a full 180°. */
+  get debugHipsWorldFacingText(): string | null {
+    if (!this.hipsBone) return null;
+    if (this.walkPhase !== "looping" && this.walkPhase !== "arriving") return null;
+    const q = new THREE.Quaternion();
+    this.hipsBone.getWorldQuaternion(q);
+    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
+    const hipsDeg = ((directionToFacingAngle(fwd.x, fwd.z) * 180) / Math.PI).toFixed(0);
+    const sceneDeg = ((this.facing * 180) / Math.PI).toFixed(0);
+    return `[debug] hips world-forward ${hipsDeg}° vs scene facing ${sceneDeg}° (should match within a few degrees of normal hip sway; ~180° apart = the animation clip itself is rotating her, not vrm.scene.rotation.y)`;
+  }
+
   /** Registers a loaded gesture clip under `name` (one of
    * GESTURE_CLIP_FILES's keys) so playGesture(name) can trigger it
    * later. Call once per clip after boot()'s best-effort load loop. */
@@ -873,6 +904,13 @@ class CharacterController {
     }
     this.updateIdleBase(delta, isTalking);
     this.mixer.update(delta);
+    // mixer.update() only writes each bone's LOCAL transform from its
+    // animation track -- propagating that into each bone's WORLD
+    // transform (what getWorldPosition/getWorldQuaternion actually read)
+    // normally waits until the renderer's own render-time traversal.
+    // Forced here, immediately, so both diagnostics below read this
+    // frame's current pose instead of lagging a frame behind it.
+    this.vrm.scene.updateMatrixWorld(true);
     // Sampled after mixer.update() so the foot bones reflect this frame's
     // actual applied pose, not last frame's.
     this.updateFootTrace(delta);
@@ -1240,6 +1278,10 @@ async function boot(): Promise<void> {
   footTraceEl.style.cssText =
     "position:fixed;left:8px;bottom:34px;font:11px monospace;color:#0f0;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;z-index:1000;";
   document.body.appendChild(footTraceEl);
+  const hipsFacingEl = document.createElement("div");
+  hipsFacingEl.style.cssText =
+    "position:fixed;left:8px;bottom:60px;font:11px monospace;color:#0f0;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;z-index:1000;";
+  document.body.appendChild(hipsFacingEl);
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
@@ -1377,6 +1419,9 @@ async function boot(): Promise<void> {
     const footTraceText = character.debugFootTraceText;
     footTraceEl.style.display = footTraceText ? "block" : "none";
     if (footTraceText) footTraceEl.textContent = footTraceText;
+    const hipsFacingText = character.debugHipsWorldFacingText;
+    hipsFacingEl.style.display = hipsFacingText ? "block" : "none";
+    if (hipsFacingText) hipsFacingEl.textContent = hipsFacingText;
     // Eligible only once everything else has had first say this frame:
     // not walking anywhere (target is null AND she's not still finishing
     // a stride/start/stop -- see CharacterController.isWalking), not

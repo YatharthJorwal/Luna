@@ -2520,3 +2520,61 @@ rounds 5/6.
 right -- that's exactly the one thing this sandbox cannot check, which
 is the whole reason this is framed as an experiment for the user to
 confirm by eye rather than another confident claim of a fix.
+
+## Round 6, fourth attempt: the flip didn't work, confirmed with real video evidence, one layer deeper
+
+The user reported the facing flip made no visible difference and sent an
+actual screen recording. Extracted frames from it (`ffmpeg`, available in
+this sandbox) rather than taking the report on faith -- and independently
+confirmed the bug from a segment where the camera is provably static
+(matched wall-corner positions across four frames spanning ~3.75s at the
+very start of the recording): she visibly grows larger/closer in frame
+over that span while her back stays to the camera in both the first and
+last frame. She is moving toward the camera while facing away from it --
+real backward walking, confirmed against a fixed reference, not
+guessed. This also confirms the round-6-third-attempt flip genuinely had
+no effect, not just that it "felt" unchanged.
+
+That non-result is itself informative: the flip only changes
+`vrm.scene.rotation.y`, the outermost transform in the chain. If flipping
+the *outermost* rotation changed nothing about which way she visually
+faces, the actual visual-orientation bug isn't at that layer -- something
+further down the chain (most likely the retargeted animation clip itself
+applying its own rotation to the hips bone) is what's actually
+determining her visible orientation, and it doesn't care what the scene
+node above it is set to.
+
+Added a third temporary diagnostic to check exactly that:
+`debugHipsWorldFacingText` reads the hips bone's actual *composed* world
+orientation (`getWorldQuaternion` -- scene rotation and whatever the
+animation clip itself contributes, together, i.e. what the render
+actually ends up showing) and compares it to the scene-level `facing`
+value the other two diagnostics already track. Also fixed a latent
+correctness bug this surfaced: `mixer.update()` only writes each bone's
+*local* transform from its animation track -- the *world* transform
+`getWorldPosition`/`getWorldQuaternion` actually read isn't refreshed
+until something calls `updateMatrixWorld()`, which normally only happens
+inside the renderer's own render-time traversal. Without an explicit
+call, both this new diagnostic and the existing foot-trace one would
+have been silently reading last frame's pose. Fixed with one explicit
+`vrm.scene.updateMatrixWorld(true)` right after `mixer.update()`, before
+either diagnostic samples anything.
+
+If `debugHipsWorldFacingText` shows the hips bone's world-forward roughly
+matching scene `facing` (both already known to match `travel`), that
+would mean all three agree yet she still visually walks backward --
+pointing at something beyond even this class of bug (e.g. genuinely
+wrong retargeting output, or a coordinate-space mismatch in
+`createVRMAnimationClip` itself). If it shows the hips bone's world-
+forward roughly 180° from scene `facing`, that directly identifies the
+animation clip as the source, and the fix becomes compensating for that
+offset (or investigating why the retargeted clip carries it) rather than
+touching `updateFacing()` again.
+
+**Verified in this sandbox:** `tsc --noEmit` clean; both builds clean;
+frames from the user's actual video were extracted and inspected
+directly (`ffmpeg`), not just read about -- this is the first entry in
+this whole saga backed by real visual evidence rather than either a
+guess or a self-referential diagnostic. **Not verified:** what
+`debugHipsWorldFacingText` will actually report -- that's the next real
+data point, from the user's machine, not this sandbox.
