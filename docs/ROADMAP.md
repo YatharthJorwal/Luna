@@ -97,6 +97,21 @@ awaiting on-machine confirmation · ⬜ not started)
   confirmed compiling and running end-to-end on the user's machine.
   Confirmed on the user's machine: a full voice turn actually completing
   end-to-end on CPU, mic button and F9 push-to-talk both.
+  **Follow-up (Phase 10 round 6):** `graceful_shutdown_then_kill()` above
+  only fires from a tray-Quit click or window-close event -- a terminal
+  Ctrl+C on `npm run tauri dev` kills the Tauri parent directly
+  (confirmed from the user's own log: `STATUS_CONTROL_C_EXIT`), bypassing
+  it entirely and orphaning the orchestrator child, still bound to the
+  port, with stale state. Fixed with a PID-file takeover in
+  `orchestrator/app.py` itself instead of trying to catch a raw console
+  Ctrl+C on the Rust/Windows side (real, fiddly, hard-to-verify-without-
+  a-Windows-machine territory) -- actually tested in this sandbox against
+  a simulated stale process, not just read. Also: `npm run sandbox`
+  (`vite --open /sandbox.html` alone) never started the orchestrator at
+  all, confirmed from the user's own report and log -- new
+  `scripts/dev-sandbox.mjs` launches both together now, actually run and
+  SIGINT-tested here too. Full writeup in `docs/DECISIONS.md`'s round-6
+  entry.
   See `docs/MODELS.md` for the STT API shapes and `docs/DECISIONS.md` for
   the device/lazy-load/hotkey/CUDA/launcher choices and the full bug
   trail. Also folds in the model swap to `qwen3.5:9b` (see
@@ -313,6 +328,74 @@ awaiting on-machine confirmation · ⬜ not started)
   stance, seated domain, nod/shake/raise-hand/think), in
   `docs/DECISIONS.md`. Not verified on-machine — no GPU/browser in this
   sandbox, same caveat as every round before this one.
+  **Round 6:** first on-machine run of round 5 surfaced three more
+  reports — wall clipping, "kinda awkward," and a persisting "walks
+  backward" complaint. Wall clipping had a real, provable cause (the
+  arrival-phase grace stride had no bounds check) and is fixed with a
+  hard position clamp. "Kinda awkward" got one concrete fix (facing now
+  turns during the walk-start wind-up, not just once the loop begins)
+  and one reasoned-but-unverified tuning change (turn rate slowed from
+  an effectively-instant snap to a ~0.8s about-face). The facing
+  formula itself was re-derived twice against three.js's own rotation
+  convention and no error was found through static analysis — rather
+  than ship a fourth guess, `CharacterController` gained a temporary
+  on-screen diagnostic comparing computed facing against her actual
+  frame-to-frame travel direction, to get real numbers instead of more
+  guesses. Also: room lighting brightened via a layer-scoped light that
+  can only affect room geometry, never the character (protecting the
+  round-2 MToon fix), and a separate orchestrator dev-workflow fix (see
+  Phase 2.5 below). Full writeup in `docs/DECISIONS.md`. Verified in
+  this sandbox beyond the usual static checks: the pidfile takeover and
+  the sandbox launcher script were both actually run and tested here,
+  not just read. Not verified: whether the wall-clamp/turn-rate changes
+  actually read as fixed, and the facing/direction complaint is
+  explicitly still open pending the diagnostic's real numbers.
+  **Round 7 (planning only, full apartment) — not built yet, renumbered
+  from a parallel session.** The user ran a separate planning
+  conversation in parallel with this session's round-5 build work, off
+  the same round-4 base — that session never touched code, only these
+  two docs, and independently landed on "round 5" for something
+  unrelated to this session's round 5. Reconciled by renumbering that
+  work to round 7, after this round 6. User wants the box room replaced
+  with a real multi-room apartment (kitchen+dining, living room,
+  bedroom, bathroom, hobby/work room — reference moodboard,
+  MiSide-inspired but explicitly not to be copied 1:1) with her able to
+  walk between rooms and do room-appropriate things (sit on the couch,
+  cook, read) rather than just wander a blank box. Planned approach,
+  sequenced smallest-first:
+  1. Room geometry via Blender, but as **asset-pack assembly, not
+     freehand modeling** — the user is a Blender layman and this
+     sandbox has no GPU/browser to render-check lighting or materials
+     blind, so hand-sculpting furniture here would be guessing at
+     something nobody can see. CC0/free low-poly furniture packs
+     (Kenney-style) arranged into the room layouts, exported `.glb`,
+     loaded via `GLTFLoader` the same way the VRM already loads —
+     no new rendering pipeline needed, just a second asset type. One
+     room first (living room), not all five at once.
+  2. Replace `WanderController`'s free-roam bounding box with a
+     per-room floor polygon (a navmesh, or even a flat convex-hull
+     check to start) so wall clipping is a data problem (define the
+     walkable area) rather than a physics problem — deliberately not
+     pulling in a physics engine (Rapier/Cannon) for this, nothing
+     here needs collision response, just "is this point inside the
+     room."
+  3. Named anchor transforms per interactive object (couch = sit spot
+     + facing, stove = stand spot + facing), authored alongside the
+     furniture in Blender or hand-placed after import. Orchestrator
+     picks an anchor + activity; she walks to it (existing locomotion)
+     then blends into a pose there. The actual sit/cook/read poses are
+     new animation clips — this is expected to be the biggest time
+     cost in the whole plan, bigger than the room build itself.
+  4. A scene-state message alongside the existing surface-awareness
+     channel (`ws-client.ts`'s `surface`/`surface_status`) — current
+     room, current anchor/activity — fed into `persona.py`'s context,
+     so she can talk about "sitting on the couch" because the app told
+     her that, not because the LLM guessed it.
+  First-person camera (parented to a head bone) is feasible and cheap
+  in three.js, but scoped as a spectator/debug view only, *not* the
+  channel her situational awareness runs through — see
+  `docs/DECISIONS.md`'s round-7 entry for why text scene-state was
+  picked over feeding her rendered frames.
 
 ## Open decisions
 
@@ -334,3 +417,11 @@ Still open:
   down when they're not in the mood to be chided).
 - Live2D model source for anything beyond local prototyping (free sample vs.
   purchased vs. commissioned) and its license terms.
+- Full-apartment room build (Phase 10 round 7): asset pack source/license
+  for the furniture, per-room navmesh authoring, and the sit/cook/read
+  animation clips — none of this is built yet, see the round-7 planning
+  note above.
+- Round 6's open items: whether the wall-clamp/turn-rate/facing-during-
+  start changes actually read as fixed, and the persisting facing/travel-
+  direction bug pending the new debug readout's real numbers from an
+  actual run.

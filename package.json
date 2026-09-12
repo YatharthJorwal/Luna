@@ -8,7 +8,7 @@
     "build": "tsc && vite build",
     "preview": "vite preview",
     "tauri": "tauri",
-    "sandbox": "vite --open /sandbox.html"
+    "sandbox": "node scripts/dev-sandbox.mjs"
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.5.5",

@@ -41,7 +41,11 @@ import asyncio
 import base64
 import contextlib
 import os
+import signal
+import subprocess
 import sys
+import time
+from pathlib import Path
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
@@ -473,10 +477,85 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             await websocket.close()
 
 
+def _pid_is_alive(pid: int) -> bool:
+    """Cross-platform "is this PID still running" check -- the only thing
+    _take_over_stale_orchestrator() below actually needs from the OS."""
+    if sys.platform == "win32":
+        import ctypes
+
+        PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+        handle = ctypes.windll.kernel32.OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+        if not handle:
+            return False
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    try:
+        os.kill(pid, 0)
+    except OSError:
+        return False
+    return True
+
+
+def _take_over_stale_orchestrator(pid_file: Path) -> None:
+    """Makes sure this process ends up as the *only* orchestrator running,
+    no matter what launched it or how the previous one died.
+
+    Found from the user's own terminal log, not anticipated up front:
+    Ctrl+C on `npm run tauri dev` kills the Tauri parent via Windows'
+    STATUS_CONTROL_C_EXIT before any of Tauri's own event handlers run --
+    graceful_shutdown_then_kill() in src-tauri/src/lib.rs (see this
+    module's own top docstring) only ever fires from a tray-Quit click or
+    a window-close event, neither of which happens on a raw terminal
+    Ctrl+C. The orchestrator child process spawned underneath it is left
+    running, still bound to PORT, with whatever history/state it had --
+    so the next launch (however it happens: Tauri spawning a fresh child,
+    a manually-run `python app.py`, or the sandbox launcher in
+    scripts/dev-sandbox.mjs) would otherwise either fail to bind the port
+    at all, or -- more confusingly -- silently succeed while the frontend
+    keeps talking to the same stale orphan the whole time, which is
+    exactly what looked like "orchestrator.log showed old data" from the
+    outside.
+
+    Deliberately fixed here rather than on the Rust/Windows side:
+    reliably intercepting a raw console Ctrl+C (as opposed to a
+    window/tray event) is real, fiddly, hard-to-verify-without-a-Windows-
+    machine territory -- see docs/DECISIONS.md. A plain PID-file takeover
+    here is portable, was actually tested (simulating a stale orphaned
+    process and confirming this detects and kills it -- see
+    docs/DECISIONS.md), and is correct regardless of which of the three
+    launch paths above is used, rather than needing each one to
+    separately get shutdown-signal-handling right.
+    """
+    our_pid = os.getpid()
+    if pid_file.exists():
+        try:
+            old_pid = int(pid_file.read_text().strip())
+        except (ValueError, OSError):
+            old_pid = None
+        if old_pid is not None and old_pid != our_pid and _pid_is_alive(old_pid):
+            print(f"[luna] found a stale orchestrator still running (pid {old_pid}) -- taking over", flush=True)
+            if sys.platform == "win32":
+                subprocess.run(["taskkill", "/PID", str(old_pid), "/F"], capture_output=True)
+            else:
+                with contextlib.suppress(OSError):
+                    os.kill(old_pid, signal.SIGTERM)
+            # Give the OS a moment to actually free the port before we try
+            # to bind it ourselves below.
+            time.sleep(0.5)
+    pid_file.parent.mkdir(parents=True, exist_ok=True)
+    pid_file.write_text(str(our_pid))
+
+
 if __name__ == "__main__":
     import uvicorn
 
     from memory import db as memory_db
+
+    # Repo-root-relative regardless of cwd (Tauri's spawn sets cwd to
+    # orchestrator/ via current_dir("../orchestrator"); a manually-run
+    # `python app.py` from inside orchestrator/ lands at the same cwd;
+    # __file__-relative means this doesn't depend on either being true).
+    _take_over_stale_orchestrator(Path(__file__).resolve().parent.parent / "logs" / "orchestrator.pid")
 
     # Cheap check, once per process start -- see
     # check_embedding_dimension_matches()'s docstring for why this is

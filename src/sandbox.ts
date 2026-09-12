@@ -151,7 +151,8 @@ const GESTURE_FOR_EMOTION: Partial<Record<string, string>> = {
   surprised: "surprised",
 };
 
-const TURN_RATE_RAD_S = 10; // how fast she reorients to face her movement direction
+const TURN_RATE_RAD_S = 4; // how fast she reorients to face her movement direction -- was 10 (a 180° snap in ~0.3s, effectively instant); with only the crude procedural sway to compare it against, that snap wasn't very noticeable, but next to a real authored walk cycle it reads as a jarring robotic pop, per the user's own "kinda awkward" report. 4 rad/s takes ~0.8s for a full about-face -- still brisk, not sluggish, but no longer an instant snap. Untested against real motion, same as everything else in this file -- a reasoned adjustment, not a measurement.
+const WALL_CLEARANCE_M = 0.3; // hard position clamp, independent of any locomotion timing -- see stepAlong()'s own comment for why this exists as a second, unconditional layer rather than trusting the arrival-phase timing alone
 const ARRIVE_RADIUS_M = 0.08; // "close enough" to a wander target for WanderController to call it arrived
 
 // ---------------------------------------------------------------------
@@ -193,6 +194,15 @@ function applyRestPose(vrm: VRM): void {
 // ROADMAP.md's Phase 10 entry, deliberately not this file's job -- see
 // docs/DECISIONS.md.
 // ---------------------------------------------------------------------
+// Objects on this layer (in addition to their default layer 0) are lit
+// by roomFillLight below, on top of whatever the default-layer
+// keyLight/HemisphereLight already contribute -- room geometry only
+// (floor/walls/ceiling/grid), never the character (vrm.scene, added
+// separately in boot(), is never given this layer). See roomFillLight's
+// own comment for why this exists as a separate light+layer rather than
+// just turning the existing lights up.
+const ROOM_LIGHT_LAYER = 1;
+
 function buildStudio(scene: THREE.Scene): void {
   scene.background = new THREE.Color(0xffffff);
 
@@ -207,28 +217,34 @@ function buildStudio(scene: THREE.Scene): void {
 
   const floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), floorMat);
   floor.rotation.x = -Math.PI / 2;
+  floor.layers.enable(ROOM_LIGHT_LAYER);
   scene.add(floor);
 
   const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(size, size), wallMat);
   ceiling.rotation.x = Math.PI / 2;
   ceiling.position.y = ROOM_HEIGHT;
+  ceiling.layers.enable(ROOM_LIGHT_LAYER);
   scene.add(ceiling);
 
   const wallGeo = new THREE.PlaneGeometry(size, ROOM_HEIGHT);
   const north = new THREE.Mesh(wallGeo, wallMat);
   north.position.set(0, ROOM_HEIGHT / 2, -ROOM_HALF_SIZE);
+  north.layers.enable(ROOM_LIGHT_LAYER);
   scene.add(north);
   const south = new THREE.Mesh(wallGeo, wallMat);
   south.position.set(0, ROOM_HEIGHT / 2, ROOM_HALF_SIZE);
   south.rotation.y = Math.PI;
+  south.layers.enable(ROOM_LIGHT_LAYER);
   scene.add(south);
   const east = new THREE.Mesh(wallGeo, wallMat);
   east.position.set(ROOM_HALF_SIZE, ROOM_HEIGHT / 2, 0);
   east.rotation.y = -Math.PI / 2;
+  east.layers.enable(ROOM_LIGHT_LAYER);
   scene.add(east);
   const west = new THREE.Mesh(wallGeo, wallMat);
   west.position.set(-ROOM_HALF_SIZE, ROOM_HEIGHT / 2, 0);
   west.rotation.y = Math.PI / 2;
+  west.layers.enable(ROOM_LIGHT_LAYER);
   scene.add(west);
 
   // Faint floor grid, just enough to read depth/scale on an otherwise
@@ -238,6 +254,7 @@ function buildStudio(scene: THREE.Scene): void {
   gridMat.transparent = true;
   gridMat.opacity = 0.7;
   grid.position.y = 0.002; // avoid z-fighting with the floor plane
+  grid.layers.enable(ROOM_LIGHT_LAYER);
   scene.add(grid);
 
   // Lighting: fixed in world space (a small overhead-front rig, like a
@@ -259,11 +276,32 @@ function buildStudio(scene: THREE.Scene): void {
   // fill, don't fight MToon's own shading model) -- not independently
   // re-verified against a real render here either, for the same reason
   // Phase 7's wasn't: no GPU/browser in this sandbox. See
-  // docs/DECISIONS.md.
+  // docs/DECISIONS.md. These two stay on the default layer (0), so they
+  // keep lighting the character exactly as before -- untouched by the
+  // brightening below.
   const keyLight = new THREE.DirectionalLight(0xffffff, 0.55);
   keyLight.position.set(1.5, ROOM_HEIGHT * 0.9, 2.5);
   scene.add(keyLight);
   scene.add(new THREE.HemisphereLight(0xffffff, 0xf3f3f3, 0.5));
+
+  // Room-only brightening ("light the box up" -- the walls/floor above
+  // are specified near-white, 0xf5f5f7/0xefeff2, but at the intensities
+  // above (tuned down specifically to protect the character's MToon
+  // shading, see the comment just above) they were reading as flat
+  // medium gray in every screenshot so far rather than actually
+  // near-white. Simply turning the existing lights up would brighten the
+  // room but risks reintroducing exactly the "flat gray wash" character
+  // artifact those intensities were deliberately lowered to fix. Layers
+  // sidestep that tradeoff instead of trying to balance it: this light
+  // only affects objects explicitly enabled on ROOM_LIGHT_LAYER above
+  // (floor/walls/ceiling/grid) -- the character, added on the default
+  // layer only in boot(), is entirely unaffected by it. Untested
+  // visually, same as the rest of this function -- no GPU/browser in
+  // this sandbox -- but logically it can only brighten room geometry,
+  // never the character, regardless of how the intensity below is tuned.
+  const roomFillLight = new THREE.HemisphereLight(0xffffff, 0xe4e4e8, 0.9);
+  roomFillLight.layers.set(ROOM_LIGHT_LAYER);
+  scene.add(roomFillLight);
 }
 
 // A soft circular shadow decal that tracks the character's feet -- cheap
@@ -622,6 +660,41 @@ class CharacterController {
     return this.walkPhase !== "none";
   }
 
+  private debugPrevPos: THREE.Vector3 | null = null;
+
+  /** TEMPORARY diagnostic, not a permanent feature -- added specifically
+   * to chase the user's repeated "walks backward" report after the
+   * facing formula (see updateFacing()) was re-derived and checked twice
+   * with no error found. Compares `facing` (what updateFacing() computed
+   * and applied to vrm.scene.rotation.y) against the direction she
+   * *actually* moved this frame, independently computed straight from
+   * the raw position delta -- ground truth, untainted by any of this
+   * class's own bookkeeping (walkDir etc.), using the exact same
+   * atan2(-x,-z) convention updateFacing() uses, so a correctly-behaving
+   * frame reports two matching numbers. Null whenever she's not actually
+   * translating (nothing useful to compare yet). Remove this getter and
+   * its boot()-side readout once the actual bug is found -- see
+   * docs/DECISIONS.md.
+   */
+  get debugFacingTravelText(): string | null {
+    if (this.walkPhase !== "looping" && this.walkPhase !== "arriving") {
+      this.debugPrevPos = null;
+      return null;
+    }
+    const pos = this.vrm.scene.position;
+    if (!this.debugPrevPos) {
+      this.debugPrevPos = pos.clone();
+      return null;
+    }
+    const movedX = pos.x - this.debugPrevPos.x;
+    const movedZ = pos.z - this.debugPrevPos.z;
+    this.debugPrevPos.set(pos.x, pos.y, pos.z);
+    if (movedX * movedX + movedZ * movedZ < 1e-10) return null;
+    const facingDeg = ((this.facing * 180) / Math.PI).toFixed(0);
+    const travelDeg = ((Math.atan2(-movedX, -movedZ) * 180) / Math.PI).toFixed(0);
+    return `[debug] facing ${facingDeg}° · travel ${travelDeg}° (should match; ~180° apart = inverted; anything else = a different axis mixup)`;
+  }
+
   /** Registers a loaded gesture clip under `name` (one of
    * GESTURE_CLIP_FILES's keys) so playGesture(name) can trigger it
    * later. Call once per clip after boot()'s best-effort load loop. */
@@ -723,6 +796,18 @@ class CharacterController {
         if (target) this.beginWalkStart();
         break;
       case "starting":
+        // Turn toward the target during the wind-up too, not just once
+        // the loop starts -- found from a real screenshot report ("kinda
+        // awkward"): facing previously only updated in stepAlong(), never
+        // called during "starting", so if a new target landed in a very
+        // different direction from wherever she last faced, she'd play
+        // the whole wind-up still facing the old way and then visibly
+        // snap to the new facing right as the loop began. This only
+        // turns in place -- no translation during the wind-up, matching
+        // world-walk-start's own authored motion (see the WORLD_WALK_*
+        // comments above: no deplacement field for this clip, unlike the
+        // gaits, so zero net translation is the documented assumption).
+        if (target) this.updateFacing(this.directionTo(target), delta);
         this.walkPhaseTimer -= delta;
         if (this.walkPhaseTimer <= 0) this.enterWalkLoop();
         break;
@@ -748,27 +833,54 @@ class CharacterController {
     }
   }
 
-  private stepToward(target: THREE.Vector3, delta: number): void {
+  /** Direction from her current position to `target`, flattened to the
+   * XZ plane -- (0,0,-1) (whatever she's already facing has no bearing
+   * here) if she's already on top of it. Shared by stepToward() and the
+   * turn-in-place call during "starting" above so both compute the
+   * direction the exact same way. */
+  private directionTo(target: THREE.Vector3): THREE.Vector3 {
     const toTarget = new THREE.Vector3(
       target.x - this.vrm.scene.position.x,
       0,
       target.z - this.vrm.scene.position.z,
     );
-    const dist = toTarget.length();
-    if (dist < 0.001) return;
-    const dir = toTarget.normalize();
+    return toTarget.lengthSq() > 0.000001 ? toTarget.normalize() : this.walkDir.clone();
+  }
+
+  private stepToward(target: THREE.Vector3, delta: number): void {
+    const dir = this.directionTo(target);
     this.walkDir.copy(dir);
     this.stepAlong(dir, delta);
   }
 
-  private stepAlong(dir: THREE.Vector3, delta: number): void {
-    const step = this.walkSpeedMps * delta;
-    this.vrm.scene.position.x += dir.x * step;
-    this.vrm.scene.position.z += dir.z * step;
-    this.walkBoutDistanceM += step;
+  private updateFacing(dir: THREE.Vector3, delta: number): void {
     const targetFacing = Math.atan2(-dir.x, -dir.z);
     this.facing = lerpAngle(this.facing, targetFacing, Math.min(1, TURN_RATE_RAD_S * delta));
     this.vrm.scene.rotation.y = this.facing;
+  }
+
+  private stepAlong(dir: THREE.Vector3, delta: number): void {
+    const step = this.walkSpeedMps * delta;
+    const clamp = ROOM_HALF_SIZE - WALL_CLEARANCE_M;
+    // Real bug, found by re-reading the logic against the user's own
+    // "collides into walls" report, not guessed: the "arriving" phase
+    // above deliberately keeps walking for up to a full gait cycle past
+    // WanderController's own arrival point so the stop clip can start on
+    // the loop's seam (see WORLD_WALK_STOP_EXIT_PHASE_WINDOW_S) -- but a
+    // wander target can legally sit as close as WANDER_MARGIN_M (0.5m)
+    // from a wall, and that extra grace stride can cover up to roughly
+    // walkSpeedMps * WORLD_WALK_LOOP_DURATION_S (~1.4m) in the worst
+    // case. Nothing was stopping that extra distance from carrying her
+    // straight through a wall. This clamp is a second, unconditional
+    // layer -- independent of any phase-timing subtlety, present or
+    // future -- rather than trying to make the phase logic itself aware
+    // of room bounds (WanderController's own target-picking already
+    // stays clear of the walls; this only guards the *extra* distance
+    // the animation-phase system adds on top of that).
+    this.vrm.scene.position.x = Math.min(clamp, Math.max(-clamp, this.vrm.scene.position.x + dir.x * step));
+    this.vrm.scene.position.z = Math.min(clamp, Math.max(-clamp, this.vrm.scene.position.z + dir.z * step));
+    this.walkBoutDistanceM += step;
+    this.updateFacing(dir, delta);
   }
 
   private beginWalkStart(): void {
@@ -851,11 +963,10 @@ class CharacterController {
         const dir = toTarget.clone().normalize();
         speedFraction = Math.min(1, dist / FALLBACK_SLOWDOWN_RADIUS_M);
         const step = Math.min(dist, FALLBACK_WALK_SPEED_MPS * speedFraction * delta);
-        this.vrm.scene.position.x += dir.x * step;
-        this.vrm.scene.position.z += dir.z * step;
-        const targetFacing = Math.atan2(-dir.x, -dir.z);
-        this.facing = lerpAngle(this.facing, targetFacing, Math.min(1, TURN_RATE_RAD_S * delta));
-        this.vrm.scene.rotation.y = this.facing;
+        const clamp = ROOM_HALF_SIZE - WALL_CLEARANCE_M; // same defensive clamp as stepAlong() above -- this path eases to a stop on its own and doesn't have the "arriving" phase's overshoot risk, but there's no reason to leave it unguarded either
+        this.vrm.scene.position.x = Math.min(clamp, Math.max(-clamp, this.vrm.scene.position.x + dir.x * step));
+        this.vrm.scene.position.z = Math.min(clamp, Math.max(-clamp, this.vrm.scene.position.z + dir.z * step));
+        this.updateFacing(dir, delta);
       }
     }
     this.walker.update(delta, speedFraction);
@@ -1027,6 +1138,14 @@ async function boot(): Promise<void> {
   const canvas = document.getElementById("sandbox-canvas") as HTMLCanvasElement;
   const statusEl = document.getElementById("sandbox-status") as HTMLDivElement;
 
+  // TEMPORARY diagnostic element -- see CharacterController's
+  // debugFacingTravelText getter for what this shows and why. Remove
+  // both once the "walks backward" report is actually resolved.
+  const debugEl = document.createElement("div");
+  debugEl.style.cssText =
+    "position:fixed;left:8px;bottom:8px;font:11px monospace;color:#0f0;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;z-index:1000;";
+  document.body.appendChild(debugEl);
+
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -1157,6 +1276,9 @@ async function boot(): Promise<void> {
     hud.tick(delta);
     const target = wander.getTarget(delta, vrm.scene.position, hud.isTurnActive());
     character.update(delta, target, hud.isTurnActive());
+    const debugText = character.debugFacingTravelText;
+    debugEl.style.display = debugText ? "block" : "none";
+    if (debugText) debugEl.textContent = debugText;
     // Eligible only once everything else has had first say this frame:
     // not walking anywhere (target is null AND she's not still finishing
     // a stride/start/stop -- see CharacterController.isWalking), not

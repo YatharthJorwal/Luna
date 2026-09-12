@@ -2214,3 +2214,228 @@ samey, whether the emotion swap's timing (0.3s hold) feels too abrupt
 compared to the old 1.4s, and whether `normalizedRestPose.hips` actually
 returns a sane value for this specific VRM model are all pending a real
 look on the user's machine.
+
+## Round 6: wall clipping, "kinda awkward," and a walk-direction diagnostic
+
+First real on-machine run of round 5 surfaced three more reports:
+walking still looked wrong ("she still walks like this," a screenshot of
+mid-stride), she now collides through walls, and the whole thing reads
+"kinda awkward." Two of these had a real, provable cause found by
+re-reading the round-5 logic; the third did not, after real effort, and
+is handled differently below rather than papered over with another
+guess.
+
+**Wall clipping -- a real, provable bug in round 5's own design, not
+anything the walk-cycle pack did wrong.** The "arriving" phase
+deliberately keeps walking for up to a full gait cycle past
+`WanderController`'s own arrival point, so the stop clip can start
+exactly on `world-walk`'s seam (see round 5's phase-contract writeup
+above). But a wander target can legally sit as close as
+`WANDER_MARGIN_M` (0.5m) from a wall, and that grace stride can cover up
+to roughly `walkSpeedMps * WORLD_WALK_LOOP_DURATION_S` (~1.4m) in the
+worst case -- nothing was stopping that extra distance from carrying her
+straight through a wall. Fixed with a second, unconditional layer rather
+than trying to make the phase-timing logic itself aware of room bounds:
+`stepAlong()` (used by both the real-walk and fallback paths) now hard-
+clamps her position to stay `WALL_CLEARANCE_M` (0.3m) inside
+`ROOM_HALF_SIZE`, regardless of any animation-timing subtlety, present or
+future.
+
+**"Kinda awkward" -- one concrete, defensible cause found, applied; one
+suspected but not applied.** Found: facing only ever updated inside
+`stepAlong()`, which is never called during the "starting" wind-up phase
+-- so if a new wander target landed in a very different direction from
+wherever she last faced, she'd play the whole 0.4s wind-up still facing
+the old way and then visibly snap to the new facing the instant the loop
+began. Fixed by turning toward the target during "starting" too (in
+place, no translation, matching `world-walk-start`'s own documented zero
+net translation). Suspected but genuinely just a judgment call, not a
+bug: `TURN_RATE_RAD_S` was 10 (a ~0.3s full about-face, functionally
+instant) -- fine next to the old crude procedural sway, but a real
+authored walk cycle makes an instant snap-turn read as more jarring by
+contrast. Turned down to 4 (~0.8s for a full about-face). Flagged
+explicitly as a reasoned guess, not a measurement, since there's no way
+to confirm the "why" here (only the wall-clipping math is provable) --
+if it now reads as too slow/sluggish instead, that's the number to
+revisit.
+
+**"Still walks backward" -- re-derived the facing math twice, found
+nothing, shipped a diagnostic instead of a third guess.** The
+`atan2(-dir.x, -dir.z)` facing formula has been unchanged since before
+round 3 (this predates every round in this doc). Re-derived by hand
+against three.js's actual Y-axis rotation matrix convention, twice, on
+the assumption that `VRMUtils.rotateVRM0()` leaves local forward at -Z
+(the three.js/VRM1 convention) -- both derivations land on the same
+formula already in the code, so no error was found in *this* codebase's
+own math through static analysis alone. Rather than ship a fourth guess
+with no better basis than the last three, `CharacterController` gained a
+temporary `debugFacingTravelText` getter: it compares `facing` (what the
+formula computed and actually applied) against the direction she
+*literally* moved that frame, computed independently straight from the
+raw position delta using the exact same `atan2` convention -- so a
+correctly-behaving frame reports two matching numbers, a facing-inversion
+bug reports numbers ~180° apart, and anything else (e.g. ~90° apart)
+points at a different axis mixup entirely. Rendered as a small on-screen
+readout (bottom-left, green monospace, clearly labeled `[debug]`) only
+while she's actually translating. **This is deliberately temporary** --
+remove the getter and its boot()-side readout once the actual numbers
+are back and the real bug (if any is left after this) is found.
+
+**"Light the box up."** The walls/floor are specified near-white
+(`0xf5f5f7`/`0xefeff2`) but were reading as flat medium gray in every
+screenshot so far -- the key light and hemisphere light's intensities
+were deliberately turned down in round 2 specifically to stop MToon's
+toon-shading from washing out the jacket into a flat gray sheen (see
+that entry). Simply turning those same lights back up would brighten the
+room but risks reintroducing exactly that character artifact. Used
+three.js layers instead of fighting that tradeoff: a new
+`ROOM_LIGHT_LAYER` is enabled on the floor/walls/ceiling/grid only (never
+on the character, added separately on the default layer in `boot()`),
+and a new, brighter `HemisphereLight` is scoped to only that layer
+(`light.layers.set(...)`) -- so it can only ever brighten room geometry,
+never the character, regardless of how its own intensity is tuned later.
+Untested visually like everything else in this entry, but logically
+sound regardless: the layer scoping is what makes it safe, not the
+specific intensity chosen.
+
+**Orchestrator not resetting on Ctrl+C ("orchestrator.log showed old
+data").** Real, diagnosable bug, not a guess: the user's own terminal
+log shows `cargo run`'s `luna.exe` dying with
+`STATUS_CONTROL_C_EXIT` on Ctrl+C -- Windows' raw console Ctrl+C signal
+tears down the Tauri parent process directly, *before* any of Tauri's
+own event handlers run. `graceful_shutdown_then_kill()` in
+`src-tauri/src/lib.rs` (see this doc's Phase-3 entry on it) only ever
+fires from a tray-Quit click or a window-close event -- neither of which
+a terminal Ctrl+C is. The orchestrator child process spawned underneath
+is left running, orphaned, still bound to port 8765, with whatever
+history it already had -- so the next launch either fails to bind the
+port, or -- what actually happened -- silently succeeds while the
+frontend keeps talking to the same stale orphan the entire time. Also
+separately confirmed from the user's own log: `npm run sandbox` never
+started the orchestrator at all (`vite --open /sandbox.html`, nothing
+else) -- so testing sandbox-only, before ever running `tauri dev`,
+predictably found no orchestrator running and a stale log file.
+
+Fixed at the orchestrator level rather than the Rust/Windows level --
+reliably intercepting a raw console Ctrl+C (as opposed to a window/tray
+event) is real, fiddly, hard-to-verify-without-a-Windows-machine
+territory, unlike everything else in `lib.rs` (which was at least
+checkable against Tauri's own documented event model). A PID-file
+takeover in `orchestrator/app.py`'s `__main__` block is portable and
+actually testable without any of that: on every start, it checks
+`logs/orchestrator.pid` for a still-alive PID left over from a previous
+run and kills it first (`taskkill /PID ... /F` on Windows,
+`os.kill(..., SIGTERM)` elsewhere) before writing its own PID and
+binding the port -- so a fresh `python app.py` always ends up as the
+sole orchestrator, however it's launched (Tauri's child spawn, a manual
+terminal, or the new sandbox launcher below) and however the previous
+one died. **Actually verified in this sandbox**, not just read for
+syntax: simulated a stale orphaned process (a real backgrounded Python
+process with its own PID file), ran the takeover function against it,
+and confirmed the stale process was actually killed and the PID file
+correctly updated -- this is the one piece of this whole entry that's
+more than "logically sound but unverified."
+
+Separately, `scripts/dev-sandbox.mjs` (new) plus `package.json`'s
+`sandbox` script now spawning it instead of bare `vite --open
+/sandbox.html`: launches vite and the orchestrator together, tears both
+down on Ctrl+C or if either exits on its own, so sandbox-only testing no
+longer needs a manually-run third terminal. Actually run in this
+sandbox too (not just read): started it, confirmed vite came up,
+confirmed the venv-not-found warning prints and vite still starts anyway
+when there's no orchestrator venv (this sandbox's own state), sent it a
+real SIGINT, and confirmed with `pgrep` afterward that nothing was left
+running. GPT-SoVITS is deliberately not spawned by this script -- it's
+already a separate, heavier server `lib.rs` starts once for the whole
+app, and `tts.py` already falls back to pyttsx3 automatically if it's
+unreachable, so sandbox-only testing works without it, just with a
+lower-quality voice.
+
+**Verified in this sandbox:** `tsc --noEmit` clean; shell + standalone
+`sandbox.html` builds both clean; the pidfile takeover was actually
+exercised against a simulated stale process, not just read; the sandbox
+launcher was actually run and SIGINT-tested, not just read. **Not
+verified:** the wall-clamp and turn-rate/facing-during-start changes are
+logically sound (the same "no GPU/browser" caveat as ever), but whether
+they're the *whole* story behind "kinda awkward" isn't something static
+analysis can settle -- and the persistent facing/direction complaint is
+explicitly unresolved pending the debug readout's actual numbers from a
+real run.
+
+## Round 7 (planning only, full apartment) — renumbered from a parallel session
+
+The user ran a separate planning conversation in parallel with this
+one's round 5 build work, against the same round-4 base -- both
+sessions independently landed on "round 5" for unrelated things (that
+session never touched any code, purely `docs/ROADMAP.md`/
+`docs/DECISIONS.md`). Reconciled here by keeping round 5 as this
+session's already-shipped VRMA pack work and renumbering the apartment
+planning to round 7, after this doc's own round 6 (immediately above).
+The content below is that other session's planning work, carried over
+as-is aside from the renumbering and this note -- nothing in it has been
+independently re-verified by this session.
+
+Planning-only entry (see `docs/ROADMAP.md`'s round-7 note) covering two
+decisions made before any of this is built.
+
+**Room geometry: CC0 asset-pack assembly, not hand-modeled in
+Blender.** The user is a Blender layman and asked whether this sandbox
+could just "build one" via a Blender connector -- checked the MCP
+registry, no real Blender connector exists (only unrelated matches like
+Render/BioRender came back). Even if one did, freehand modeling and
+lighting a five-room apartment is a visual-iteration task -- you place
+something, look at the render, adjust, repeat -- and this sandbox has no
+GPU/browser to render-check against, the same "not verified visually"
+caveat that already applies to every rendering change in this doc, just
+sharper here because there'd be *nothing* to compare a first attempt
+against. Assembling pre-made low-poly furniture (Kenney-style CC0 packs)
+into the room layouts sidesteps that: the modeling and material/lighting
+judgment is already done by the pack's artist, the remaining work is
+arrangement, which is far more tolerant of being done blind and easy for
+the user to eyeball-correct on their own machine afterward. Explicitly
+not reproducing MiSide's actual room/assets -- the reference image is a
+ChatGPT-generated moodboard, not an extractable asset, and the user
+flagged it as inspiration only, not a source to copy.
+
+**Why first-person camera isn't how she "knows" the room.** A camera
+parented to a head bone is cheap in three.js and worth having as a
+spectator/debug view, but it was *not* picked as the channel her
+situational awareness runs through, for two reasons. First, cost/latency:
+even though `qwen3.5:9b` is natively multimodal (`docs/MODELS.md`),
+feeding it a rendered frame on every turn means a vision call in the hot
+path of every response, on hardware already tight on VRAM
+(`docs/MODELS.md`'s GPU/VRAM section). Second, reliability: a 9B model's
+spatial/geometric reasoning from a single 2D frame is shallow --
+fine for "there's a couch in view," not trustworthy for "which anchor
+point is she closest to" or path-planning, which need to stay
+deterministic app code (the navmesh/anchor system in the round-7 plan),
+not something inferred from a picture. Decision: a small structured
+text scene-state block (current room, current anchor/activity) pushed
+into `persona.py`'s context is the primary awareness path -- same
+"cheap deterministic app state over an LLM call" reasoning already used
+for cursor reactions and the driver/observer surface handoff. Occasional
+vision calls stay available for later, non-blocking uses (e.g.
+Task Guide Mode's screenshot checks), just not as the default way she
+finds out where she is.
+
+**Also worth flagging while this was being planned: `qwen3.5:9b`'s
+actual limits**, since the user asked directly. It's a 9B model at
+Q4_K_M (~6.6GB VRAM per `docs/MODELS.md`) sharing a 12GB card with
+GPT-SoVITS and, during Task Guide Mode, whatever game is running --
+there's a real ceiling on how much can be kept loaded and resident at
+once, not just a context-length number. Context budget itself is also
+already partially spent before any scene-state addition:
+`orchestrator/config.yaml`'s `num_history_turns` caps how many past
+turns ride along, and the persona prompt, memory recall, and (now)
+scene-state all compete for the same window. It's a hybrid-thinking
+model with its reasoning phase deliberately forced off
+(`llm.think: false`, see this doc's earlier `think`-flag entry) because
+the plain OpenAI-compatible endpoint couldn't be trusted to suppress it
+reliably. None of this blocks the room-state plan -- the text
+scene-state block is small and cheap -- but it's the reason precise
+spatial math (navmesh containment, anchor selection, path-planning)
+should stay in deterministic app code rather than being handed to the
+model to reason about, same principle as the trivial cursor-event
+handling from Phase 0/M2.
+
+**Verified:** none of this -- planning-only entry, nothing built yet.

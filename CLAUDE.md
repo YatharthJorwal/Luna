@@ -59,10 +59,26 @@ measured-speed, phase-locked walk cycle (replacing the earlier
 guessed-constant approach), five-variant idle + idle-talking loops, and
 `happy`/`sad`/`angry`/`relaxed` emotion gestures. The user's own
 `Surprised`/`Clapping`/`Goodbye`/`Jump`/`LookAround`/`Sleepy`/`Thinking`
-clips fill the roles the pack doesn't cover. Not yet sandbox-verified
-visually (no GPU/browser here) and not ported to the desktop shell
-(`main.ts` has no `AnimationMixer` yet). Full writeup, including what
-was explicitly deferred, in `docs/DECISIONS.md`'s "go big" entry.
+clips fill the roles the pack doesn't cover. Not ported to the desktop
+shell (`main.ts` has no `AnimationMixer` yet).
+**Round 6 (first real bug reports):** wall clipping (fixed, hard
+position clamp) and one facing bug during the walk-start wind-up (fixed)
+came from actual on-machine testing. A persisting "walks backward"
+complaint did NOT get another guess this round — the facing formula was
+re-derived twice with no error found, so `CharacterController` now has a
+temporary on-screen diagnostic (`debugFacingTravelText`) comparing
+computed facing against her actual per-frame travel direction; the next
+step is reading those numbers off a real run, not more speculation.
+Also fixed: the orchestrator not resetting on Ctrl+C (PID-file takeover
+in `app.py`, actually tested against a simulated stale process) and
+`npm run sandbox` never starting the orchestrator at all (new
+`scripts/dev-sandbox.mjs`, actually run and SIGINT-tested).
+**Round 7 is planning-only** (a separate, parallel conversation's work,
+reconciled/renumbered into these docs) — a full multi-room apartment via
+CC0 asset-pack furniture, a per-room navmesh, named sit/cook/read
+anchors, and a text scene-state channel to `persona.py` rather than a
+first-person camera feed. Nothing in round 7 is built yet.
+Full writeup for both rounds in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map
