@@ -372,6 +372,12 @@ body {
   box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
   -webkit-app-region: no-drag;
   overflow: hidden;
+  /* body's user-select: none (needed so dragging the window doesn't
+     highlight text everywhere) would otherwise make every line in here
+     unselectable too -- explicitly opted back in since the whole point
+     of this panel is being able to copy a conversation out of it. */
+  user-select: text;
+  -webkit-user-select: text;
 }
 
 #log-panel[hidden] {

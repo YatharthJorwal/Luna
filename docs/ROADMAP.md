@@ -198,18 +198,35 @@ awaiting on-machine confirmation · ⬜ not started)
   fallback are both completely unaffected by any of this (regression
   check against Phase 2/9's existing behavior).
 
+  **First real-world test (on the user's actual machine): tools are not
+  being called at all.** Asked directly to look at the screen or read
+  the clipboard, she replies in character instead -- deflecting,
+  demanding the user paste/show it themselves -- rather than invoking
+  either tool. Root cause not yet known; **diagnostic logging added** to
+  `llm.stream_reply_with_tools()` (one line per call to the orchestrator's
+  own terminal: which tools were offered, whether Ollama's response ever
+  included a `tool_calls` key at all, and whether a call was actually
+  parsed out of it) specifically to distinguish the real candidates:
+  Ollama not emitting `tool_calls` through the streaming endpoint for
+  this model at all (the risk flagged below when this was first built),
+  a bug in how the request/response is being handled, or the model
+  choosing not to call the tool even though it's offered one (a
+  persona/prompt-competition issue rather than a wiring one). Awaiting
+  the user's actual terminal output from a retry to tell which.
+
   **Not verified, real unknowns until tested on the user's machine:**
   whether Ollama actually emits `tool_calls` reliably through its
-  *streaming* endpoint for `qwen3.5:9b` specifically (this has never
-  talked to a real Ollama instance at all) -- `llm.py`'s own docstrings
-  flag the fallback plan (a non-streaming detect-then-stream shape) if
-  the streaming path doesn't hold up in practice; whether
-  `PIL.ImageGrab.grab()` and `pyperclip.paste()` behave as expected on
-  the user's real Windows machine/multi-monitor setup (this sandbox has
-  no display at all); and whether `qwen3.5:9b` actually reaches for
-  these tools sensibly rather than over- or under-calling them --
-  tuning that is real Round 2/3 territory once there's actual usage to
-  react to.
+  *streaming* endpoint for `qwen3.5:9b` specifically -- **now actively
+  under investigation, see just above**, rather than a purely
+  theoretical risk; `llm.py`'s own docstrings flag the fallback plan (a
+  non-streaming detect-then-stream shape) if the streaming path doesn't
+  hold up in practice; whether `PIL.ImageGrab.grab()` and
+  `pyperclip.paste()` behave as expected on the user's real Windows
+  machine/multi-monitor setup (this sandbox has no display at all); and
+  whether `qwen3.5:9b` actually reaches for these tools sensibly rather
+  than over- or under-calling them -- tuning that is real Round 2/3
+  territory once there's actual usage to react to (moot until the
+  tools fire at all).
 
   **Not built yet (later rounds):** `ocr_region` (explicitly a fallback
   for imprecise VLM OCR per `docs/ARCHITECTURE.md`, not needed for the
@@ -352,7 +369,14 @@ awaiting on-machine confirmation · ⬜ not started)
   `_run_turn`, with no corresponding user turn to pair against in the
   requested `user: / assistant:` shape); no export/search over the log
   beyond scrolling it; no pagination (unlikely to matter soon for a
-  single-user local app, per store.py's own reasoning).
+  single-user local app, per store.py's own reasoning). **Confirmed
+  working by the user on their real machine** (reskin, log panel, and
+  persistence across a restart all checked). **One real bug found on
+  first use and fixed:** the log's text wasn't actually selectable/
+  copy-pasteable -- `body`'s global `user-select: none` (needed so
+  dragging the window doesn't highlight text everywhere) applied to
+  `#log-panel` too, with no override. Fixed with a `user-select: text`
+  rule scoped to just that panel.
 - 🔶 **Phase 10 — Environments.** Two of the three requested (VR explicitly
   scoped out by the user themselves as currently unachievable): (1) desktop
   companion mode — draggable corner presence, reacting to cursor

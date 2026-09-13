@@ -26,6 +26,7 @@ unchanged.
 from __future__ import annotations
 
 import json
+import sys
 from typing import Any, AsyncIterator
 
 import httpx
@@ -109,6 +110,20 @@ async def stream_reply_with_tools(
     if CONFIG.llm.think is not None:
         payload["think"] = CONFIG.llm.think
 
+    # Debug visibility while this is still unverified against a real
+    # server (see this function's own docstring) -- one line per call,
+    # not per chunk, so cheap enough to leave in rather than strip out
+    # once this is confirmed working. Directly answers the question "did
+    # Ollama even attempt this" the next time she doesn't use a tool she
+    # should have -- print(s) go to the orchestrator's own terminal, not
+    # anywhere the user would see them mid-conversation.
+    tool_names = [
+        t["function"]["name"]
+        for t in tools
+        if isinstance(t, dict) and isinstance(t.get("function"), dict)
+    ]
+    saw_tool_calls_key = False
+    saw_any_content = False
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as client:
             async with client.stream("POST", url, json=payload) as response:
@@ -126,17 +141,31 @@ async def stream_reply_with_tools(
                         continue
                     message = chunk.get("message")
                     if isinstance(message, dict):
+                        if "tool_calls" in message:
+                            saw_tool_calls_key = True
                         calls = _normalize_tool_calls(message.get("tool_calls"))
                         if calls:
+                            print(
+                                f"[luna] tool-calling: model called "
+                                f"{[c['name'] for c in calls]}",
+                                file=sys.stderr,
+                            )
                             yield {"type": "tool_calls", "calls": calls}
                             return
                         content = message.get("content") or ""
                         if content:
+                            saw_any_content = True
                             yield {"type": "content", "text": content}
                     if chunk.get("done"):
                         break
     except httpx.RequestError as exc:
         raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
+    print(
+        f"[luna] tool-calling: offered {tool_names}, replied directly "
+        f"(saw_content={saw_any_content}, "
+        f"'tool_calls' key ever present={saw_tool_calls_key})",
+        file=sys.stderr,
+    )
 
 
 def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
