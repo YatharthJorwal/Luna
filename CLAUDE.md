@@ -85,7 +85,17 @@ in `app.py`, actually tested against a simulated stale process) and
 reconciled/renumbered into these docs) — a full multi-room apartment via
 CC0 asset-pack furniture, a per-room navmesh, named sit/cook/read
 anchors, and a text scene-state channel to `persona.py` rather than a
-first-person camera feed. Nothing in round 7 is built yet.
+first-person camera feed. Nothing in round 7 is built yet. **Round 6 is now confirmed closed by
+the user** (walks properly, idles, does basic gestures, no wall
+clipping — "a great start"); richer animation variety is deferred
+until custom animation packs are purchased, and round 7 is paused for
+the same reason. Next priority, picked over the apartment build for
+now: **Phase 4** (on-demand screen vision + OCR + Task Guide Mode) —
+see `docs/ROADMAP.md`'s "Shell-polish vs. apartment-build" section for
+the full reasoning, plus a flagged open question about whether a
+"cursor via Playwright" idea means real input control (conflicts with
+this doc's observe-and-advise-only constraint above) or just an
+on-screen pointer indicator.
 Full writeup for both rounds in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 

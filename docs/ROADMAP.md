@@ -364,6 +364,14 @@ awaiting on-machine confirmation · ⬜ not started)
   diagnostics (`debugFacingTravelText`, `debugFootTraceText`,
   `debugHipsWorldFacingText`) and their on-screen readouts have been
   removed; `directionToFacingAngle()` (the actual fix) stays.
+  **Round 6 closed.** The user confirmed on-machine that the remaining
+  round-6 tuning (wall clamp, walk-start facing, turn rate, idle-variety
+  gestures) all read correctly in motion on top of the already-resolved
+  direction fix — she walks properly, idles occasionally, does basic
+  gestures, and doesn't clip through walls. Called "a great start."
+  Richer animation variety (more gesture types, refined gait) is
+  explicitly deferred until the user sources additional custom
+  animation packs — not a bug backlog, just paused pending assets.
   **Round 7 (planning only, full apartment) — not built yet, renumbered
   from a parallel session.** The user ran a separate planning
   conversation in parallel with this session's round-5 build work, off
@@ -410,6 +418,79 @@ awaiting on-machine confirmation · ⬜ not started)
   channel her situational awareness runs through — see
   `docs/DECISIONS.md`'s round-7 entry for why text scene-state was
   picked over feeding her rendered frames.
+  **Paused, not cancelled**, for the same reason round 6's extra
+  animation variety is paused: step 3 above (sit/cook/read poses) needs
+  animation clips the user is deferring buying. See "Shell-polish vs.
+  apartment-build" below for the full reasoning and the room-vs-
+  interactions split this suggests if the user wants to make partial
+  progress here without waiting on that purchase.
+
+## Shell-polish vs. apartment-build (current planning discussion)
+
+With round 6 closed, two directions were on the table for what comes
+next, and neither is a small ask.
+
+**Option A — the apartment build (round 7 above).** A MiSide-style
+multi-room apartment with real object interaction (sit, cook, read,
+sleep, bathe, watch TV, play games). The user has SweetHome3D
+installed but found it hard to use solo as a 3D-modeling beginner —
+open to Claude building the room geometry step-by-step instead, with
+the user verifying texture/color/atmosphere choices by eye each round
+(the usual "not verified — no GPU/browser here" caveat applies to
+every visual call made this way, same as every rendering phase before
+this one). The real blocker, already flagged in the round-7 planning
+note above: the *interaction* half of this (sit/cook/read/sleep/bathe/
+play/watch-TV poses) needs bespoke animation clips the user doesn't
+have yet and is deferring purchasing for now. The room-geometry half
+doesn't strictly need those clips — she could walk and idle in a
+nicer room today — but a room full of furniture she can't actually use
+is a smaller win than it sounds, and risks real asset-sourcing/
+placement effort now for a payoff (the interactions) that's blocked on
+a future purchase.
+
+**Option B — shell polish**, several independent pieces of different
+size and risk:
+- UI overhaul (Phase 9 above) — pastel/waifu-themed chatbox, replacing
+  the current utilitarian HUD. Pure HTML/CSS, no protocol changes,
+  lowest-risk item on this list, already scoped as its own
+  independent phase before this discussion.
+- A "hide" toggle for the desktop shell (distinct from the sandbox) —
+  minimize/restore without fully quitting, for real (non-sandbox)
+  localhost runs. Small and contained: Tauri window-visibility +
+  tray-menu work, similar in size to the launcher rework already done
+  in Phase 2.5.
+- On-demand screen vision + OCR, with an explicit on/off toggle rather
+  than an always-on stream — this *is* Phase 4 above (`capture_screen`
+  + `read_clipboard` + OCR fallback + tool-calling loop), not a new
+  idea: the on/off framing the user asked for (so it doesn't run
+  forever and eat RAM) is exactly what this doc's "explicitly out of
+  scope" section already commits to ("no continuous/always-on camera
+  or screen streaming into context"). This is also the direction the
+  flagship Task Guide Mode behavior depends on (`CLAUDE.md`) — building
+  it moves the project toward its own stated centerpiece feature, not
+  just a nice-to-have.
+- Giving her a cursor via Playwright — flagged, not started. Taken
+  literally (Luna moving the mouse / executing actions herself), this
+  runs directly against `CLAUDE.md`'s own non-negotiable framing: she
+  never touches the mouse/keyboard or executes anything herself,
+  observe-and-advise only. Building real input control would be
+  reversing a constraint the user set for the project themselves, not
+  just adding a feature on top of it — worth an explicit confirm before
+  any code gets written. (A cursor/highlight *indicator* drawn on top
+  of the screen — showing where she means without actually moving
+  anything — would fit the existing constraint and might be what was
+  actually meant.)
+
+**Current recommendation:** Phase 4 (vision + OCR + Task Guide Mode)
+first — it's both the smallest step toward the project's own stated
+flagship behavior, and the one item on the shell-polish list that
+isn't pure polish. Phase 9's UI overhaul and the shell hide toggle are
+good lower-risk companions that can slot in before, after, or
+alongside it. The apartment build (Option A) stays parked until the
+animation-pack question resolves; if the user wants partial progress
+meanwhile, splitting out just the room-geometry half (SweetHome3D
+layout → export → load into the existing sandbox, no new interaction
+poses yet) is possible without waiting on that purchase.
 
 ## Open decisions
 
@@ -424,18 +505,26 @@ Resolved:
   to it are on the user to confirm — not something this doc can verify.
 - STT: in scope after all, via faster-whisper (Phase 2.5) — see the scope
   section above.
+- Round 6 tuning (wall clamp, turn rate, walk-start facing, idle-variety
+  gestures): confirmed reading correctly in motion on the user's
+  machine — round 6 is closed. See the round-6-closed entry above.
+- What comes next: Phase 4 (vision + OCR + Task Guide Mode) picked over
+  the apartment build for now — see "Shell-polish vs. apartment-build"
+  above.
 
 Still open:
 - Task Guide Mode tuning: screenshot interval while a task is active, and how
   aggressive the nagging should be (fixed, or a tone dial the user can turn
   down when they're not in the mood to be chided).
 - Live2D model source for anything beyond local prototyping (free sample vs.
-  purchased vs. commissioned) and its license terms.
-- Full-apartment room build (Phase 10 round 7): asset pack source/license
-  for the furniture, per-room navmesh authoring, and the sit/cook/read
-  animation clips — none of this is built yet, see the round-7 planning
-  note above.
-- Round 6's remaining open item: whether the wall-clamp/turn-rate/
-  facing-during-start changes actually read as fixed on the user's
-  machine (the facing/direction bug itself is resolved — see the round-6
-  entry above and `docs/DECISIONS.md`).
+  purchased vs. commissioned) and its license terms. (Largely moot since the
+  Phase 7 VRM migration, kept here for the record.)
+- Full-apartment room build (Phase 10 round 7): paused, not cancelled,
+  pending the user sourcing sit/cook/read/sleep/bathe/watch-TV/play-game
+  animation clips — see "Shell-polish vs. apartment-build" above.
+- Shell hide/minimize toggle for real (non-sandbox) localhost runs: not
+  built yet.
+- Cursor via Playwright: not built — needs the user to confirm whether
+  this means real mouse/input control (which would reverse `CLAUDE.md`'s
+  observe-and-advise-only constraint) or an on-screen pointer/highlight
+  indicator only (which wouldn't).

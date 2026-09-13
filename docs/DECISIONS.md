@@ -2641,3 +2641,33 @@ out.
 **Confirmed on the user's real machine:** she walks forward now. This
 entry closes out the "walks backward"/"moonwalk" saga that ran across
 rounds 4-6.
+
+## Round 6 closed; apartment build paused; Phase 4 picked as next priority
+
+The user confirmed on-machine that round 6's remaining tuning (wall
+clamp, walk-start facing, turn rate, idle-variety gestures) all read
+correctly in motion, on top of the already-resolved walk-direction
+fix — round 6 is fully closed. Round 7 (the full apartment) is paused,
+not cancelled: the interaction half (sit/cook/read/sleep/bathe/
+watch-TV/play-game poses) needs animation clips the user is deferring
+buying, and doing just the room-geometry half now would front-load
+real asset-sourcing/placement effort for a payoff that's blocked on
+that future purchase. Full reasoning, and the shell-polish alternative
+that was weighed against it (UI theme, shell hide toggle, on-demand
+vision+OCR), is in `docs/ROADMAP.md`'s "Shell-polish vs.
+apartment-build" section.
+
+One item from that discussion is flagged rather than adopted outright:
+giving Luna a Playwright-driven cursor to actually operate the mouse
+would reverse `CLAUDE.md`'s own non-negotiable "observe-and-advise
+only" constraint, not just add a feature on top of it. Not built,
+pending explicit confirmation that real input control is actually the
+intent — versus a non-interactive on-screen pointer/highlight, which
+wouldn't touch that constraint at all and could be built either way.
+
+**Decision:** Phase 4 (vision tools + Task Guide Mode) picked as the
+next build — it's the one item on the shell-polish list that isn't
+pure polish, and it's the project's own stated flagship behavior
+(`CLAUDE.md`), not started at all yet. Phase 9 (UI overhaul) and the
+shell hide toggle are smaller and lower-risk, and can go before or
+alongside it.
