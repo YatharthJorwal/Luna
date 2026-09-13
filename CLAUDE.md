@@ -6,8 +6,12 @@ screen/camera vision. She's less a chatbot and more **a guide who lives on
 the PC** — tell her what you're trying to do, she gives you the next
 concrete step, and keeps half an eye on the screen while that task is
 active to nudge you back if you wander off (Task Guide Mode — the flagship
-behavior, see `docs/ARCHITECTURE.md`). She never touches the mouse/keyboard
-or executes anything herself: observe-and-advise only.
+behavior, see `docs/ARCHITECTURE.md`). Observe-and-advise only by default
+(Conversation Mode); an explicit, gated **Work Mode** (shell only, Phase 11
+in `docs/ROADMAP.md`) lets her act too — e.g. drive a browser via
+Playwright for real tasks. This reverses this doc's original framing,
+deliberately, per the user (`docs/DECISIONS.md`). The sandbox/companion
+room stays observe-only regardless of mode.
 
 **Non-negotiable constraint: 100% local.** No cloud LLM calls, no cloud TTS,
 no telemetry. Everything — inference, voice, memory — runs on the user's own
@@ -89,13 +93,12 @@ first-person camera feed. Nothing in round 7 is built yet. **Round 6 is now conf
 the user** (walks properly, idles, does basic gestures, no wall
 clipping — "a great start"); richer animation variety is deferred
 until custom animation packs are purchased, and round 7 is paused for
-the same reason. Next priority, picked over the apartment build for
-now: **Phase 4** (on-demand screen vision + OCR + Task Guide Mode) —
-see `docs/ROADMAP.md`'s "Shell-polish vs. apartment-build" section for
-the full reasoning, plus a flagged open question about whether a
-"cursor via Playwright" idea means real input control (conflicts with
-this doc's observe-and-advise-only constraint above) or just an
-on-screen pointer indicator.
+the same reason. Sequencing decided for what comes next: **Phase 9
+(UI) → Phase 4 (vision/OCR) → Phase 11 (Work Mode / agentic tool
+harness)**. The "cursor via Playwright" question from last round is
+resolved — real action, deliberately reversing the observe-and-advise
+constraint above, scoped to browser automation, gated behind Work
+Mode, shell-only. Full spec: `docs/ROADMAP.md`'s Phase 11 entry.
 Full writeup for both rounds in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
@@ -127,6 +130,9 @@ Full phase-by-phase status: `docs/ROADMAP.md`.
   belongs in the orchestrator, not the shell.
 - Camera access always goes through the explicit permission + indicator path
   in `docs/ARCHITECTURE.md` — don't add a silent/continuous capture mode.
+- Tool availability is mode-gated (Conversation Mode vs. Work Mode) and
+  shell-only, per Phase 11 (`docs/ROADMAP.md`) — the sandbox/companion room
+  never gets tool-calling, OCR, or browser/cursor control, by design.
 - Prefer editing/extending an existing tool over adding a new overlapping one.
 - When a fix or design choice isn't obvious from the diff alone, add it to
   `docs/DECISIONS.md` in the same change, not as an afterthought.

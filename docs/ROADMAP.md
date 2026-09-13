@@ -18,6 +18,11 @@
   character — when the user has drifted off-task, until the task is finished
   or the user explicitly says to drop it. The flagship behavior, not a side
   feature — full spec in `docs/ARCHITECTURE.md`.
+- **Work Mode** (shell only, explicit toggle, off by default — Phase 11):
+  a gated agentic tool harness that can act, not just advise — Playwright
+  browser automation, plus the vision tools below. Reverses the
+  "observe and advise, not act" line further down this list, deliberately,
+  well after that line was first written — see `docs/DECISIONS.md`.
 - Persistent memory that survives app restarts (not just session/context memory).
 - Vision tools, invoked on demand by the model, not a continuous stream:
   screen capture, clipboard read, OCR fallback, camera capture.
@@ -33,8 +38,11 @@
 - No cloud fallback mode.
 - No elaborate avatar customization, marketplace, monetization, or multi-character
   support. One character, done well.
-- No auto-playing games or taking control of input devices — she can *see* and
-  *advise*, not act on the user's behalf.
+- No auto-playing games. Taking control of input devices is otherwise no
+  longer categorically out of scope — see Work Mode above and Phase 11 —
+  but it's narrow (Playwright browser automation, not general OS input),
+  gated behind an explicit toggle, and shell-only; the sandbox/companion
+  room stays observe-only with no exceptions.
 - Live2D model asset itself is **not something Claude generates** — needs to
   be sourced (free sample for prototyping, purchased, or commissioned) and
   licensed properly by the user.
@@ -424,8 +432,84 @@ awaiting on-machine confirmation · ⬜ not started)
   apartment-build" below for the full reasoning and the room-vs-
   interactions split this suggests if the user wants to make partial
   progress here without waiting on that purchase.
+- ⬜ **Phase 11 — Agentic tool harness (Work Mode).** The single biggest
+  scope change in this project's history: reverses the original
+  "observe-and-advise only, never touches the mouse/keyboard" stance
+  from `docs/ARCHITECTURE.md`'s Task Guide Mode spec and the
+  "explicitly out of scope" list above — a decision the user made
+  deliberately, not an oversight (`docs/DECISIONS.md`). Sequenced after
+  Phase 9 (UI) and Phase 4 (vision/OCR), per the user. **Shell only** —
+  the sandbox/companion-room experience stays observe-only and
+  tool-free by design; none of this reaches `src/sandbox.ts`.
+
+  Two modes, one toggle, shell-side only:
+  1. **Conversation Mode (default).** Talking, companionship, memory
+     recall/write. No screen capture, no OCR, no camera, no browser
+     tool, no cursor. Deliberately the leanest tool surface — both for
+     `qwen3.5:9b`'s limited context budget and because this is meant
+     to feel like companionship, not a work session.
+  2. **Work Mode (explicit opt-in).** `capture_screen` + `ocr_region` +
+     `read_clipboard` (Phase 4) plus a new browser-automation tool
+     (Playwright) become available: navigate, click, type, read page
+     text. Memory recall is off by default in this mode, per the
+     user's own framing (save context for the actual task); memory
+     *writing* (consolidation) stays on in the background either way.
+     Camera stays behind its existing separate permission regardless
+     of mode — this doesn't loosen that.
+
+  A third, orthogonal toggle — **Smart Mode** — controls reasoning
+  depth, independent of which mode above is active: off is a fast
+  single-pass reply/tool-call; on runs a slower plan → act → observe →
+  reflect loop before answering, for tasks that need more than one
+  tool call chained together. Off by default, same context-budget
+  reasoning as Conversation Mode's narrower tool list.
+
+  **Tool-calling format:** Hermes-style function calling (the ChatML
+  `<tool_call>`/JSON-arguments schema NousResearch's Hermes line
+  popularized, since adopted more broadly) rather than a bespoke
+  protocol. **Not verified against this project's actual model:**
+  whether `qwen3.5:9b`'s real chat template follows this schema
+  reliably — same "logically checked, not confirmed" territory as
+  everything else built in this sandbox; needs an on-machine test once
+  built, with a forgiving-parse fallback (same philosophy as
+  `consolidation.py`/`forget.py`) if it doesn't.
+
+  **Scope of "her own cursor," v1:** a Playwright-controlled browser
+  instance — she can navigate, click, and fill forms *inside that
+  browser window*, not drive the whole Windows desktop. Meaningfully
+  safer than general OS-level input control (a library like
+  `pyautogui`/`nut.js` operating real screen coordinates across
+  arbitrary apps) and covers most "look this up / fill this form / do
+  this web task" asks on its own. Full desktop-wide control is a real
+  v2 idea, not this phase — a materially bigger risk surface (a wrong
+  coordinate can click anything, not just something inside a
+  sandboxed browser tab) and deserves its own design pass.
+
+  **Safety scaffolding, built in from the start:** a visible indicator
+  whenever Work Mode's browser tool is actually driving something
+  (mirrors the existing camera-indicator precedent below); a short
+  list of action types that pause for the user's confirmation before
+  firing (anything that submits/sends/pays/deletes) unless the user
+  has explicitly told her to proceed without asking for that task; a
+  visible log of what she actually did, since this is a brand-new
+  trust surface; and a hard stop/abort the user can hit mid-task. None
+  of this is built yet — flagged now so it's designed in from the
+  first line of code, not retrofitted later.
+
+  **Also folds in, since it's the same shell-focused stretch of work:**
+  Phase 10(1)'s still-unbuilt "desktop companion mode" — light idle
+  motion in the shell (occasional look-around, noticing the user's
+  cursor nearby, an idle pout) layered on the existing lipsync/
+  expression system, explicitly **no locomotion** — she's stationary
+  in the shell; walking stays sandbox-only (Phase 10(2)/round 6-7).
 
 ## Shell-polish vs. apartment-build (current planning discussion)
+
+**Update:** resolved by the user — sequence is Phase 9 → Phase 4 →
+Phase 11 (see above), with Phase 10(1)'s shell idle-motion folded into
+the Phase 11 push since both land in the same file/system. Apartment
+build (round 7) stays paused. Original discussion kept below for the
+reasoning trail.
 
 With round 6 closed, two directions were on the table for what comes
 next, and neither is a small ask.
@@ -508,9 +592,14 @@ Resolved:
 - Round 6 tuning (wall clamp, turn rate, walk-start facing, idle-variety
   gestures): confirmed reading correctly in motion on the user's
   machine — round 6 is closed. See the round-6-closed entry above.
-- What comes next: Phase 4 (vision + OCR + Task Guide Mode) picked over
-  the apartment build for now — see "Shell-polish vs. apartment-build"
-  above.
+- What comes next: **Phase 9 → Phase 4 → Phase 11**, in that order, per
+  the user — see the Phase 11 entry and "Shell-polish vs.
+  apartment-build" above. Apartment build (round 7) stays paused.
+- Cursor via Playwright: clarified — real action, not just a visual
+  indicator, deliberately reversing the earlier observe-and-advise-only
+  stance. Scoped to browser automation (not general OS input), gated
+  behind Work Mode, shell-only. Tracked as Phase 11's actual build, not
+  an open decision anymore.
 
 Still open:
 - Task Guide Mode tuning: screenshot interval while a task is active, and how
@@ -524,7 +613,3 @@ Still open:
   animation clips — see "Shell-polish vs. apartment-build" above.
 - Shell hide/minimize toggle for real (non-sandbox) localhost runs: not
   built yet.
-- Cursor via Playwright: not built — needs the user to confirm whether
-  this means real mouse/input control (which would reverse `CLAUDE.md`'s
-  observe-and-advise-only constraint) or an on-screen pointer/highlight
-  indicator only (which wouldn't).

@@ -2671,3 +2671,49 @@ pure polish, and it's the project's own stated flagship behavior
 (`CLAUDE.md`), not started at all yet. Phase 9 (UI overhaul) and the
 shell hide toggle are smaller and lower-risk, and can go before or
 alongside it.
+
+## Reversing "observe-and-advise only" — Work Mode, Phase 11
+
+The project's original framing (`CLAUDE.md`'s intro line, the
+`docs/ARCHITECTURE.md` Task Guide Mode "hard boundary," and the
+"explicitly out of scope" list in `docs/ROADMAP.md`) was unconditional:
+she never touches the mouse/keyboard, never acts, only advises. The
+user has now deliberately reversed this — the goal has shifted from a
+desktop-companion/"AI girlfriend" experience toward something genuinely
+useful: an assistant that can actually do web-based tasks when asked,
+not just describe them.
+
+This is a real scope change, not a bug fix, so it's recorded rather
+than silently overwritten in the three docs above — each now says
+plainly that the constraint changed, when, and why, rather than
+pretending the original line never existed.
+
+**What's actually approved, and what isn't (yet):**
+- Approved: a gated tool-calling harness, Hermes-style function calling,
+  in the shell only, off by default (Conversation Mode), opt-in per
+  session (Work Mode). Full spec: `docs/ROADMAP.md`'s Phase 11 entry.
+- Approved: "her own cursor" as a Playwright-driven browser instance —
+  she can navigate/click/type/read inside that browser window.
+- Not approved (a v2 idea, not this phase): general OS-level input
+  control across arbitrary desktop apps (e.g. `pyautogui`/`nut.js`
+  driving real screen coordinates). That's a materially larger risk
+  surface than a sandboxed browser tab — a wrong coordinate there can
+  click anything on screen, not just something inside the automated
+  page — and deserves its own design/safety pass rather than riding in
+  on this one. Flagging this distinction explicitly since "give her a
+  cursor" could be read either way; browser-only is the scoped v1
+  reading used throughout Phase 11.
+- Sandbox/companion room: entirely unaffected. No tools, no camera, no
+  OCR, no cursor, ever — this was the user's own explicit line, not an
+  oversight, and it's the one part of the original design that didn't
+  move.
+- Safety scaffolding (visible active-indicator, confirm-before-
+  irreversible-action, an action log, a hard abort) is specified
+  alongside Phase 11 itself rather than as a follow-up, since retrofitting
+  it after the fact on an agent that can already act would be the wrong
+  order of operations.
+
+**Also decided in the same conversation:** a third toggle, Smart Mode,
+independent of Conversation/Work Mode, controlling reasoning depth
+(single-pass vs. a slower plan→act→observe→reflect loop) — mainly a
+context-budget lever for `qwen3.5:9b`, not a safety mechanism.

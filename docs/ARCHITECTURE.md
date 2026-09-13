@@ -124,12 +124,17 @@ This is the actual core loop of the app, not a side feature:
 5. The task stays active until it's finished, the user says to drop/pause it,
    or an idle timeout is hit. Dropping a task is always a one-line command
    away — this should never feel like it's fighting the user.
-6. **Hard boundary:** she never operates the mouse/keyboard, writes files, or
-   runs code on the user's behalf. She can *tell* the user what to type; she
-   never types it herself. This keeps the "computer-use" surface to read-only
-   perception — simpler to build, and it sidesteps the much bigger reliability
-   and safety surface that comes with an agent that actually acts on the
-   machine.
+6. **This boundary now applies to Conversation Mode and to the
+   sandbox/companion room, always — not to the shell's Work Mode.**
+   Originally written as an unconditional rule: she never operates the
+   mouse/keyboard, writes files, or runs code on the user's behalf, can
+   only *tell* the user what to type. The user deliberately reversed
+   this for the shell, well after Task Guide Mode itself was designed —
+   see `docs/ROADMAP.md`'s Phase 11 and `docs/DECISIONS.md` for the
+   full reasoning and the safety scaffolding that comes with it. Task
+   Guide Mode as described above is unaffected either way: it's about
+   watching and chiding, not doing the task for the user, in both
+   modes.
 
 ## Directory layout
 
