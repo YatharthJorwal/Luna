@@ -356,6 +356,14 @@ awaiting on-machine confirmation · ⬜ not started)
   height range over time) was added to chase the likely real cause
   instead: a foot-plant/gait-quality problem, not a direction one. See
   `docs/DECISIONS.md`.
+  **Resolved:** a third diagnostic and a proposed facing-formula flip
+  followed (full trail in `docs/DECISIONS.md`, including a detour where
+  the flip was reported as "not working" but had actually never been
+  applied). Once genuinely tested, the flip was the real fix — **the
+  user confirmed she walks forward now.** All three temporary
+  diagnostics (`debugFacingTravelText`, `debugFootTraceText`,
+  `debugHipsWorldFacingText`) and their on-screen readouts have been
+  removed; `directionToFacingAngle()` (the actual fix) stays.
   **Round 7 (planning only, full apartment) — not built yet, renumbered
   from a parallel session.** The user ran a separate planning
   conversation in parallel with this session's round-5 build work, off
@@ -427,7 +435,7 @@ Still open:
   for the furniture, per-room navmesh authoring, and the sit/cook/read
   animation clips — none of this is built yet, see the round-7 planning
   note above.
-- Round 6's open items: whether the wall-clamp/turn-rate/facing-during-
-  start changes actually read as fixed, and the persisting facing/travel-
-  direction bug pending the new debug readout's real numbers from an
-  actual run.
+- Round 6's remaining open item: whether the wall-clamp/turn-rate/
+  facing-during-start changes actually read as fixed on the user's
+  machine (the facing/direction bug itself is resolved — see the round-6
+  entry above and `docs/DECISIONS.md`).

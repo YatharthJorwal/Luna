@@ -61,14 +61,22 @@ guessed-constant approach), five-variant idle + idle-talking loops, and
 `Surprised`/`Clapping`/`Goodbye`/`Jump`/`LookAround`/`Sleepy`/`Thinking`
 clips fill the roles the pack doesn't cover. Not ported to the desktop
 shell (`main.ts` has no `AnimationMixer` yet).
-**Round 6 (first real bug reports):** wall clipping (fixed, hard
-position clamp) and one facing bug during the walk-start wind-up (fixed)
-came from actual on-machine testing. A persisting "walks backward"
-complaint did NOT get another guess this round — the facing formula was
-re-derived twice with no error found, so `CharacterController` now has a
-temporary on-screen diagnostic (`debugFacingTravelText`) comparing
-computed facing against her actual per-frame travel direction; the next
-step is reading those numbers off a real run, not more speculation.
+**Round 6 (first real bug reports, now resolved):** wall clipping (hard
+position clamp) and a facing bug during the walk-start wind-up were
+fixed directly. The "walks backward"/"moonwalk" complaint took several
+diagnostic rounds to actually pin down — three separate diagnostics
+(facing-vs-travel, foot-height, hips-bone-world-orientation) all came
+back "internally consistent" without catching the real bug, because they
+each checked a value against itself rather than against the rendered
+result. The actual fix: this model's true forward axis was the opposite
+of the usual three.js/VRM1 "-Z is forward" convention every earlier round
+assumed (`directionToFacingAngle()` in `src/sandbox.ts`). **Confirmed on
+the user's real machine: she walks forward now.** All three temporary
+diagnostics and their on-screen readouts have been removed. Full trail
+in `docs/DECISIONS.md` — worth reading if a similarly "everything checks
+out but it still looks wrong" bug comes up again, since the general
+lesson (a self-referential diagnostic can't catch a bug in the shared
+assumption both sides were built on) applies beyond this one case.
 Also fixed: the orchestrator not resetting on Ctrl+C (PID-file takeover
 in `app.py`, actually tested against a simulated stale process) and
 `npm run sandbox` never starting the orchestrator at all (new

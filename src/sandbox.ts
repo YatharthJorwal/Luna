@@ -505,22 +505,17 @@ function lerpAngle(a: number, b: number, t: number): number {
   return a + diff * t;
 }
 
-// EXPERIMENTAL FLIP (round 6, second attempt): the facing/travel
-// diagnostic above proved facing and travel direction always agreed
-// with each other -- but that only proves self-consistency, not that
-// the underlying "-Z is forward" assumption it (and updateFacing()) was
-// built on is actually correct. If that assumption is backward for this
-// model, both sides of the comparison shift together and still match,
-// while she visually faces opposite her travel direction the entire
-// time -- a blind spot the diagnostic can't see past, since it checks
-// this formula against itself, not against the rendered result. The
-// user asked to just try flipping it and confirm by eye, since it's a
-// one-line, trivially-revertible change (`git restore` back to the
-// unflipped version if this makes it worse instead of better -- see
-// docs/DECISIONS.md for exactly which commit that is). Was
-// `Math.atan2(-x, -z)`; every direction-to-angle conversion in
-// CharacterController now goes through this one function so there's
-// only one sign to flip back if this guess is wrong.
+// Converts a world-space (x,z) direction into the yaw angle applied to
+// vrm.scene.rotation.y so she visually faces that direction. This model's
+// real forward axis turned out to be the opposite of the usual
+// three.js/VRM1 "-Z is forward" convention every earlier round assumed
+// (confirmed on the user's own machine, after three straight rounds of
+// diagnostics that all came back "internally consistent" without
+// catching it -- see docs/DECISIONS.md's round-6 entries for the full
+// trail, including why those diagnostics had a structural blind spot
+// they couldn't see past). `Math.atan2(x, z)`, no negation -- every
+// direction-to-angle conversion in CharacterController goes through this
+// one function.
 function directionToFacingAngle(x: number, z: number): number {
   return Math.atan2(x, z);
 }
@@ -597,18 +592,6 @@ class CharacterController {
   private walkBoutDistanceM = 0;
   private currentStopAction: THREE.AnimationAction | null = null;
 
-  // TEMPORARY diagnostic fields -- see debugFootTraceText's own comment
-  // below for what these are for.
-  private readonly leftFootBone: THREE.Object3D | null;
-  private readonly rightFootBone: THREE.Object3D | null;
-  private readonly hipsBone: THREE.Object3D | null;
-  private footTraceTimer = 0;
-  private footTraceMinL = Infinity;
-  private footTraceMaxL = -Infinity;
-  private footTraceMinR = Infinity;
-  private footTraceMaxR = -Infinity;
-  private footTraceText: string | null = null;
-
   constructor(
     private vrm: VRM,
     clips: {
@@ -620,9 +603,6 @@ class CharacterController {
   ) {
     this.walker = new ProceduralWalker(collectWalkBones(vrm));
     this.mixer = new THREE.AnimationMixer(vrm.scene);
-    this.leftFootBone = vrm.humanoid.getRawBoneNode("leftFoot");
-    this.rightFootBone = vrm.humanoid.getRawBoneNode("rightFoot");
-    this.hipsBone = vrm.humanoid.getRawBoneNode("hips");
 
     // Real per-model speed, not a guess -- see the WORLD_WALK_* comments
     // above. normalizedRestPose is exactly the API the pack's own
@@ -693,124 +673,6 @@ class CharacterController {
    * idle-variety scheduler avoid firing a random idle gesture mid-walk. */
   get isWalking(): boolean {
     return this.walkPhase !== "none";
-  }
-
-  private debugPrevPos: THREE.Vector3 | null = null;
-
-  /** TEMPORARY diagnostic, not a permanent feature -- added specifically
-   * to chase the user's repeated "walks backward" report after the
-   * facing formula (see updateFacing()) was re-derived and checked twice
-   * with no error found. Compares `facing` (what updateFacing() computed
-   * and applied to vrm.scene.rotation.y) against the direction she
-   * *actually* moved this frame, independently computed straight from
-   * the raw position delta -- ground truth, untainted by any of this
-   * class's own bookkeeping (walkDir etc.), using the exact same
-   * atan2(-x,-z) convention updateFacing() uses, so a correctly-behaving
-   * frame reports two matching numbers. Null whenever she's not actually
-   * translating (nothing useful to compare yet).
-   *
-   * ROUND 6 RESULT (from the user's own screenshot): facing 417°
-   * (= 57° mod 360) vs travel 58° -- a 1° difference, i.e. these already
-   * match. This rules out a facing/direction inversion entirely --
-   * flipping the formula would introduce a real bug where there
-   * currently isn't one. The "moonwalk" look must be a different kind of
-   * problem (foot-plant/gait quality, not direction) -- see
-   * debugFootTraceText below, added specifically because of this result.
-   *
-   * Remove this getter and its boot()-side readout once the actual bug
-   * is found -- see docs/DECISIONS.md.
-   */
-  get debugFacingTravelText(): string | null {
-    if (this.walkPhase !== "looping" && this.walkPhase !== "arriving") {
-      this.debugPrevPos = null;
-      return null;
-    }
-    const pos = this.vrm.scene.position;
-    if (!this.debugPrevPos) {
-      this.debugPrevPos = pos.clone();
-      return null;
-    }
-    const movedX = pos.x - this.debugPrevPos.x;
-    const movedZ = pos.z - this.debugPrevPos.z;
-    this.debugPrevPos.set(pos.x, pos.y, pos.z);
-    if (movedX * movedX + movedZ * movedZ < 1e-10) return null;
-    const facingDeg = ((this.facing * 180) / Math.PI).toFixed(0);
-    const travelDeg = ((directionToFacingAngle(movedX, movedZ) * 180) / Math.PI).toFixed(0);
-    return `[debug] facing ${facingDeg}° · travel ${travelDeg}° (should match; ~180° apart = inverted; anything else = a different axis mixup)`;
-  }
-
-  /** TEMPORARY diagnostic, round 6 addition -- direction is confirmed
-   * correct (see debugFacingTravelText's own result above), so "moonwalk"
-   * must be a foot-plant/gait problem instead: something that would make
-   * a foot look like it's sliding along the ground rather than lifting
-   * and resetting between steps, independent of which way she's actually
-   * heading. Samples each foot bone's real world-space height (not
-   * anything retargeted or computed -- the actual bone the mixer is
-   * driving) once a frame, and reports the min/max range it swept over
-   * roughly every 1.5s. A healthy walk cycle should show both feet
-   * regularly sweeping through a real range (one foot planted near its
-   * low point while the other arcs up mid-swing, alternating); a foot
-   * stuck at a near-zero range for a stretch means it's dragging instead
-   * of lifting -- direct, numeric evidence instead of eyeballing a still
-   * image, which can't show a fundamentally time-based artifact like
-   * sliding at all. Remove alongside debugFacingTravelText once resolved. */
-  get debugFootTraceText(): string | null {
-    return this.footTraceText;
-  }
-
-  private updateFootTrace(delta: number): void {
-    if (!this.leftFootBone || !this.rightFootBone) return;
-    if (this.walkPhase !== "looping" && this.walkPhase !== "arriving") {
-      this.footTraceText = null;
-      return;
-    }
-    const lp = new THREE.Vector3();
-    this.leftFootBone.getWorldPosition(lp);
-    const rp = new THREE.Vector3();
-    this.rightFootBone.getWorldPosition(rp);
-    this.footTraceMinL = Math.min(this.footTraceMinL, lp.y);
-    this.footTraceMaxL = Math.max(this.footTraceMaxL, lp.y);
-    this.footTraceMinR = Math.min(this.footTraceMinR, rp.y);
-    this.footTraceMaxR = Math.max(this.footTraceMaxR, rp.y);
-    this.footTraceTimer += delta;
-    if (this.footTraceTimer < 1.5) return;
-    const lRange = this.footTraceMaxL - this.footTraceMinL;
-    const rRange = this.footTraceMaxR - this.footTraceMinR;
-    this.footTraceText = `[debug] L foot y-range ${lRange.toFixed(3)}m (${this.footTraceMinL.toFixed(3)}-${this.footTraceMaxL.toFixed(3)}) · R foot y-range ${rRange.toFixed(3)}m (${this.footTraceMinR.toFixed(3)}-${this.footTraceMaxR.toFixed(3)}) -- a healthy stride should show both well above ~0.02m; a foot stuck near its minimum is dragging`;
-    this.footTraceTimer = 0;
-    this.footTraceMinL = Infinity;
-    this.footTraceMaxL = -Infinity;
-    this.footTraceMinR = Infinity;
-    this.footTraceMaxR = -Infinity;
-  }
-
-  /** TEMPORARY diagnostic, round 6 fourth attempt -- the user directly
-   * confirmed (from their own video, verified independently here too
-   * against static-camera frames) that the facing-formula flip had zero
-   * visible effect: she still visibly translates toward the camera while
-   * consistently facing away from it. Since the flip only changes
-   * `vrm.scene.rotation.y` -- the outermost transform -- and had no
-   * effect, the actual visual-orientation bug likely isn't at that layer
-   * at all. This checks the next layer down: the hips bone's *actual
-   * composed world orientation* (scene rotation AND whatever the
-   * retargeted animation clip itself applies to the bone, together) --
-   * not what we told the scene node to do, but what the render actually
-   * ends up showing. If this disagrees with the scene-level `facing`
-   * while `travel` (ground truth, from debugFacingTravelText) agrees
-   * with `facing`, that's real evidence the animation clip itself is
-   * rotating her hips independent of -- and overriding the visual effect
-   * of -- vrm.scene.rotation.y. Expect some natural noise from ordinary
-   * hip sway during a stride (a few degrees); a bug would show much
-   * closer to a full 180°. */
-  get debugHipsWorldFacingText(): string | null {
-    if (!this.hipsBone) return null;
-    if (this.walkPhase !== "looping" && this.walkPhase !== "arriving") return null;
-    const q = new THREE.Quaternion();
-    this.hipsBone.getWorldQuaternion(q);
-    const fwd = new THREE.Vector3(0, 0, -1).applyQuaternion(q);
-    const hipsDeg = ((directionToFacingAngle(fwd.x, fwd.z) * 180) / Math.PI).toFixed(0);
-    const sceneDeg = ((this.facing * 180) / Math.PI).toFixed(0);
-    return `[debug] hips world-forward ${hipsDeg}° vs scene facing ${sceneDeg}° (should match within a few degrees of normal hip sway; ~180° apart = the animation clip itself is rotating her, not vrm.scene.rotation.y)`;
   }
 
   /** Registers a loaded gesture clip under `name` (one of
@@ -904,16 +766,6 @@ class CharacterController {
     }
     this.updateIdleBase(delta, isTalking);
     this.mixer.update(delta);
-    // mixer.update() only writes each bone's LOCAL transform from its
-    // animation track -- propagating that into each bone's WORLD
-    // transform (what getWorldPosition/getWorldQuaternion actually read)
-    // normally waits until the renderer's own render-time traversal.
-    // Forced here, immediately, so both diagnostics below read this
-    // frame's current pose instead of lagging a frame behind it.
-    this.vrm.scene.updateMatrixWorld(true);
-    // Sampled after mixer.update() so the foot bones reflect this frame's
-    // actual applied pose, not last frame's.
-    this.updateFootTrace(delta);
   }
 
   // --- real walk cycle -------------------------------------------------
@@ -1266,23 +1118,6 @@ async function boot(): Promise<void> {
   const canvas = document.getElementById("sandbox-canvas") as HTMLCanvasElement;
   const statusEl = document.getElementById("sandbox-status") as HTMLDivElement;
 
-  // TEMPORARY diagnostic elements -- see CharacterController's
-  // debugFacingTravelText / debugFootTraceText getters for what these
-  // show and why. Remove all three once the "walks backward" report is
-  // actually resolved.
-  const debugEl = document.createElement("div");
-  debugEl.style.cssText =
-    "position:fixed;left:8px;bottom:8px;font:11px monospace;color:#0f0;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;z-index:1000;";
-  document.body.appendChild(debugEl);
-  const footTraceEl = document.createElement("div");
-  footTraceEl.style.cssText =
-    "position:fixed;left:8px;bottom:34px;font:11px monospace;color:#0f0;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;z-index:1000;";
-  document.body.appendChild(footTraceEl);
-  const hipsFacingEl = document.createElement("div");
-  hipsFacingEl.style.cssText =
-    "position:fixed;left:8px;bottom:60px;font:11px monospace;color:#0f0;background:rgba(0,0,0,0.6);padding:4px 8px;border-radius:4px;z-index:1000;";
-  document.body.appendChild(hipsFacingEl);
-
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio || 1);
   renderer.setSize(window.innerWidth, window.innerHeight);
@@ -1413,15 +1248,6 @@ async function boot(): Promise<void> {
     hud.tick(delta);
     const target = wander.getTarget(delta, vrm.scene.position, hud.isTurnActive());
     character.update(delta, target, hud.isTurnActive());
-    const debugText = character.debugFacingTravelText;
-    debugEl.style.display = debugText ? "block" : "none";
-    if (debugText) debugEl.textContent = debugText;
-    const footTraceText = character.debugFootTraceText;
-    footTraceEl.style.display = footTraceText ? "block" : "none";
-    if (footTraceText) footTraceEl.textContent = footTraceText;
-    const hipsFacingText = character.debugHipsWorldFacingText;
-    hipsFacingEl.style.display = hipsFacingText ? "block" : "none";
-    if (hipsFacingText) hipsFacingEl.textContent = hipsFacingText;
     // Eligible only once everything else has had first say this frame:
     // not walking anywhere (target is null AND she's not still finishing
     // a stride/start/stop -- see CharacterController.isWalking), not

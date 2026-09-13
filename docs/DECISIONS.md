@@ -2578,3 +2578,66 @@ this whole saga backed by real visual evidence rather than either a
 guess or a self-referential diagnostic. **Not verified:** what
 `debugHipsWorldFacingText` will actually report -- that's the next real
 data point, from the user's machine, not this sandbox.
+
+## Round 6, resolved: the flip was never actually tested until now -- and it was the fix
+
+Before applying the hips-diagnostic bundle, the user checked their own
+`git log` and found their `round6-fixes` branch was still at the
+foot-trace commit -- the facing-flip commit had never actually landed.
+The apply instructions for that bundle were correct, but somewhere
+between being given them and recording the video, the fetch/checkout
+never happened (or didn't take). This means the video analyzed in the
+previous entry, and the conclusion drawn from it ("the flip had no
+effect, so the bug must be deeper than vrm.scene.rotation.y"), was built
+on a false premise -- the user was recording the *original, unflipped*
+code both times. The video itself was still real, useful evidence (it
+independently confirmed backward walking against a static-camera
+reference), but the inference about *why* the flip didn't help was
+wrong, because the flip had never run.
+
+Rebuilding the bundle was simple and didn't require touching history:
+the user's actual tip (`16bbf59`) was already the direct parent of both
+the flip commit and the hips-diagnostic commit in this session's own
+history, so a fresh bundle spanning `16bbf59..round6-fixes` carried both
+commits' full content while only requiring the one commit the user
+actually had -- no rebase, no reset, nothing rewritten.
+
+With the flip actually applied for the first time, the user confirmed:
+**she now walks forward.** The `directionToFacingAngle` flip (dropping
+the negation in the old `atan2(-x, -z)` formula) was the real fix all
+along -- round 6's earlier diagnostics weren't wrong about what they
+measured, they just couldn't measure the one thing (whether the
+assumed forward-axis convention matched this specific model's actual
+rendered orientation) that turned out to be broken, exactly the blind
+spot identified when the user first proposed the flip.
+
+**Diagnostics removed** now that the bug is confirmed fixed:
+`debugFacingTravelText`, `debugFootTraceText`, `debugHipsWorldFacingText`
+and their boot()-side on-screen readouts, plus the fields/methods that
+only existed to support them (`leftFootBone`/`rightFootBone`/`hipsBone`
+references, `updateFootTrace()`, the forced `updateMatrixWorld()` call
+that only mattered for those diagnostics' own accuracy). The actual fix
+-- `directionToFacingAngle()` -- stays, with its comment updated to
+describe it as confirmed correct rather than an open experiment.
+
+**Full trail, for the record, since this took four attempts across two
+rounds to actually land:** round 4 fixed a real speed/animation
+mismatch that wasn't the whole story; round 5 replaced a guessed walk
+speed with the pack's real measured data, still not the whole story;
+round 6 first tried a facing-formula re-derivation (found no error,
+correctly, since the error wasn't in the math but in an unverified
+assumption about this model), then a wall-clamp and start-phase facing
+fix (both real, both still valid), then a diagnostic-driven flip
+proposed by the user that turned out to be exactly right -- just not
+confirmed until the user independently caught that it had never
+actually been deployed. The lesson worth keeping, not just the fix
+itself: a diagnostic that checks a value against itself can look clean
+while completely missing a bug in the shared assumption both sides of
+the check were built on -- confirmed by comparing against something
+external (the user's own eyes, this time) is what actually closed it
+out.
+
+**Verified in this sandbox:** `tsc --noEmit` clean; both builds clean.
+**Confirmed on the user's real machine:** she walks forward now. This
+entry closes out the "walks backward"/"moonwalk" saga that ran across
+rounds 4-6.
