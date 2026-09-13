@@ -46,11 +46,13 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 import llm
 import stt
+import tools
 from chunking import extract_ready_chunks, flush
 from config import CONFIG
 from memory import consolidation, forget, recall, store
@@ -125,6 +127,20 @@ STT_UNREACHABLE_LINE = (
 # way -- this is app-level knowledge, not something to fake a tag for.
 EMOTION_LLM_UNREACHABLE = "sad"
 EMOTION_STT_UNREACHABLE = "sad"
+
+# Phase 4 -- how many rounds of "model calls a tool, gets a result, tries
+# again" one turn allows before giving up. 3 is generous for the two
+# tools that exist today (capture_screen, read_clipboard chained at most
+# once or twice in a row is a realistic real request; anything beyond
+# that is almost certainly a model stuck re-calling a tool rather than
+# answering) and small enough to guarantee a turn can't hang forever on a
+# local 9B model that won't stop. Said if that cap is actually hit --
+# should be rare; **not verified** how often qwen3.5:9b actually needs
+# this in practice, since real tool-calling behavior against this
+# project's own Ollama instance hasn't been tested yet (see
+# docs/DECISIONS.md).
+MAX_TOOL_ROUNDS = 3
+TOOL_STUCK_LINE = "...tch, I got stuck trying to do that. Ask me again?"
 
 
 async def _send_speak(websocket: WebSocket, text: str) -> None:
@@ -225,24 +241,69 @@ async def _run_turn(
     # it shouldn't be fed back into the LLM as if she'd said it.
     spoken_parts: list[str] = []
     detected_emotion: str | None = None
+    tool_messages: list[dict[str, Any]] = []
     try:
-        async for delta in llm.stream_reply(messages_for_llm):
-            buffer += delta
-            chunks, buffer = extract_ready_chunks(buffer)
-            for chunk in chunks:
-                reply_parts.append(chunk)
-                styled = apply_persona_pass(chunk)
-                spoken_parts.append(styled)
-                await _send_speak(websocket, styled)
-        # Stream's fully done now, not mid-flight -- only safe point to
-        # check for a trailing [emotion] tag (see extract_emotion_tag()'s
-        # own docstring on why mid-stream would risk a false match).
-        buffer, detected_emotion = extract_emotion_tag(buffer)
-        for chunk in flush(buffer):
-            reply_parts.append(chunk)
-            styled = apply_persona_pass(chunk)
-            spoken_parts.append(styled)
-            await _send_speak(websocket, styled)
+        for _ in range(MAX_TOOL_ROUNDS):
+            saw_tool_call = False
+            async for event in llm.stream_reply_with_tools(
+                messages_for_llm + tool_messages, tools.TOOL_SCHEMAS
+            ):
+                if event["type"] == "tool_calls":
+                    saw_tool_call = True
+                    # Dispatched and appended one at a time, in order --
+                    # if the model asked for more than one tool in the
+                    # same turn (untested whether qwen3.5:9b actually
+                    # does this), each one's result needs to already be
+                    # in tool_messages before the next round re-calls the
+                    # model, same as a real multi-tool exchange would.
+                    for call in event["calls"]:
+                        result_text = await tools.dispatch_tool_call(
+                            call["name"], call["arguments"]
+                        )
+                        tool_messages.append(
+                            {
+                                "role": "assistant",
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": call["name"],
+                                            "arguments": call["arguments"],
+                                        }
+                                    }
+                                ],
+                            }
+                        )
+                        tool_messages.append({"role": "tool", "content": result_text})
+                    break  # re-enter the outer for-loop with results appended
+                buffer += event["text"]
+                chunks, buffer = extract_ready_chunks(buffer)
+                for chunk in chunks:
+                    reply_parts.append(chunk)
+                    styled = apply_persona_pass(chunk)
+                    spoken_parts.append(styled)
+                    await _send_speak(websocket, styled)
+            if not saw_tool_call:
+                # A normal reply, not another tool call -- stream's fully
+                # done now, not mid-flight, so this is the only safe point
+                # to check for a trailing [emotion] tag (see
+                # extract_emotion_tag()'s own docstring on why mid-stream
+                # would risk a false match).
+                buffer, detected_emotion = extract_emotion_tag(buffer)
+                for chunk in flush(buffer):
+                    reply_parts.append(chunk)
+                    styled = apply_persona_pass(chunk)
+                    spoken_parts.append(styled)
+                    await _send_speak(websocket, styled)
+                break
+        else:
+            # Used up every round still calling tools, never landed on an
+            # actual reply -- a model stuck re-calling a tool (or hitting
+            # one that keeps failing) shouldn't hang the turn forever.
+            # Distinct from LLMUnreachableError below: the server itself
+            # is fine, she just never got to a real answer.
+            await _send_speak(websocket, TOOL_STUCK_LINE)
+            spoken_parts.append(TOOL_STUCK_LINE)
     except llm.LLMUnreachableError:
         await _send_speak(websocket, LLM_UNREACHABLE_LINE)
         spoken_parts.append(LLM_UNREACHABLE_LINE)

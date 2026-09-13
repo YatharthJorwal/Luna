@@ -8,23 +8,25 @@ remembers things across restarts, and replies by voice with lip-sync,
 one sentence at a time as she "thinks" of them. See `/CLAUDE.md` at the
 repo root for the full architecture and roadmap.
 
-**Phase 7 (this bundle): the avatar migrated from Live2D to VRM.** If
-you're updating an existing checkout with a Live2D model already set up,
-that setup is gone -- `public/live2d/`, `public/cubism5/`,
-`vendor/pixi-live2d5/`, and the Cubism Core script tag in `index.html`
-have all been removed, replaced by `three` + `@pixiv/three-vrm`. You'll
-need an actual `.vrm` file to see anything on screen -- see "Putting
-your VRoid model in" below.
+**Phase 4 Round 1 (this bundle): on-demand vision + clipboard tools via
+a real tool-calling loop.** The note below was still describing Phase 7
+(the VRM migration) -- stale for a few bundles now; this replaces it
+with what's actually needed for the current one.
 
 **After pulling this bundle:**
-1. `npm install` -- picks up `three`, `@pixiv/three-vrm`, and
-   `@types/three` (this version of three.js doesn't ship its own type
-   declarations); drops `pixi.js`/`pixi-live2d5`.
-2. Export a `.vrm` from VRoid Studio and drop it at `public/vrm/luna.vrm`
-   -- see "Putting your VRoid model in" below for the full walkthrough.
-   Nothing renders without this.
-3. No orchestrator/Python changes this round -- skip `pip install` unless
-   you're also behind on an earlier bundle.
+1. `pip install -r requirements.txt` (from `orchestrator/`) -- picks up
+   `Pillow` (screenshot capture) and `pyperclip` (clipboard reads), both
+   new this round. No system-level install needed for either on Windows
+   (unlike `faster-whisper`'s CUDA/cuDNN notes further down) -- both work
+   out of the box.
+2. No `npm install` needed this round -- no frontend dependency changes.
+3. Nothing else to configure -- `capture_screen`/`read_clipboard` are
+   available to her automatically once the orchestrator restarts with
+   the new code. Try asking her to look at your screen, or read what
+   you've copied, and see what comes back -- this is genuinely untested
+   against a real Ollama server, so the first real try is the actual
+   verification. See `docs/ROADMAP.md`'s Phase 4 entry for exactly
+   what's confirmed vs. still unknown.
 
 ## Putting your VRoid model in
 
@@ -206,6 +208,15 @@ live) or to a real running Ollama instance, so:
 Expect to still fix small things on first run -- normal for anything that's
 never touched real model weights, a real mic, or a real Rust compiler, not
 a sign something's fundamentally wrong.
+
+**This section stops at Phase 7** and hasn't been kept current since --
+Phases 8, 9, 10, and 4 (Round 1) all happened after it was last updated,
+each with its own honest verified-vs-not accounting written up at the
+time in `docs/ROADMAP.md` (per-phase) and `docs/DECISIONS.md` (the
+reasoning behind each). Rewriting this whole section to match would be a
+real undertaking on its own rather than a quick edit alongside other
+work -- `docs/ROADMAP.md` is the accurate, current source in the
+meantime.
 
 ## Prerequisites (on your machine)
 
@@ -519,12 +530,18 @@ Still applies from Phase 1 -- unchanged:
 The memory subsystem (`orchestrator/memory/`) has a real, non-stub test
 suite -- sqlite-vec is a pure local library with no GPU/network
 dependency, unlike the LLM/TTS/STT backends, so it's honestly testable
-without real hardware:
+without real hardware. Phase 4 Round 1 added two more real (non-stub,
+where testable at all) suites the same way: `test_llm.py` for the
+tool-call parsing logic, and `tools/test_tools.py` for the vision tools
+with `PIL.ImageGrab`/`pyperclip` mocked -- see `docs/ROADMAP.md`'s Phase
+4 entry for exactly what that does and doesn't cover.
 ```
 cd orchestrator
 pip install -r requirements-dev.txt
-python -m pytest memory/test_memory.py -v
+python -m pytest -v
 ```
+(or narrow it to one file/directory, e.g. `python -m pytest
+memory/test_memory.py -v`, same as before)
 
 ## Next
 

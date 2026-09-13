@@ -2780,3 +2780,64 @@ markup/CSS were confirmed present in the built output — but nothing
 about how it actually looks or behaves in a real window has been
 seen. Same split as every other UI change in this project: logic can
 be genuinely tested here; appearance can't.
+
+## Phase 4 Round 1: tool-calling loop, capture_screen, read_clipboard
+
+**Why a new `stream_reply_with_tools()` instead of changing
+`stream_reply()`.** `consolidation.py` and `forget.py` both already call
+`llm.stream_reply()` for their own background LLM calls and are covered
+by existing passing tests that assume it yields plain delta strings.
+Changing that function's yield shape to support tool-calling events would
+have meant touching two working, already-tested subsystems that have
+nothing to do with tools, for no real benefit -- neither ever needs to
+call a tool. A second function keeps the blast radius to exactly the one
+caller that actually needs it (`app.py`'s `_run_turn`).
+
+**Why `capture_screen` does its own internal VLM call instead of handing
+raw image bytes to the main tool-calling loop.** `docs/ARCHITECTURE.md`'s
+vision-tools section already specified this ("returns a textual
+analysis \[...\] to the reasoning pass"), and it turned out to
+meaningfully simplify the implementation too: Ollama's tool-result
+message convention is built around plain text, and attaching images to a
+`role: tool` message is untested, possibly-unsupported territory. Making
+`capture_screen` a text-in/text-out tool like `read_clipboard` -- doing
+the image-to-text conversion internally via a separate one-shot
+`llm.describe_image()` call -- keeps the main tool-calling loop uniform
+and avoids relying on that unverified image-on-tool-message behavior at
+all.
+
+**Why streaming tool-calls instead of a safer non-streaming
+detect-then-stream approach.** The conservative option (a blocking
+non-streaming call first to check for `tool_calls`, then stream the
+real reply once none come back) would add a full round-trip of latency
+to *every* ordinary turn, not just the ones that actually call a tool --
+a bad trade for a real-time companion when most turns never touch a
+tool at all. Streaming with tools attached is the primary path instead,
+written defensively (any chunk carrying `tool_calls` is treated as
+decisive) specifically because Ollama's tool-calling-while-streaming
+behavior for this exact model has never been tested against a real
+server. If it doesn't hold up in practice, the non-streaming shape is
+the documented fallback -- see `llm.py`'s own docstrings.
+
+**Why a hard `MAX_TOOL_ROUNDS` cap (3).** A local 9B model calling tools
+is new, untested territory -- a model that gets stuck re-calling a tool
+(or one that keeps failing) needs a way out that isn't "hang the turn
+forever." 3 rounds is generous for what these two tools support today
+(a screen check plus a clipboard read chained once is a realistic real
+request) and small enough to guarantee termination either way.
+`TOOL_STUCK_LINE` is the in-character line said if that cap is actually
+hit -- verified via an ad hoc test that forces every round to call a
+tool and confirms the loop stops at exactly 3 rounds rather than
+hanging.
+
+**What's real and tested vs. genuinely unknown**, since this is the
+first phase to add a whole new capability (tool-calling) rather than
+extend an existing one: the *loop's own logic* -- dispatch, appending
+results, re-calling, the round cap, graceful degradation on an unknown
+tool name or a tool's own failure -- is verified for real, including
+through the actual `app.py` code end to end with a fake LLM. Whether
+Ollama's real wire behavior matches what this was built against, and
+whether `qwen3.5:9b` calls these tools sensibly in practice, are both
+completely open until the user actually runs this against their own
+Ollama instance. Flagged explicitly in `docs/ROADMAP.md`'s Phase 4
+entry rather than assumed away.

@@ -106,6 +106,20 @@ and `get_log`/`clear_log` WebSocket messages, see
 `docs/ROADMAP.md`). Sandbox-verified for real (committed tests,
 `tsc`/`vite build` both clean) but **not yet confirmed in an actual
 browser** — no GPU/browser here, same as every prior visual change.
+**Confirmed working by the user on their machine.**
+**Phase 4 Round 1 is also built** (started once Phase 9 was confirmed):
+a real tool-calling loop in `_run_turn`, with `capture_screen` (returns
+a text description via an internal VLM call, never raw pixels) and
+`read_clipboard` as the first two tools. Sandbox-verified for real (21
+new tests, three ad hoc end-to-end runs including the tool-loop-stuck
+safety cap and a regression check against plain no-tool-call turns).
+**Real unknowns, not yet tested on the user's machine**: whether Ollama
+actually streams `tool_calls` reliably for `qwen3.5:9b`, and whether
+`PIL.ImageGrab`/`pyperclip` behave as expected on Windows — see
+`docs/ROADMAP.md`'s Phase 4 entry for the fallback plan if the
+streaming approach doesn't hold up. Task Guide Mode's own scheduled-
+capture/off-task-chide loop (the actual flagship half of Phase 4) is
+still not built — Round 1 only covers on-demand tool calls.
 Full writeup for both rounds in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 

@@ -169,11 +169,56 @@ awaiting on-machine confirmation · ⬜ not started)
   conversations rather than the synthetic transcripts tested here — both
   parsers are deliberately forgiving specifically because this was a
   real open question, not an assumption.
-- ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
-  `read_clipboard` + OCR fallback, tool-calling loop live. On-demand "look at
-  my screen" works for coding help, and the scheduled-capture /
-  off-task-chide loop works end-to-end for at least one flagship scenario
-  (the Flappy Bird walkthrough is a good test case).
+- 🔶 **Phase 4 — Vision tools + Task Guide Mode.** Round 1 built and
+  sandbox-verified: `capture_screen` and `read_clipboard` live as real
+  tools, wired through a genuine tool-calling loop in `app.py`'s
+  `_run_turn` (`llm.stream_reply_with_tools`, `tools/` package). "Look
+  at my screen" / "what's on my clipboard" now works as an on-demand
+  ask mid-conversation -- the model decides whether to call a tool,
+  the orchestrator runs it and hands the result back, up to
+  `MAX_TOOL_ROUNDS` (3) chained calls before giving up gracefully
+  (`TOOL_STUCK_LINE`). `capture_screen` returns a *text description*,
+  never raw pixels, via a small internal one-shot VLM call
+  (`llm.describe_image`) -- matches `docs/ARCHITECTURE.md`'s "pull, not
+  push" vision-tools section exactly. Not gated by Conversation/Work
+  Mode -- that's Phase 11, still ahead of this in the build order but
+  documented first; these two tools are simply always available for
+  now, same as Phase 4 was originally scoped before Phase 11 existed.
+
+  **Sandbox-verified for real:** 21 new tests (`test_llm.py`'s
+  `_normalize_tool_calls` parsing, `tools/test_tools.py`'s vision
+  functions with `PIL.ImageGrab`/`pyperclip` mocked), plus three ad hoc
+  end-to-end runs through the actual `app.py`/`_run_turn` code with a
+  fake `llm.stream_reply_with_tools`: one confirming a full
+  tool-call → result → final-reply round trip (including that the
+  emotion tag and transcript log both come out right on the far side
+  of a tool call), one confirming the `MAX_TOOL_ROUNDS` cap actually
+  stops a model stuck re-calling a tool instead of hanging the turn,
+  and one confirming plain no-tool-call turns and the LLM-unreachable
+  fallback are both completely unaffected by any of this (regression
+  check against Phase 2/9's existing behavior).
+
+  **Not verified, real unknowns until tested on the user's machine:**
+  whether Ollama actually emits `tool_calls` reliably through its
+  *streaming* endpoint for `qwen3.5:9b` specifically (this has never
+  talked to a real Ollama instance at all) -- `llm.py`'s own docstrings
+  flag the fallback plan (a non-streaming detect-then-stream shape) if
+  the streaming path doesn't hold up in practice; whether
+  `PIL.ImageGrab.grab()` and `pyperclip.paste()` behave as expected on
+  the user's real Windows machine/multi-monitor setup (this sandbox has
+  no display at all); and whether `qwen3.5:9b` actually reaches for
+  these tools sensibly rather than over- or under-calling them --
+  tuning that is real Round 2/3 territory once there's actual usage to
+  react to.
+
+  **Not built yet (later rounds):** `ocr_region` (explicitly a fallback
+  for imprecise VLM OCR per `docs/ARCHITECTURE.md`, not needed for the
+  core loop above to work); `capture_camera` (needs its own permission +
+  indicator design, per the same doc); and the actual flagship half of
+  this phase -- Task Guide Mode's *scheduled* `capture_screen` polling
+  and off-task chiding while a task is active. Round 1 only covers
+  on-demand tool calls the model makes mid-conversation; nothing here
+  runs on a timer yet.
 - ⬜ **Phase 5 — Camera + game-assist polish.** Gated camera tool, light
   game-context awareness (e.g. active-window detection), expression/emotion
   mapping refined.
