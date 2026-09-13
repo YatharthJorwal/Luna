@@ -254,10 +254,60 @@ awaiting on-machine confirmation · ⬜ not started)
   Still open, not blocking: whether qwen3.5:9b reliably produces a
   recognizable tag across real conversations rather than the synthetic
   cases tested here.
-- ⬜ **Phase 9 — UI overhaul.** Replace the plain input box/HUD with
-  something more visually considered — color, less utilitarian chrome.
-  Pure `index.html`/`style.css` work, no protocol or backend changes, no
-  dependency on any other phase — can happen independently, any time.
+- 🔶 **Phase 9 — UI overhaul.** Original scope was pure `index.html`/
+  `style.css` work with "no protocol or backend changes" -- that grew by
+  one real feature during the actual build, at the user's request: a
+  persistent conversation-log panel, which needed a small backend/
+  protocol addition after all (see below). Built:
+  1. **Pastel/lavender reskin** of the existing HUD -- swapped
+     `style.css`'s color variables (cooler violet-on-near-black →
+     warmer pink/lavender family) and the caption glow's hardcoded
+     colors to match; no structural/layout changes, same transparent-
+     stage-is-the-star philosophy as before. **Not verified**: how this
+     actually reads on screen -- no browser/GPU in this sandbox, same
+     caveat as every other visual change in this project.
+  2. **Persistent conversation-log panel.** A new `#log-button` in the
+     HUD toggles a floating card (`#log-panel`) listing every turn as
+     `{user_name}: ...` / `Luna: ...` pairs, oldest-first, with a
+     "Clear Log" button. Backend: a new `transcript_log` SQLite table
+     (`memory/db.py`), CRUD in `memory/store.py`, and two new WebSocket
+     message types (`get_log`/`clear_log`, answered with `log` --
+     see `ws-client.ts`'s protocol comment) -- deliberately separate
+     from Phase 3's facts/episodes tables and never read by recall.py
+     or written by consolidation.py, since this is a plain verbatim
+     record for the user's own review, not something fed back into her
+     memory/context. `app.py`'s `_run_turn` now tracks a `spoken_parts`
+     list alongside the existing `reply_parts` (they diverge on
+     purpose: `reply_parts` feeds LLM history and excludes the
+     LLM-unreachable fallback line; `spoken_parts` is everything
+     actually sent to `_send_speak`, unconditionally, including that
+     fallback line and a partial reply if the turn was stopped
+     mid-sentence) and logs one row per turn regardless of how it
+     ended. A new `session.user_name` config field (`config.yaml`)
+     labels the user's own lines. **Sandbox-verified for real, not just
+     reasoned about:** 5 new committed tests in
+     `memory/test_memory.py` (roundtrip, blank-input skip, a real
+     user-line-with-blank-reply case, clear, clear-on-empty-db — all
+     passing alongside the existing 29), plus two ad hoc end-to-end
+     WebSocket runs through the actual `app.py` code (real
+     `TestClient` websocket, real SQLite writes): one exercising
+     `get_log`/`clear_log` directly, one running a full stubbed
+     `_run_turn` (fake `llm.stream_reply`/`synthesize`, real everything
+     else) confirming the logged text matches exactly what was sent via
+     `speak`. Frontend: `npx tsc --noEmit` and a full `npm run build`
+     both pass clean with the new markup/CSS/TS in place, and the log
+     panel's markup/CSS variables were confirmed present in the actual
+     built `dist/` output. **Not verified**: any of it actually working
+     in a real browser -- clicking the button, the panel's live
+     appearance, scroll behavior -- same no-GPU-no-browser caveat as
+     the reskin above; this is "logically checked and type-safe", not
+     "seen working."
+  Known gaps, not built: the STT-failure fallback line and the
+  observer-surface-busy decline are never logged (both happen before
+  `_run_turn`, with no corresponding user turn to pair against in the
+  requested `user: / assistant:` shape); no export/search over the log
+  beyond scrolling it; no pagination (unlikely to matter soon for a
+  single-user local app, per store.py's own reasoning).
 - 🔶 **Phase 10 — Environments.** Two of the three requested (VR explicitly
   scoped out by the user themselves as currently unachievable): (1) desktop
   companion mode — draggable corner presence, reacting to cursor

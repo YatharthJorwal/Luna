@@ -123,3 +123,44 @@ def _pack(vector: list[float]) -> bytes:
     from Python (confirmed against sqlite-vec's own README examples, and
     exercised directly in memory/test_memory.py's sandbox smoke test)."""
     return struct.pack(f"{len(vector)}f", *vector)
+
+
+def add_transcript_turn(user_text: str, assistant_text: str) -> None:
+    """One row per turn -- Phase 9's log panel, not Phase 3's facts/
+    episodes (see db.py's schema comment). No-op if both sides are blank
+    (a turn that never produced or received any text at all isn't worth a
+    row), but a real user_text with an empty assistant_text -- a reply cut
+    off before a single word was spoken -- still gets logged, since that's
+    an honest record of what actually happened on screen."""
+    user_text = user_text.strip()
+    assistant_text = assistant_text.strip()
+    if not user_text and not assistant_text:
+        return
+    conn = db.get_connection()
+    conn.execute(
+        "INSERT INTO transcript_log (user_text, assistant_text) VALUES (?, ?)",
+        (user_text, assistant_text),
+    )
+    conn.commit()
+
+
+def get_transcript_log() -> list[dict[str, str]]:
+    """Oldest-first (reads top-to-bottom like a chat transcript) -- the
+    opposite ordering from get_all_facts()'s newest-first, since that list
+    is for recall relevance and this one is for a human reading it back in
+    order. No limit/pagination for v1: this is a single-user local app, a
+    "clear log" button exists specifically to manage size, and the
+    frontend panel is the thing that would need pagination first if this
+    ever actually became a real problem -- not this query."""
+    conn = db.get_connection()
+    rows = conn.execute(
+        "SELECT user_text, assistant_text, created_at FROM transcript_log "
+        "ORDER BY created_at ASC, id ASC"
+    ).fetchall()
+    return [{"user": row[0], "assistant": row[1], "ts": row[2]} for row in rows]
+
+
+def clear_transcript_log() -> None:
+    conn = db.get_connection()
+    conn.execute("DELETE FROM transcript_log")
+    conn.commit()

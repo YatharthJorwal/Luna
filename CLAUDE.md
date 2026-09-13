@@ -99,6 +99,13 @@ harness)**. The "cursor via Playwright" question from last round is
 resolved — real action, deliberately reversing the observe-and-advise
 constraint above, scoped to browser automation, gated behind Work
 Mode, shell-only. Full spec: `docs/ROADMAP.md`'s Phase 11 entry.
+**Phase 9 (UI overhaul) is now underway**: pastel/lavender reskin plus
+a persistent conversation-log panel (grew Phase 9's original "no
+backend changes" scope by one real feature -- a `transcript_log` table
+and `get_log`/`clear_log` WebSocket messages, see
+`docs/ROADMAP.md`). Sandbox-verified for real (committed tests,
+`tsc`/`vite build` both clean) but **not yet confirmed in an actual
+browser** — no GPU/browser here, same as every prior visual change.
 Full writeup for both rounds in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 

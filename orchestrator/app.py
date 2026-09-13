@@ -53,7 +53,8 @@ import llm
 import stt
 from chunking import extract_ready_chunks, flush
 from config import CONFIG
-from memory import consolidation, forget, recall
+from memory import consolidation, forget, recall, store
+from memory.db import MemoryUnavailableError
 from persona import SYSTEM_PROMPT, apply_persona_pass, extract_emotion_tag
 from tts import synthesize
 
@@ -138,6 +139,32 @@ async def _send_speak(websocket: WebSocket, text: str) -> None:
     )
 
 
+async def _log_transcript_turn_safely(user_text: str, assistant_text: str) -> None:
+    """Best-effort -- a DB hiccup here shouldn't take down the turn itself
+    (turn_end still needs to reach the frontend either way), same
+    degrade-gracefully pattern recall.py/forget.py already use for the
+    same underlying DB."""
+    try:
+        await asyncio.to_thread(store.add_transcript_turn, user_text, assistant_text)
+    except MemoryUnavailableError as exc:
+        print(f"[luna] transcript log: write failed, skipping: {exc}", file=sys.stderr)
+
+
+async def _get_transcript_log_safely() -> list[dict[str, str]]:
+    try:
+        return await asyncio.to_thread(store.get_transcript_log)
+    except MemoryUnavailableError as exc:
+        print(f"[luna] transcript log: read failed, returning empty: {exc}", file=sys.stderr)
+        return []
+
+
+async def _clear_transcript_log_safely() -> None:
+    try:
+        await asyncio.to_thread(store.clear_transcript_log)
+    except MemoryUnavailableError as exc:
+        print(f"[luna] transcript log: clear failed: {exc}", file=sys.stderr)
+
+
 def _trim_history(history: list[dict[str, str]]) -> None:
     """Keeps the system prompt plus the last N (user, assistant) turns.
     Session memory only (Phase 3 adds durable memory), but still needs a
@@ -156,7 +183,13 @@ async def _run_turn(
     reply, speak each sentence chunk as it's ready, commit (or roll back)
     history. Shared by both `user_text` (typed) and `user_audio`
     (transcribed) messages -- by the time this runs, there's no difference
-    between the two."""
+    between the two.
+
+    Also writes one row to Phase 9's persistent transcript_log table
+    (memory/store.py) per call, regardless of how the turn ends (normal
+    completion, LLM-unreachable fallback, or stopped mid-sentence) -- see
+    spoken_parts below for what that does and doesn't include, and why
+    it's tracked separately from reply_parts/history."""
     history.append({"role": "user", "content": user_text})
 
     # Phase 3: forget first, then recall -- so a fact just removed this
@@ -181,6 +214,16 @@ async def _run_turn(
 
     buffer = ""
     reply_parts: list[str] = []
+    # Everything actually sent to _send_speak this turn, in order --
+    # tracked separately from reply_parts because the two lists serve
+    # different purposes and can legitimately diverge: reply_parts is what
+    # goes back into `history` for the LLM's own context (and deliberately
+    # excludes the LLM-unreachable fallback line, see below), while
+    # spoken_parts is Phase 9's transcript-log panel's record of what the
+    # user actually heard/saw this turn, unconditionally -- including that
+    # same fallback line, since it genuinely was spoken to them even though
+    # it shouldn't be fed back into the LLM as if she'd said it.
+    spoken_parts: list[str] = []
     detected_emotion: str | None = None
     try:
         async for delta in llm.stream_reply(messages_for_llm):
@@ -188,16 +231,21 @@ async def _run_turn(
             chunks, buffer = extract_ready_chunks(buffer)
             for chunk in chunks:
                 reply_parts.append(chunk)
-                await _send_speak(websocket, apply_persona_pass(chunk))
+                styled = apply_persona_pass(chunk)
+                spoken_parts.append(styled)
+                await _send_speak(websocket, styled)
         # Stream's fully done now, not mid-flight -- only safe point to
         # check for a trailing [emotion] tag (see extract_emotion_tag()'s
         # own docstring on why mid-stream would risk a false match).
         buffer, detected_emotion = extract_emotion_tag(buffer)
         for chunk in flush(buffer):
             reply_parts.append(chunk)
-            await _send_speak(websocket, apply_persona_pass(chunk))
+            styled = apply_persona_pass(chunk)
+            spoken_parts.append(styled)
+            await _send_speak(websocket, styled)
     except llm.LLMUnreachableError:
         await _send_speak(websocket, LLM_UNREACHABLE_LINE)
+        spoken_parts.append(LLM_UNREACHABLE_LINE)
         detected_emotion = EMOTION_LLM_UNREACHABLE
     finally:
         # In `finally`, not just after the try block, so a stop-button
@@ -220,6 +268,16 @@ async def _run_turn(
             # than leave a one-sided exchange in context for next time.
             history.pop()
         _trim_history(history)
+        # Awaiting here, inside `finally`, after a possible cancellation
+        # above is safe: the cancellation that got us here already fired
+        # once (at whichever `await` this task was sitting on), and
+        # nothing cancels it a second time while this runs -- ws_endpoint's
+        # "stop" handler only calls current_turn_task.cancel() once, then
+        # awaits the task's own unwinding. Logged unconditionally (not
+        # just on normal completion) so the log panel matches reality even
+        # for a stopped-mid-sentence turn, same reasoning as the
+        # history.append() above.
+        await _log_transcript_turn_safely(user_text, " ".join(spoken_parts))
 
     # Tells the frontend nothing more is coming for this turn (so it can
     # hide the stop button, re-enable input, etc.) -- only reached on a
@@ -349,6 +407,26 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # instead, now that the task has actually finished
                     # unwinding and it's safe to use the socket again.
                     await websocket.send_json({"type": "turn_end"})
+                continue
+
+            # get_log/clear_log deliberately come before the driver/observer
+            # gate below -- the transcript log is one shared, persistent
+            # record (memory/store.py's transcript_log table), not part of
+            # either connection's own in-memory `history`, so there's no
+            # reason an observer window shouldn't be able to read or clear
+            # it same as the driver can.
+            if msg_type == "get_log":
+                turns = await _get_transcript_log_safely()
+                await websocket.send_json(
+                    {"type": "log", "turns": turns, "user_name": CONFIG.session.user_name}
+                )
+                continue
+
+            if msg_type == "clear_log":
+                await _clear_transcript_log_safely()
+                await websocket.send_json(
+                    {"type": "log", "turns": [], "user_name": CONFIG.session.user_name}
+                )
                 continue
 
             if msg_type in ("user_text", "user_audio") and websocket is not _driver:

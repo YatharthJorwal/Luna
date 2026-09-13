@@ -96,6 +96,11 @@ session:
   # before dropping the oldest. Session-only -- gone on disconnect. Durable
   # memory across restarts is Phase 3 (see `memory` below).
   max_history_turns: 20
+  # Display name only -- how the user's own lines are labeled in Phase 9's
+  # conversation-log panel ("Yatharth: hello" / "Luna: ..."). Never sent to
+  # the LLM or used in the persona prompt; purely a frontend label pulled
+  # through app.py's `get_log` response.
+  user_name: "Yatharth"
 
 memory:
   # Phase 3 -- persistent memory (facts + episode summaries), surviving

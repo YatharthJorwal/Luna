@@ -2,7 +2,7 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils, type VRM } from "@pixiv/three-vrm";
 import { listen } from "@tauri-apps/api/event";
-import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage } from "./ws-client";
+import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage, type LogMessage } from "./ws-client";
 import { speakWithLipsync, getMouthOpenValue, getSpeechProgress } from "./lipsync";
 import { MicInput, blobToBase64 } from "./mic";
 
@@ -320,6 +320,12 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const actionButton = document.getElementById("action-button") as HTMLButtonElement;
   const emotionTestButton = document.getElementById("emotion-test-button") as HTMLButtonElement;
   const caption = document.getElementById("caption") as HTMLDivElement;
+  const logButton = document.getElementById("log-button") as HTMLButtonElement;
+  const logPanel = document.getElementById("log-panel") as HTMLDivElement;
+  const logPanelBody = document.getElementById("log-panel-body") as HTMLDivElement;
+  const logEmptyMessage = document.getElementById("log-empty-message") as HTMLParagraphElement;
+  const logClearButton = document.getElementById("log-clear-button") as HTMLButtonElement;
+  const logCloseButton = document.getElementById("log-close-button") as HTMLButtonElement;
 
   const STOP_ICON =
     '<svg viewBox="0 0 24 24" aria-hidden="true"><rect x="6" y="6" width="12" height="12" rx="2" /></svg>';
@@ -353,6 +359,56 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   // comment. Distinct from turnActive: this is about *which window* may
   // talk to her at all, not whether a reply is currently in flight.
   let observerLocked = false;
+
+  // Phase 9's conversation-log panel. `logUserName` defaults to "You"
+  // until the first real `log` message arrives with config.yaml's
+  // session.user_name -- covers the brief window before the orchestrator
+  // has replied at all, and the (should-never-happen) case where that
+  // field is somehow missing.
+  let logPanelOpen = false;
+  let logUserName = "You";
+
+  function renderLog(turns: LogMessage["turns"]): void {
+    logPanelBody.querySelectorAll(".log-turn").forEach((el) => el.remove());
+    logEmptyMessage.hidden = turns.length > 0;
+    for (const turn of turns) {
+      const row = document.createElement("div");
+      row.className = "log-turn";
+
+      const userLine = document.createElement("div");
+      userLine.className = "log-turn-user";
+      const userName = document.createElement("span");
+      userName.className = "log-turn-name";
+      userName.textContent = `${logUserName}:`;
+      userLine.append(userName, document.createTextNode(turn.user));
+      row.appendChild(userLine);
+
+      // A turn stopped before she said anything (see app.py's _run_turn)
+      // still gets a row, just with nothing after her name -- an honest
+      // record of what actually happened, not something to hide.
+      const assistantLine = document.createElement("div");
+      assistantLine.className = "log-turn-assistant";
+      const assistantName = document.createElement("span");
+      assistantName.className = "log-turn-name";
+      assistantName.textContent = "Luna:";
+      assistantLine.append(assistantName, document.createTextNode(turn.assistant));
+      row.appendChild(assistantLine);
+
+      logPanelBody.appendChild(row);
+    }
+    // New turns land at the bottom (oldest-first, see store.py) -- keep
+    // the scroll pinned there so the panel reads like a live chat log
+    // rather than leaving the user scrolled up on old messages every
+    // time it refreshes.
+    logPanelBody.scrollTop = logPanelBody.scrollHeight;
+  }
+
+  function setLogPanelOpen(open: boolean): void {
+    logPanelOpen = open;
+    logPanel.hidden = !open;
+    logButton.classList.toggle("active", open);
+    if (open) client.sendGetLog();
+  }
 
   function recomputeTurnActive(): void {
     setTurnActive(!orchestratorDone || !audioIdle);
@@ -572,6 +628,14 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       orchestratorDone = true;
       recomputeTurnActive();
       setTargetEmotion(emotion);
+      // Keeps an already-open panel live during a conversation, without
+      // needing a manual reopen -- cheap (one small WS round trip) since
+      // this only fires when the panel is actually visible.
+      if (logPanelOpen) client.sendGetLog();
+    },
+    onLog: (msg: LogMessage) => {
+      logUserName = msg.user_name || "You";
+      renderLog(msg.turns);
     },
     // Sandbox connected first -- she's already talking there. Lock input
     // here rather than let both windows race to start a turn (which would
@@ -586,6 +650,21 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     },
   });
   client.connect();
+
+  logButton.addEventListener("click", () => {
+    setLogPanelOpen(!logPanelOpen);
+  });
+  logCloseButton.addEventListener("click", () => {
+    setLogPanelOpen(false);
+  });
+  logClearButton.addEventListener("click", () => {
+    // No confirmation dialog -- this mirrors "forget that" (Phase 3)
+    // rather than a destructive-file-delete pattern: low stakes (it's a
+    // convenience view of things already said out loud, not the only
+    // copy of anything), and a confirm() popup would be an odd, very
+    // un-Luna interruption for a one-button UI this small.
+    client.sendClearLog();
+  });
 
   input.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;

@@ -30,6 +30,17 @@
       </button>
       <button id="action-button" type="button" hidden></button>
       <button
+        id="log-button"
+        type="button"
+        title="Conversation log"
+        aria-label="Conversation log"
+      >
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="4.5" y="3.5" width="15" height="17" rx="2.5" fill="none" stroke="currentColor" stroke-width="1.6" />
+          <path d="M8 8.5h8M8 12h8M8 15.5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+        </svg>
+      </button>
+      <button
         id="emotion-test-button"
         type="button"
         title="Cycle test expression"
@@ -48,6 +59,30 @@
           />
         </svg>
       </button>
+    </div>
+
+    <!-- Phase 9: persistent conversation-log panel -- hidden by default,
+         toggled by #log-button, populated from the orchestrator's `log`
+         message (see ws-client.ts's protocol comment and main.ts's
+         setupHud). #log-panel-body's placeholder <p> is swapped for real
+         turn rows once a `log` message actually arrives; kept in the
+         markup rather than only in JS so there's never a blank flash
+         before the first response comes back. -->
+    <div id="log-panel" hidden>
+      <div id="log-panel-header">
+        <span id="log-panel-title">Conversation Log</span>
+        <div id="log-panel-actions">
+          <button id="log-clear-button" type="button">Clear Log</button>
+          <button id="log-close-button" type="button" title="Close" aria-label="Close conversation log">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+            </svg>
+          </button>
+        </div>
+      </div>
+      <div id="log-panel-body">
+        <p id="log-empty-message">No conversations logged yet.</p>
+      </div>
     </div>
 
     <script type="module" src="/src/main.ts"></script>

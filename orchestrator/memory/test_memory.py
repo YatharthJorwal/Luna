@@ -377,6 +377,52 @@ def test_delete_facts_empty_list_is_noop(memory_db):
 
 
 # ---------------------------------------------------------------------------
+# Phase 9 -- transcript_log (the persistent conversation-log panel). Fully
+# real against the same memory_db fixture, no stubbing needed -- this is a
+# plain SQLite table with no embedding/LLM dependency at all.
+# ---------------------------------------------------------------------------
+
+
+def test_transcript_log_roundtrip_oldest_first(memory_db):
+    store.add_transcript_turn("hello", "hi here to help...")
+    store.add_transcript_turn("how are you", "tch, fine I guess")
+    turns = store.get_transcript_log()
+    assert [t["user"] for t in turns] == ["hello", "how are you"]  # oldest first,
+    # the opposite ordering from get_all_facts() -- see store.py's docstring
+    assert turns[0]["assistant"] == "hi here to help..."
+    assert turns[1]["assistant"] == "tch, fine I guess"
+    assert all("ts" in t for t in turns)
+
+
+def test_add_transcript_turn_skips_when_both_blank(memory_db):
+    store.add_transcript_turn("   ", "")
+    assert store.get_transcript_log() == []
+
+
+def test_add_transcript_turn_keeps_real_user_text_with_blank_reply(memory_db):
+    # A turn stopped before she said anything -- still an honest record of
+    # what actually happened, not something to silently drop (see
+    # add_transcript_turn's own docstring).
+    store.add_transcript_turn("wait stop", "")
+    turns = store.get_transcript_log()
+    assert len(turns) == 1
+    assert turns[0]["user"] == "wait stop"
+    assert turns[0]["assistant"] == ""
+
+
+def test_clear_transcript_log(memory_db):
+    store.add_transcript_turn("hello", "hi")
+    store.add_transcript_turn("bye", "bye bye")
+    store.clear_transcript_log()
+    assert store.get_transcript_log() == []
+
+
+def test_clear_transcript_log_empty_db_is_noop(memory_db):
+    store.clear_transcript_log()
+    assert store.get_transcript_log() == []
+
+
+# ---------------------------------------------------------------------------
 # forget.py -- store is real (via memory_db fixture), llm.stream_reply stubbed
 # ---------------------------------------------------------------------------
 

@@ -10,10 +10,25 @@
 //   -> { type: "user_text", text: string }
 //   -> { type: "user_audio", audio_b64: string }
 //   -> { type: "stop" }
+//   -> { type: "get_log" }
+//   -> { type: "clear_log" }
 //   <- { type: "speak", text: string, audio_b64: string, mime: string }
 //   <- { type: "transcript", text: string }
 //   <- { type: "turn_end", emotion?: string }
 //   <- { type: "surface_status", role: "driver" | "observer" }
+//   <- { type: "log", turns: { user: string, assistant: string, ts: string }[], user_name: string }
+//
+// `get_log`/`clear_log` (Phase 9's persistent conversation-log panel) are
+// answered with the same `log` message either way -- `clear_log` just
+// empties the underlying table first, so the response naturally comes
+// back with `turns: []` rather than needing a separate ack shape. Unlike
+// `user_text`/`user_audio`, these aren't gated by driver/observer status
+// (see below) -- the log is one shared, persistent record, not something
+// tied to a single connection's in-memory `history`, so either window can
+// read or clear it freely. Server-side: orchestrator/memory/store.py's
+// `transcript_log` table, written once per turn from `app.py`'s
+// `_run_turn` (see its own comment for exactly what gets logged and what
+// doesn't).
 //
 // `transcript` is sent once per `user_audio` message, always -- an empty
 // `text` means the orchestrator heard nothing intelligible (silence, noise),
@@ -69,6 +84,22 @@ export type TurnEndMessage = {
   emotion?: string;
 };
 
+export type LogTurn = {
+  user: string;
+  assistant: string;
+  ts: string;
+};
+
+export type LogMessage = {
+  type: "log";
+  turns: LogTurn[];
+  /** From config.yaml's session.user_name -- how the frontend labels the
+   * user's own lines ("Yatharth: hello"). Falls back to "You" client-side
+   * if this is ever missing (shouldn't happen, but the config value is
+   * user-edited free text, not a validated enum). */
+  user_name: string;
+};
+
 export type SurfaceRole = "driver" | "observer";
 
 export type SurfaceStatusMessage = {
@@ -90,6 +121,12 @@ interface WsClientOptions {
   onTranscript: (msg: TranscriptMessage) => void;
   onTurnEnd: (emotion?: string) => void;
   onStateChange: (state: ConnectionState) => void;
+  /** Fired for both get_log's response and clear_log's (the latter always
+   * arrives with an empty `turns` array) -- see this file's own protocol
+   * comment. Optional for the same reason onSurfaceStatus is: a caller
+   * that never sends get_log/clear_log (there isn't one today besides
+   * main.ts's log panel) doesn't need to handle it. */
+  onLog?: (msg: LogMessage) => void;
   /** Optional since it's new -- a caller that doesn't care about
    * driver/observer status (there isn't one today, but keeping this
    * optional rather than required avoids forcing every future caller to
@@ -115,7 +152,7 @@ export class WsClient {
     });
 
     this.socket.addEventListener("message", (event) => {
-      let parsed: SpeakMessage | TranscriptMessage | TurnEndMessage | SurfaceStatusMessage;
+      let parsed: SpeakMessage | TranscriptMessage | TurnEndMessage | SurfaceStatusMessage | LogMessage;
       try {
         parsed = JSON.parse(event.data);
       } catch {
@@ -131,6 +168,8 @@ export class WsClient {
         this.opts.onTurnEnd(parsed.emotion);
       } else if (parsed.type === "surface_status") {
         this.opts.onSurfaceStatus?.(parsed.role);
+      } else if (parsed.type === "log") {
+        this.opts.onLog?.(parsed);
       }
     });
 
@@ -171,6 +210,23 @@ export class WsClient {
   sendStop(): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify({ type: "stop" }));
+  }
+
+  /** Requests the full persistent conversation log -- answered with a
+   * `log` message via onLog. Not gated by driver/observer status (see
+   * this file's protocol comment), so this is safe to call even from an
+   * observer window. */
+  sendGetLog(): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: "get_log" }));
+  }
+
+  /** Wipes the persistent conversation log server-side. Also answered
+   * with a `log` message (turns: []) via onLog, so callers can just
+   * re-render off the same handler rather than assuming success. */
+  sendClearLog(): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: "clear_log" }));
   }
 
   private scheduleReconnect(): void {

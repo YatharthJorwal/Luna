@@ -80,6 +80,23 @@ def _open_connection(path: str | pathlib.Path | None = None, dimension: int | No
         )
         """
     )
+    # Phase 9's persistent conversation-log panel -- a plain verbatim
+    # transcript (one row per turn: what the user said, what she actually
+    # said back), completely separate from facts/episodes above. Deliberately
+    # NOT read by recall.py or written by consolidation.py -- this is for
+    # the user's own review (the log panel's "clear log" button), not
+    # something fed back into her memory/context. See store.py's
+    # add_transcript_turn/get_transcript_log/clear_transcript_log.
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS transcript_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_text TEXT NOT NULL,
+            assistant_text TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
     # vec0 virtual table's rowid IS the episode id -- inserted explicitly
     # as `rowid` in store.py, not auto-assigned, so a lookup in one table
     # always has a matching rowid in the other. float[N] fixes the vector

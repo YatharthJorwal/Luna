@@ -2717,3 +2717,66 @@ pretending the original line never existed.
 independent of Conversation/Work Mode, controlling reasoning depth
 (single-pass vs. a slower plan→act→observe→reflect loop) — mainly a
 context-budget lever for `qwen3.5:9b`, not a safety mechanism.
+
+## Phase 9: pastel reskin + persistent conversation-log panel
+
+Two independent pieces landed together since they're both Phase 9 UI
+work, but they're worth separating out:
+
+**The reskin** is a pure color-variable swap in `style.css` (plus the
+caption glow's hardcoded colors, which weren't on variables at all) —
+no layout/structure changes. Nothing here is verified visually; it's
+the same "no GPU/browser in this sandbox" caveat as every prior round.
+
+**The log panel** was scoped bigger than Phase 9 originally called for
+("no protocol or backend changes") because the user specifically asked
+for it to be *persistent* — a real feature, not a styling choice, so it
+gets its own reasoning:
+
+- **A separate `transcript_log` table, not reusing Phase 3's facts/
+  episodes.** This is a plain verbatim record for the user to read back,
+  not something meant to inform her memory or get summarized/recalled —
+  mixing it into the facts/episodes tables would risk it leaking into
+  `consolidation.py`'s session-summarization pass or `recall.py`'s
+  context injection, neither of which should ever see raw transcript
+  text. Kept in the same SQLite file (same `db.py` connection) purely
+  for convenience — one DB file, not a second one to manage.
+- **`spoken_parts` tracked separately from `reply_parts` in
+  `app.py`'s `_run_turn`.** `reply_parts` already existed and feeds
+  `history` (the LLM's own context) — it deliberately excludes the
+  LLM-unreachable fallback line, since she never really "said" it in a
+  sense that should count toward future context. But the log panel's
+  job is different: it's a record of what the user actually saw/heard,
+  full stop, so it needs that fallback line included even though
+  `history` shouldn't have it. Rather than stretch `reply_parts` to
+  serve both jobs (and risk a future change to one silently breaking
+  the other), a second list makes the two purposes explicit and
+  independent.
+- **Logged in `finally`, unconditionally, including a stopped-mid-
+  sentence turn.** Matches the existing philosophy `history.append()`
+  already uses in that same block ("she got cut off mid-sentence" is
+  itself the honest record) rather than only logging clean completions.
+- **Not logged:** the STT-failure fallback line and the observer-
+  surface-busy decline, both of which fire before `_run_turn` is ever
+  called (no `user_text` turn exists yet in the first case; no turn is
+  allowed to start at all in the second) — there's no corresponding
+  user line to pair either against in the `user: / assistant:` shape
+  that was actually asked for, so extending the log schema to handle a
+  one-sided entry wasn't worth it for two rare edge cases.
+- **New `session.user_name` config field**, display-only — never sent
+  to the LLM or folded into the persona prompt, purely a label the
+  frontend uses for the user's own lines in the panel.
+
+**What's actually verified vs. not**, since this phase mixes both for
+the first time in one push: the backend (table, CRUD, WebSocket
+handlers, the `spoken_parts`/`reply_parts` split) is verified for
+real — 5 new committed pytest cases, plus two ad hoc end-to-end
+WebSocket runs through the genuine `app.py` code (one direct
+`get_log`/`clear_log` exchange, one full stubbed `_run_turn` proving
+the logged text matches what was actually sent via `speak`). The
+frontend (button, panel, rendering) is only verified structurally —
+`tsc --noEmit` and a full `vite build` both pass clean, and the new
+markup/CSS were confirmed present in the built output — but nothing
+about how it actually looks or behaves in a real window has been
+seen. Same split as every other UI change in this project: logic can
+be genuinely tested here; appearance can't.

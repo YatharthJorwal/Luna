@@ -53,6 +53,7 @@ class STTConfig:
 @dataclass(frozen=True)
 class SessionConfig:
     max_history_turns: int
+    user_name: str
 
 
 @dataclass(frozen=True)
