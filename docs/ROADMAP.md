@@ -569,7 +569,29 @@ awaiting on-machine confirmation · ⬜ not started)
   animation clips the user is deferring buying. See "Shell-polish vs.
   apartment-build" below for the full reasoning and the room-vs-
   interactions split this suggests if the user wants to make partial
-  progress here without waiting on that purchase.
+  progress here without waiting on that purchase. **Update: round 8
+  below, from a separate parallel session, is exactly that
+  room-geometry split** — done before this note was even resolved,
+  since the two sessions were running at the same time.
+- 🔶 **Round 8: first real apartment render dropped in.** A user-supplied
+  standalone Three.js scene — kitchen, living/dining, bedroom, and
+  bathroom, pastel "dollhouse" look, day/noon/evening/night lighting
+  presets, its own orbit-style camera controls — now lives at
+  `public/apartment/index.html`, linked from the sandbox's info panel.
+  Deliberately *not* merged into `sandbox.ts`'s own VRM scene yet: it's
+  self-contained (own renderer/camera/lighting/animate loop, Three.js
+  r128 via a CDN `<script>` tag rather than this project's bundled ESM
+  `three`), and the user asked for it to just be wired in and reachable
+  for now — the room/furniture layout itself is expected to change
+  before any deeper integration, so this round didn't touch the
+  apartment's own code at all. This is step 1 of the round-7 plan above
+  (room geometry), done as a drop-in rather than a from-scratch Blender
+  build since the asset already existed. Still ahead, per that plan:
+  porting the scene into the real character-bearing scene (which also
+  means updating a couple of APIs this file uses that don't exist on
+  the project's newer `three` version), the per-room navmesh, the
+  sit/cook/read anchors, and the scene-state channel to `persona.py`.
+  See `docs/DECISIONS.md`.
 - ⬜ **Phase 11 — Agentic tool harness (Work Mode).** The single biggest
   scope change in this project's history: reverses the original
   "observe-and-advise only, never touches the mouse/keyboard" stance
@@ -732,7 +754,9 @@ Resolved:
   machine — round 6 is closed. See the round-6-closed entry above.
 - What comes next: **Phase 9 → Phase 4 → Phase 11**, in that order, per
   the user — see the Phase 11 entry and "Shell-polish vs.
-  apartment-build" above. Apartment build (round 7) stays paused.
+  apartment-build" above. Apartment build (round 7) stays paused,
+  though round 8 (above) already made progress on its room-geometry
+  half via a separate parallel session.
 - Cursor via Playwright: clarified — real action, not just a visual
   indicator, deliberately reversing the earlier observe-and-advise-only
   stance. Scoped to browser automation (not general OS input), gated
@@ -746,8 +770,14 @@ Still open:
 - Live2D model source for anything beyond local prototyping (free sample vs.
   purchased vs. commissioned) and its license terms. (Largely moot since the
   Phase 7 VRM migration, kept here for the record.)
-- Full-apartment room build (Phase 10 round 7): paused, not cancelled,
-  pending the user sourcing sit/cook/read/sleep/bathe/watch-TV/play-game
-  animation clips — see "Shell-polish vs. apartment-build" above.
+- Full-apartment room build (Phase 10 round 7 plan / round 8 first
+  drop-in): paused on the interactions half, not cancelled, pending the
+  user sourcing sit/cook/read/sleep/bathe/watch-TV/play-game animation
+  clips. The room-geometry half got a head start in round 8 (above,
+  from a separate parallel session) via a user-supplied standalone
+  render — still needs porting into the real character-bearing scene,
+  plus the per-room navmesh and the sit/cook/read anchors, before any
+  of it can connect to the character. See "Shell-polish vs.
+  apartment-build" above and the round-7/round-8 entries.
 - Shell hide/minimize toggle for real (non-sandbox) localhost runs: not
   built yet.
