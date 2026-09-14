@@ -2841,3 +2841,56 @@ whether `qwen3.5:9b` calls these tools sensibly in practice, are both
 completely open until the user actually runs this against their own
 Ollama instance. Flagged explicitly in `docs/ROADMAP.md`'s Phase 4
 entry rather than assumed away.
+
+## Tool-calling: likely a missing dependency, not a model limitation
+
+First real test showed capture_screen/read_clipboard never actually
+firing -- she deflected in character instead of using either tool. The
+user's own read was a 9B-model hardware/capability limitation. The
+transcript itself argues against that: she specifically blamed "the
+stupid Pillow thing" -- oddly precise for a model just refusing to
+cooperate, but exactly what she'd say if `capture_screen` genuinely ran,
+hit `ToolUnavailableError("Pillow isn't installed: ...")` (Pillow was
+added to requirements.txt in the same round the tool was built, and easy
+to miss re-running `pip install` for after a docs-only bundle came in
+between), and that error text came back as the tool's real result for
+her to react to. Per SYSTEM_PROMPT's own instruction not to invent
+specific incidents that were never described, a made-up refusal
+shouldn't name a real Python package by name -- so if that instruction
+is being followed at all, this reaction was grounded in something real,
+not fabricated.
+
+Not marking this "done, flagged as a model constraint" on that theory
+alone -- it's a strong read of the transcript, not confirmed. Asked the
+user to check `pip show Pillow` in the orchestrator's venv and to paste
+the `[luna] tool-calling:` diagnostic line (added last round) from the
+orchestrator's own terminal for that exchange, which settles it either
+way: if Ollama's response never included a `tool_calls` key at all,
+that's the streaming-support risk flagged when this was built; if it did
+and a call was parsed, the missing-Pillow theory above is confirmed and
+the fix really is just `pip install -r requirements.txt`.
+
+## "You're" mispronounced by SoVITS -- fixed proactively, same pattern as the dash fix
+
+User reported the cloned voice specifically mangles "you're" (not other
+contractions). Same underlying cause as the dash-to-"minus" issue above:
+a plain-language SYSTEM_PROMPT instruction is not the same as a 9B model
+that actually never does the thing (confirmed the hard way for the dash
+case -- see the entry above, "she still generates dashes" after the
+prompt instruction alone). Applied that lesson proactively this time
+instead of waiting for the same failure to repeat: added the prompt
+instruction AND a regex safety net (`_YOURE_PATTERN` in persona.py) in
+the same change, rather than shipping the prompt-only version first.
+Case-preserving ("You're" -> "You are", "you're" -> "you are") so it
+doesn't read as a capitalization mistake mid-sentence. Scoped to just
+this one word, not contractions generally, since that's specifically
+what was reported -- no reason to flatten her voice further than the
+actual complaint calls for.
+
+Also added `test_persona.py` -- didn't exist before this, so the
+original dash safety net had no committed test either, only the ad hoc
+sandbox check `docs/DECISIONS.md`'s own dash-fix entry describes. Both
+safety nets are pure regex logic with no LLM/network/event-loop
+involved, making them fully, genuinely testable rather than
+"logically checked, not confirmed" -- there was no reason for either to
+have stayed at ad hoc-only verification.

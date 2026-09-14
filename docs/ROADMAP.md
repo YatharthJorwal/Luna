@@ -198,35 +198,40 @@ awaiting on-machine confirmation · ⬜ not started)
   fallback are both completely unaffected by any of this (regression
   check against Phase 2/9's existing behavior).
 
-  **First real-world test (on the user's actual machine): tools are not
-  being called at all.** Asked directly to look at the screen or read
-  the clipboard, she replies in character instead -- deflecting,
-  demanding the user paste/show it themselves -- rather than invoking
-  either tool. Root cause not yet known; **diagnostic logging added** to
-  `llm.stream_reply_with_tools()` (one line per call to the orchestrator's
-  own terminal: which tools were offered, whether Ollama's response ever
-  included a `tool_calls` key at all, and whether a call was actually
-  parsed out of it) specifically to distinguish the real candidates:
-  Ollama not emitting `tool_calls` through the streaming endpoint for
-  this model at all (the risk flagged below when this was first built),
-  a bug in how the request/response is being handled, or the model
-  choosing not to call the tool even though it's offered one (a
-  persona/prompt-competition issue rather than a wiring one). Awaiting
-  the user's actual terminal output from a retry to tell which.
+  **First real-world test (on the user's actual machine): tools appear
+  to not be working.** Asked directly to look at the screen or read the
+  clipboard, she replies in character instead -- deflecting, demanding
+  the user paste/show it themselves. The user's own read: a `qwen3.5:9b`
+  hardware/capability limitation. **Leading hypothesis instead, from a
+  second round of testing:** a missing dependency, not a model
+  limitation. She specifically named "the Pillow thing" when refusing --
+  oddly precise for a model just declining to cooperate, but exactly
+  what she'd say if `capture_screen` genuinely ran, hit
+  `ToolUnavailableError("Pillow isn't installed: ...")`, and reacted to
+  that real error text as the tool's result. Pillow was added to
+  `requirements.txt` the same round the tool was built; easy to miss
+  re-running `pip install` for, since a docs-only bundle came in between
+  with nothing to install. **Not confirmed yet** -- asked the user to
+  check `pip show Pillow` in the orchestrator's venv and to paste the
+  `[luna] tool-calling:` diagnostic line (added this same round, see
+  just below) from the orchestrator's own terminal for that exchange.
+  Full reasoning in `docs/DECISIONS.md`. Deliberately not marked done
+  with "9B model constraint" flagged as the cause until that's actually
+  confirmed -- the evidence points somewhere much more fixable.
 
   **Not verified, real unknowns until tested on the user's machine:**
   whether Ollama actually emits `tool_calls` reliably through its
-  *streaming* endpoint for `qwen3.5:9b` specifically -- **now actively
-  under investigation, see just above**, rather than a purely
-  theoretical risk; `llm.py`'s own docstrings flag the fallback plan (a
-  non-streaming detect-then-stream shape) if the streaming path doesn't
-  hold up in practice; whether `PIL.ImageGrab.grab()` and
-  `pyperclip.paste()` behave as expected on the user's real Windows
-  machine/multi-monitor setup (this sandbox has no display at all); and
-  whether `qwen3.5:9b` actually reaches for these tools sensibly rather
-  than over- or under-calling them -- tuning that is real Round 2/3
-  territory once there's actual usage to react to (moot until the
-  tools fire at all).
+  *streaming* endpoint for `qwen3.5:9b` specifically -- **still open,
+  see just above**, though a missing dependency is currently the
+  stronger read of the evidence than this; `llm.py`'s own docstrings
+  flag the fallback plan (a non-streaming detect-then-stream shape) if
+  the streaming path doesn't hold up in practice; whether
+  `PIL.ImageGrab.grab()` and `pyperclip.paste()` behave as expected on
+  the user's real Windows machine/multi-monitor setup (this sandbox has
+  no display at all); and whether `qwen3.5:9b` actually reaches for
+  these tools sensibly rather than over- or under-calling them --
+  tuning that is real Round 2/3 territory once there's actual usage to
+  react to (moot until the tools fire at all).
 
   **Not built yet (later rounds):** `ocr_region` (explicitly a fallback
   for imprecise VLM OCR per `docs/ARCHITECTURE.md`, not needed for the

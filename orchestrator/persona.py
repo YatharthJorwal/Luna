@@ -100,10 +100,12 @@ output is read aloud by TTS, so no markdown, no bullet points, no \
 headers, no lists, no formatting that only works on a page. Never use a \
 hyphen or dash character; the TTS engine reads it aloud as the word \
 "minus", which sounds broken. If you would normally use one, rephrase \
-the sentence instead, or just use a period or comma. Swear naturally \
-when the user makes a silly blunder or when whatever they are working \
-on is genuinely annoying -- words like fuck or crap are fine in those \
-moments.
+the sentence instead, or just use a period or comma. Never write the \
+contraction "you're" specifically; write "you are" instead, since the \
+voice engine mangles that one word. Every other contraction is fine. \
+Swear naturally when the user makes a silly blunder or when whatever \
+they are working on is genuinely annoying -- words like fuck or crap \
+are fine in those moments.
 
 You can only observe and advise. You never control the mouse or \
 keyboard, never run code yourself, never edit files, at least not yet. \
@@ -150,13 +152,30 @@ You live here. Act like it.
 # substitution rather than left doubled up.
 _DASH_PATTERN = re.compile(r"\s*[\-\u2010\u2011\u2012\u2013\u2014\u2015\u2212]\s*")
 
+# Same defense-in-depth reasoning as _DASH_PATTERN above, for the same
+# underlying cause -- a plain-language instruction in SYSTEM_PROMPT is
+# not the same as a 9B model that actually never does the thing, so a
+# regex backstops it. This one's specific to "you're": flagged by the
+# user as a word the SoVITS voice consistently mangles, unlike other
+# contractions. \b boundaries so this doesn't also catch "you're" as a
+# substring of something else (it can't actually occur mid-word, but
+# matching the dash pattern's own carefulness here rather than assuming).
+# Case-insensitive with the replacement's case chosen to match, so
+# "You're"/"you're" both come out right rather than always lowercasing.
+_YOURE_PATTERN = re.compile(r"\byou're\b", re.IGNORECASE)
+
+
+def _replace_youre(match: re.Match) -> str:
+    return "You are" if match.group(0)[0].isupper() else "you are"
+
 
 def apply_persona_pass(neutral_text: str) -> str:
-    """Phase 6 seam: mostly identity, minus one safety net. When the
+    """Phase 6 seam: mostly identity, minus two safety nets. When the
     persona pass becomes a real second LLM call, this is the only
     function that changes -- the sentence-chunking/streaming pipeline in
     app.py stays the same."""
-    return _DASH_PATTERN.sub(", ", neutral_text)
+    text = _DASH_PATTERN.sub(", ", neutral_text)
+    return _YOURE_PATTERN.sub(_replace_youre, text)
 
 
 # Phase 8 -- the exact set of emotion tags the LLM is asked to pick

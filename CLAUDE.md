@@ -120,6 +120,18 @@ actually streams `tool_calls` reliably for `qwen3.5:9b`, and whether
 streaming approach doesn't hold up. Task Guide Mode's own scheduled-
 capture/off-task-chide loop (the actual flagship half of Phase 4) is
 still not built — Round 1 only covers on-demand tool calls.
+**First real-world test: the tools don't appear to be working** — she
+deflects in character instead of calling them. Leading hypothesis is a
+missing dependency (she named "the Pillow thing" specifically when
+refusing), not a model limitation as first suspected — not confirmed
+yet, see `docs/ROADMAP.md`/`docs/DECISIONS.md`. Diagnostic logging is in
+place (`[luna] tool-calling:` lines in the orchestrator's terminal) to
+settle it. Also fixed this round: the conversation-log panel's text
+wasn't actually copy-pasteable (a global `user-select: none` with no
+override), and added a voice fix — "you're" specifically gets mangled by
+the cloned SoVITS voice, so both the system prompt and a regex safety
+net (same pattern as the existing dash-to-comma fix) now convert it to
+"you are".
 Full writeup for both rounds in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
