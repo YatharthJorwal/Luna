@@ -2641,3 +2641,88 @@ out.
 **Confirmed on the user's real machine:** she walks forward now. This
 entry closes out the "walks backward"/"moonwalk" saga that ran across
 rounds 4-6.
+
+## Round 6, fully closed: wall-clamp and turn-rate confirmed fine too
+
+Separate from the direction fix above, round 6 also shipped a hard wall
+clamp and a slower turn rate (`TURN_RATE_RAD_S` 10 → 4) as reasoned-but-
+unverified tuning changes -- see this doc's earlier round-6 entry. The
+user has now confirmed, plainly, that walking reads as fixed on their
+real machine, closing the one item that entry left open. Nothing in the
+code changed for this note; it's here so `docs/ROADMAP.md`'s "still
+open" list doesn't keep carrying an item that's actually done.
+
+## Round 7 -> Round 8: the apartment render itself shows up
+
+Round 7 (above) was planning only. The user then supplied an actual
+built asset -- a single self-contained HTML file, `THREE.js` r128 loaded
+from a CDN `<script>` tag, procedurally building a four-room apartment
+(kitchen, living/dining, bedroom, bathroom) in a pastel "dollhouse"
+style with day/noon/evening/night lighting presets and its own
+orbit-style pointer camera. Instruction was explicit and narrow: get it
+into the project and reachable, don't touch the apartment's own code --
+the room/furniture layout is expected to change before anyone spends
+time tuning it.
+
+**Landed as a standalone static page, not merged into `sandbox.ts`'s
+scene.** Copied verbatim to `public/apartment/index.html` (confirmed
+Vite's dev server resolves `/apartment/` to it, `200` on both
+`/apartment/` and `/apartment/index.html`, checked directly against a
+running `vite` instance in this sandbox, not assumed) and linked from
+the sandbox's own info panel (`sandbox.html`'s `#sandbox-apartment-link`,
+opens in a new tab). Three reasons this stayed a link rather than an
+import into `sandbox.ts`:
+
+1. **API mismatch.** The file uses Three.js r128's global-script API
+   (`renderer.outputEncoding = THREE.sRGBEncoding`, among others) --
+   this project's own `three` dependency is `^0.185.1`, an ESM import
+   where `outputEncoding`/`sRGBEncoding` were removed years ago in favor
+   of `outputColorSpace`/`SRGBColorSpace`. Importing the file's script
+   as-is into the Vite/TS pipeline wouldn't compile against the
+   project's `three`; running it because of its own CDN `<script>` tag
+   means it's really a second, independent Three.js instance on the
+   page, not a module sharing state with `sandbox.ts`'s.
+2. **Two renderers, two animate loops, one canvas budget.** The
+   apartment file owns its own `<canvas>`, `WebGLRenderer`, camera, and
+   `requestAnimationFrame` loop, entirely separate from `sandbox.ts`'s.
+   Actually merging the geometry into the character's own scene means
+   porting the room-building functions (not the renderer/camera/input
+   scaffolding around them) into `buildStudio()`'s territory -- real
+   work, not a copy-paste.
+3. **The instruction itself.** "Just put it there, we edit the
+   apartment itself later" -- spending effort reconciling render
+   pipelines before the room layout is even settled would be solving a
+   problem that's about to change shape anyway.
+
+**What this sets up for later** (step 1 of the round-7 plan, done as a
+drop-in rather than a from-scratch Blender build since a finished asset
+already existed): once the apartment's own layout is settled, the actual
+integration work is (a) porting its room/furniture-building code into
+the modern `three` API and into a scene the VRM character also lives in,
+replacing `buildStudio()`'s plain box; (b) the per-room navmesh replacing
+`WanderController`'s free-roam bounding box; (c) named sit/cook/read
+anchors; (d) the scene-state channel to `persona.py`. None of that is
+started -- this round is purely "it exists in the repo and you can look
+at it."
+
+**Verified in this sandbox:** the file has zero external asset
+dependencies beyond a CDN script tag and Google Fonts link (checked by
+grep -- no relative `src=`/texture/GLTF loads to break by moving it), so
+copying it verbatim was safe; Vite actually served it correctly at
+`/apartment/` from a real running dev server, not assumed from reading
+Vite's docs; `tsc --noEmit` clean; `vite build` (the shell's production
+build) still succeeds and copies `public/apartment/` into `dist/`
+unchanged, confirmed by listing `dist/` after a real build; `sandbox.html`
+still serves correctly with the new link markup, checked against the
+same running dev server. **Not verified:** anything about how the
+apartment actually looks or performs -- no GPU/browser in this sandbox,
+the same recurring caveat, though for once that caveat barely matters
+yet: nothing about its rendering was touched, only its location in the
+repo.
+
+**Scope note for this round:** a second, parallel session is working on
+the shell/UI (`index.html`/`src/main.ts`/`src/style.css`) at the same
+time. Everything above touched only sandbox-side files
+(`sandbox.html`, `src/sandbox.css`) plus a new `public/apartment/`
+asset and these docs -- same isolation discipline as Phase 10 round 2's
+original shell/sandbox split.

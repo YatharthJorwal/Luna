@@ -364,6 +364,11 @@ awaiting on-machine confirmation · ⬜ not started)
   diagnostics (`debugFacingTravelText`, `debugFootTraceText`,
   `debugHipsWorldFacingText`) and their on-screen readouts have been
   removed; `directionToFacingAngle()` (the actual fix) stays.
+  **Round 6, fully closed:** the user confirmed on their real machine
+  that walking reads as fixed overall now — not just the facing
+  direction, but the wall-clamp and slower turn-rate changes too. The
+  only open item this round left behind is closed; see
+  `docs/DECISIONS.md`.
   **Round 7 (planning only, full apartment) — not built yet, renumbered
   from a parallel session.** The user ran a separate planning
   conversation in parallel with this session's round-5 build work, off
@@ -410,6 +415,25 @@ awaiting on-machine confirmation · ⬜ not started)
   channel her situational awareness runs through — see
   `docs/DECISIONS.md`'s round-7 entry for why text scene-state was
   picked over feeding her rendered frames.
+  **Round 8: first real apartment render dropped in.** A user-supplied
+  standalone Three.js scene — kitchen, living/dining, bedroom, and
+  bathroom, pastel "dollhouse" look, day/noon/evening/night lighting
+  presets, its own orbit-style camera controls — now lives at
+  `public/apartment/index.html`, linked from the sandbox's info panel.
+  Deliberately *not* merged into `sandbox.ts`'s own VRM scene yet: it's
+  self-contained (own renderer/camera/lighting/animate loop, Three.js
+  r128 via a CDN `<script>` tag rather than this project's bundled ESM
+  `three`), and the user asked for it to just be wired in and reachable
+  for now — the room/furniture layout itself is expected to change
+  before any deeper integration, so this round didn't touch the
+  apartment's own code at all. This is step 1 of the round-7 plan above
+  (room geometry), done as a drop-in rather than a from-scratch Blender
+  build since the asset already existed. Still ahead, per that plan:
+  porting the scene into the real character-bearing scene (which also
+  means updating a couple of APIs this file uses that don't exist on
+  the project's newer `three` version), the per-room navmesh, the
+  sit/cook/read anchors, and the scene-state channel to `persona.py`.
+  See `docs/DECISIONS.md`.
 
 ## Open decisions
 
@@ -424,6 +448,10 @@ Resolved:
   to it are on the user to confirm — not something this doc can verify.
 - STT: in scope after all, via faster-whisper (Phase 2.5) — see the scope
   section above.
+- Round 6's wall-clamp/turn-rate/facing-during-start changes: confirmed
+  reading as fixed on the user's real machine, alongside the
+  already-resolved facing/direction bug — see the round-6 entry above and
+  `docs/DECISIONS.md`.
 
 Still open:
 - Task Guide Mode tuning: screenshot interval while a task is active, and how
@@ -431,11 +459,8 @@ Still open:
   down when they're not in the mood to be chided).
 - Live2D model source for anything beyond local prototyping (free sample vs.
   purchased vs. commissioned) and its license terms.
-- Full-apartment room build (Phase 10 round 7): asset pack source/license
-  for the furniture, per-room navmesh authoring, and the sit/cook/read
-  animation clips — none of this is built yet, see the round-7 planning
-  note above.
-- Round 6's remaining open item: whether the wall-clamp/turn-rate/
-  facing-during-start changes actually read as fixed on the user's
-  machine (the facing/direction bug itself is resolved — see the round-6
-  entry above and `docs/DECISIONS.md`).
+- Full-apartment room build (Phase 10 round 7 plan / round 8 first
+  drop-in): the navmesh, sit/cook/read anchors, and scene-state channel
+  are still unbuilt, and the round-8 apartment render itself still needs
+  porting into the real scene before any of that can connect to the
+  character — see the round-7/round-8 entries above.

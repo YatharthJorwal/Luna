@@ -81,12 +81,34 @@ Also fixed: the orchestrator not resetting on Ctrl+C (PID-file takeover
 in `app.py`, actually tested against a simulated stale process) and
 `npm run sandbox` never starting the orchestrator at all (new
 `scripts/dev-sandbox.mjs`, actually run and SIGINT-tested).
+**Round 6's last open item is now closed too: the user confirmed on
+their real machine that walking reads as fixed** — direction, the wall
+clamp, and the slower turn-rate together, not just the facing flip in
+isolation. The "walks backward"/"moonwalk"/"kinda awkward" saga that ran
+across rounds 4-6 is fully done.
 **Round 7 is planning-only** (a separate, parallel conversation's work,
 reconciled/renumbered into these docs) — a full multi-room apartment via
 CC0 asset-pack furniture, a per-room navmesh, named sit/cook/read
 anchors, and a text scene-state channel to `persona.py` rather than a
 first-person camera feed. Nothing in round 7 is built yet.
-Full writeup for both rounds in `docs/DECISIONS.md`.
+**Round 8: a real apartment render exists now**, dropped into
+`public/apartment/index.html` as its own standalone page (linked from
+the sandbox's info panel) — four rooms (kitchen, living/dining, bedroom,
+bathroom), pastel dollhouse look, day/noon/evening/night lighting
+presets. Deliberately kept standalone rather than merged into
+`sandbox.ts`'s own scene: it's built against Three.js r128 loaded from a
+CDN `<script>` tag with its own global `THREE`, not this project's
+bundled ESM `three` (`^0.185.1`), and some APIs it uses
+(`renderer.outputEncoding`/`THREE.sRGBEncoding`) don't exist on the
+newer version — porting it into the real scene is real work for later,
+not a drop-in. Per instruction, the room/furniture layout itself is
+expected to change before that integration happens, so no time was spent
+tuning it now. See `docs/DECISIONS.md`.
+**A second session is working on the shell/UI in parallel** — this
+session's work stays scoped to the sandbox (`sandbox.html`,
+`src/sandbox.ts`, `src/sandbox.css`, `src/sandbox-hud.ts`) and these
+docs, not `index.html`/`src/main.ts`/`src/style.css`.
+Full writeup for rounds 6-8 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

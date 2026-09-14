@@ -101,6 +101,27 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
+/* Just a way in to the standalone apartment page (public/apartment/) --
+   unrelated to anything else in this panel, so it's not folded into
+   #sandbox-status. Needs its own pointer-events: auto since #sandbox-info
+   itself is click-through. */
+#sandbox-apartment-link {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--panel-border);
+  pointer-events: auto;
+}
+
+#sandbox-apartment-link a {
+  color: var(--ink);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+#sandbox-apartment-link a:hover {
+  text-decoration: underline;
+}
+
 /* ---- Captions: same word-by-word reveal + individually-fading trail
    as style.css's current version, re-themed for a light background (dark
    ink + a soft light glow instead of the shell's white-on-dark +
