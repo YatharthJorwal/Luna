@@ -2842,35 +2842,74 @@ completely open until the user actually runs this against their own
 Ollama instance. Flagged explicitly in `docs/ROADMAP.md`'s Phase 4
 entry rather than assumed away.
 
-## Tool-calling: likely a missing dependency, not a model limitation
+## Tool-calling wasn't firing -- root cause was a stale line in SYSTEM_PROMPT, not Pillow or the model
 
 First real test showed capture_screen/read_clipboard never actually
 firing -- she deflected in character instead of using either tool. The
-user's own read was a 9B-model hardware/capability limitation. The
-transcript itself argues against that: she specifically blamed "the
-stupid Pillow thing" -- oddly precise for a model just refusing to
-cooperate, but exactly what she'd say if `capture_screen` genuinely ran,
-hit `ToolUnavailableError("Pillow isn't installed: ...")` (Pillow was
-added to requirements.txt in the same round the tool was built, and easy
-to miss re-running `pip install` for after a docs-only bundle came in
-between), and that error text came back as the tool's real result for
-her to react to. Per SYSTEM_PROMPT's own instruction not to invent
-specific incidents that were never described, a made-up refusal
-shouldn't name a real Python package by name -- so if that instruction
-is being followed at all, this reaction was grounded in something real,
-not fabricated.
+user's own read was a `qwen3.5:9b` hardware/capability limitation. Full
+investigation, step by step, each one a real test rather than a guess:
 
-**Confirmed, not just a strong read of the transcript**: `pip show
-Pillow` in the orchestrator's actual venv came back "Package(s) not
-found." Pillow really was never installed -- it landed in
-`requirements.txt` the same round `capture_screen` was built, and the
-next bundle after that was docs-only, giving no natural "run pip
-install again" trigger. Fixed with `pip install -r requirements.txt`
-re-run in that venv. This confirms the *crash* is explained; it doesn't
-yet confirm the rest of the loop (Ollama actually calling the tool
-through the streaming endpoint, `describe_image` getting a sensible
-result back) -- that's the retest still pending, and the still-open
-half of the streaming-tool-calls question from when this was built.
+1. Noticed she'd specifically blamed "the stupid Pillow thing" when
+   refusing, which read at the time as a real clue -- `pip show Pillow`
+   confirmed it genuinely wasn't installed (landed in `requirements.txt`
+   the same round `capture_screen` was built; a docs-only bundle came in
+   between with nothing to install, so there was no natural "run pip
+   install again" trigger). **This turned out to be a red herring for
+   the actual symptom**, though a real bug worth fixing regardless: her
+   "the Pillow thing" line was just her echoing a word the user
+   themselves had typed at her a few turns earlier ("use pillow"), not
+   evidence that `capture_screen` had actually run and hit that error.
+   Worth remembering: an in-character line that sounds like it's
+   reacting to something real isn't proof it is -- she'll happily
+   incorporate whatever's in the recent conversation, including the
+   user's own word choices.
+2. After the Pillow fix, the diagnostic logging added the round before
+   (`[luna] tool-calling:` in the orchestrator's terminal) showed the
+   real signal: Ollama's response never contained a `tool_calls` key at
+   all, across every real attempt.
+3. `ollama show qwen3.5:9b` confirmed the model has the `tools`
+   capability -- not a hardware ceiling. A raw call straight to Ollama
+   (bypassing Luna's own code entirely), using a trivial "use this
+   calculator tool" prompt, got a correct `tool_calls` response
+   immediately -- tested with `think: false` and `stream: false` first,
+   then again with `stream: true`, ruling out both thinking-mode and
+   streaming as the cause, one variable at a time, with real evidence
+   for each rather than assuming.
+4. A further isolated call using the real `capture_screen`/
+   `read_clipboard` schemas verbatim, a real "what's on my screen"
+   prompt, but **no system prompt at all**, also got a correct
+   `tool_calls` response (`capture_screen`, correctly chosen over
+   `read_clipboard` for that prompt).
+5. That isolated everything down to one remaining variable: Luna's own
+   `SYSTEM_PROMPT`. Reading it over, one line stood out --
+   `"You can only observe and advise. You never control the mouse or
+   keyboard, never run code yourself, never edit files, at least not
+   yet."` -- written before Phase 4's tools existed, and never revised
+   when they were added. Every real turn was telling the model, in
+   plain language, that it cannot actually do anything, directly
+   competing with the tool-calling capability offered in the same
+   request. Steps 3 and 4 above had already shown the model, the
+   schemas, thinking, and streaming were all fine -- this was the one
+   piece never tested in isolation, and it was sitting in every single
+   real conversation the whole time.
+
+**Fixed**: that line now explicitly names both tools and tells her to
+use them for real when they'd help, while keeping the "no mouse/
+keyboard/code/files" boundary for everything else it was originally
+protecting (still accurate -- Phase 11 hasn't landed). A canary test
+(`test_persona.py`) checks the prompt mentions both tools and that the
+old blanket "you can only observe and advise" phrase doesn't come back,
+so a future prompt edit can't silently reintroduce the same failure
+mode without a test catching it.
+
+**Retest on the user's real machine (the actual app, not an isolated
+curl call) still pending.**
+
+The lesson worth keeping for next time a tool/capability gets added:
+check `SYSTEM_PROMPT` itself for language written before that capability
+existed, not just the docs describing it -- the docs all got updated
+correctly when Phase 4 was built; the prompt the model actually runs on
+did not, and that's the one that mattered.
 
 ## "You're" mispronounced by SoVITS -- fixed proactively, same pattern as the dash fix
 

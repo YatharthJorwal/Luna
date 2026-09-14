@@ -198,40 +198,54 @@ awaiting on-machine confirmation · ⬜ not started)
   fallback are both completely unaffected by any of this (regression
   check against Phase 2/9's existing behavior).
 
-  **First real-world test (on the user's actual machine): tools appear
-  to not be working.** Asked directly to look at the screen or read the
-  clipboard, she replies in character instead -- deflecting, demanding
-  the user paste/show it themselves. The user's own read: a `qwen3.5:9b`
-  hardware/capability limitation. **Confirmed instead, not just
-  suspected:** `pip show Pillow` in the orchestrator's actual venv came
-  back "Package(s) not found" -- Pillow was never installed at all after
-  landing in `requirements.txt` two bundles ago (a docs-only bundle came
-  in between with nothing to install, easy to miss re-running `pip
-  install` for). This was a missing dependency, not a model limitation --
-  she'd named "the Pillow thing" specifically when refusing, which was
-  the tell: `capture_screen` genuinely ran, hit
-  `ToolUnavailableError("Pillow isn't installed: ...")`, and she reacted
-  to that real error text as the tool's actual result. Full reasoning in
-  `docs/DECISIONS.md`. `pip install -r requirements.txt` re-run as the
-  fix; **retest still pending** to confirm the full loop (capture ->
-  describe_image -> a real reply about what's on screen) actually works
-  now that the dependency's there -- fixing the crash isn't the same as
-  confirming Ollama's tool-calling wire format holds up, which is the
-  other real unknown below.
+  **First real-world test (on the user's actual machine): tools weren't
+  being called at all.** Asked directly to look at the screen or read
+  the clipboard, she replied in character instead -- deflecting,
+  demanding the user paste/show it themselves. Full investigation, in
+  order (also in `docs/DECISIONS.md`):
+  1. Pillow genuinely was missing (`pip show Pillow` came back "not
+     found") and got installed -- a real, separate bug, but a red
+     herring for *this* symptom: her earlier "the Pillow thing" line
+     turned out to just be her echoing a word the user themselves had
+     typed at her ("use pillow"), not evidence a tool had actually run.
+     Worth fixing regardless, didn't explain the silence.
+  2. Diagnostic logging (`[luna] tool-calling:` in the orchestrator's
+     terminal) showed Ollama's response never contained a `tool_calls`
+     key at all, across every real attempt -- even after the Pillow fix.
+  3. `ollama show qwen3.5:9b` confirmed the model has the `tools`
+     capability. A raw, isolated call straight to Ollama (bypassing Luna
+     entirely) with a trivial "use this calculator tool" prompt
+     immediately got a correct `tool_calls` response, both non-streaming
+     and streaming, both with `think: false` -- ruling out thinking mode,
+     streaming, and the model's basic capability as the cause, one at a
+     time, each with a real test rather than a guess.
+  4. A further isolated call using the *real* `capture_screen`/
+     `read_clipboard` schemas verbatim and a real "what's on my screen"
+     prompt, but with **no system prompt at all**, also got a correct
+     `tool_calls` response.
+  5. **Root cause found**: `persona.py`'s `SYSTEM_PROMPT` still had a
+     line from before Phase 4 existed -- "You can only observe and
+     advise. You never control the mouse or keyboard..." -- telling the
+     model, in plain language, on every single turn, that it cannot
+     actually do anything. That framing was fighting the tool-calling
+     capability being offered to it in the same request. **Fixed**: the
+     line now explicitly tells her she has these two real tools and
+     should use them for real, while keeping the "no mouse/keyboard/
+     code/files" boundary for everything else (still true, Phase 11
+     hasn't landed). A canary test (`test_persona.py`) guards against
+     this exact line quietly coming back in a future prompt edit.
+  **Retest on the user's real machine still pending** to confirm the fix
+  actually holds in the full app, not just in an isolated curl call.
 
   **Not verified, real unknowns until tested on the user's machine:**
-  whether Ollama actually emits `tool_calls` reliably through its
-  *streaming* endpoint for `qwen3.5:9b` specifically -- **still open,
-  see just above**, though a missing dependency is currently the
-  stronger read of the evidence than this; `llm.py`'s own docstrings
-  flag the fallback plan (a non-streaming detect-then-stream shape) if
-  the streaming path doesn't hold up in practice; whether
-  `PIL.ImageGrab.grab()` and `pyperclip.paste()` behave as expected on
-  the user's real Windows machine/multi-monitor setup (this sandbox has
-  no display at all); and whether `qwen3.5:9b` actually reaches for
-  these tools sensibly rather than over- or under-calling them --
-  tuning that is real Round 2/3 territory once there's actual usage to
-  react to (moot until the tools fire at all).
+  whether `PIL.ImageGrab.grab()` and `pyperclip.paste()` behave as
+  expected on the user's real Windows machine/multi-monitor setup (this
+  sandbox has no display at all); and whether `qwen3.5:9b` reaches for
+  these tools sensibly rather than over- or under-calling them now that
+  the prompt actually tells it to -- tuning that is real Round 2/3
+  territory once there's actual usage to react to. The streaming/
+  thinking/model-capability questions from when this was built are now
+  resolved (see step 3 above) -- both confirmed working correctly.
 
   **Not built yet (later rounds):** `ocr_region` (explicitly a fallback
   for imprecise VLM OCR per `docs/ARCHITECTURE.md`, not needed for the

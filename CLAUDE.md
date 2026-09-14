@@ -120,18 +120,26 @@ actually streams `tool_calls` reliably for `qwen3.5:9b`, and whether
 streaming approach doesn't hold up. Task Guide Mode's own scheduled-
 capture/off-task-chide loop (the actual flagship half of Phase 4) is
 still not built — Round 1 only covers on-demand tool calls.
-**First real-world test: the tools don't appear to be working** — she
-deflects in character instead of calling them. Leading hypothesis is a
-missing dependency (she named "the Pillow thing" specifically when
-refusing), not a model limitation as first suspected — not confirmed
-yet, see `docs/ROADMAP.md`/`docs/DECISIONS.md`. Diagnostic logging is in
-place (`[luna] tool-calling:` lines in the orchestrator's terminal) to
-settle it. Also fixed this round: the conversation-log panel's text
-wasn't actually copy-pasteable (a global `user-select: none` with no
-override), and added a voice fix — "you're" specifically gets mangled by
+**Tool-calling investigation, resolved:** first real test showed the
+tools weren't firing at all; the Pillow-missing theory that followed
+turned out to be a red herring (a real bug worth fixing, but not the
+actual cause -- she was just echoing a word the user had typed at her,
+not reacting to a real tool error). Root cause, found through a series
+of isolated raw-Ollama tests that ruled out thinking mode, streaming,
+and the model's own capability one at a time: `SYSTEM_PROMPT` still had
+a line from before Phase 4 existed — "You can only observe and advise.
+You never control the mouse or keyboard..." — telling the model, every
+single turn, that it cannot actually do anything, directly undermining
+the tool-calling being offered in the same request. **Fixed** — the
+prompt now explicitly names both tools and tells her to use them for
+real, with a canary test guarding against the old line quietly coming
+back. Also fixed this round: the conversation-log panel's text wasn't
+actually copy-pasteable (a global `user-select: none` with no
+override), and a voice fix — "you're" specifically gets mangled by
 the cloned SoVITS voice, so both the system prompt and a regex safety
 net (same pattern as the existing dash-to-comma fix) now convert it to
-"you are".
+"you are". **Retest on the user's real machine still pending** to
+confirm the prompt fix actually holds in the full app.
 Full writeup for both rounds in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
