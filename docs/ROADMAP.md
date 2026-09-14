@@ -202,22 +202,22 @@ awaiting on-machine confirmation · ⬜ not started)
   to not be working.** Asked directly to look at the screen or read the
   clipboard, she replies in character instead -- deflecting, demanding
   the user paste/show it themselves. The user's own read: a `qwen3.5:9b`
-  hardware/capability limitation. **Leading hypothesis instead, from a
-  second round of testing:** a missing dependency, not a model
-  limitation. She specifically named "the Pillow thing" when refusing --
-  oddly precise for a model just declining to cooperate, but exactly
-  what she'd say if `capture_screen` genuinely ran, hit
-  `ToolUnavailableError("Pillow isn't installed: ...")`, and reacted to
-  that real error text as the tool's result. Pillow was added to
-  `requirements.txt` the same round the tool was built; easy to miss
-  re-running `pip install` for, since a docs-only bundle came in between
-  with nothing to install. **Not confirmed yet** -- asked the user to
-  check `pip show Pillow` in the orchestrator's venv and to paste the
-  `[luna] tool-calling:` diagnostic line (added this same round, see
-  just below) from the orchestrator's own terminal for that exchange.
-  Full reasoning in `docs/DECISIONS.md`. Deliberately not marked done
-  with "9B model constraint" flagged as the cause until that's actually
-  confirmed -- the evidence points somewhere much more fixable.
+  hardware/capability limitation. **Confirmed instead, not just
+  suspected:** `pip show Pillow` in the orchestrator's actual venv came
+  back "Package(s) not found" -- Pillow was never installed at all after
+  landing in `requirements.txt` two bundles ago (a docs-only bundle came
+  in between with nothing to install, easy to miss re-running `pip
+  install` for). This was a missing dependency, not a model limitation --
+  she'd named "the Pillow thing" specifically when refusing, which was
+  the tell: `capture_screen` genuinely ran, hit
+  `ToolUnavailableError("Pillow isn't installed: ...")`, and she reacted
+  to that real error text as the tool's actual result. Full reasoning in
+  `docs/DECISIONS.md`. `pip install -r requirements.txt` re-run as the
+  fix; **retest still pending** to confirm the full loop (capture ->
+  describe_image -> a real reply about what's on screen) actually works
+  now that the dependency's there -- fixing the crash isn't the same as
+  confirming Ollama's tool-calling wire format holds up, which is the
+  other real unknown below.
 
   **Not verified, real unknowns until tested on the user's machine:**
   whether Ollama actually emits `tool_calls` reliably through its

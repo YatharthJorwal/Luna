@@ -2860,15 +2860,17 @@ shouldn't name a real Python package by name -- so if that instruction
 is being followed at all, this reaction was grounded in something real,
 not fabricated.
 
-Not marking this "done, flagged as a model constraint" on that theory
-alone -- it's a strong read of the transcript, not confirmed. Asked the
-user to check `pip show Pillow` in the orchestrator's venv and to paste
-the `[luna] tool-calling:` diagnostic line (added last round) from the
-orchestrator's own terminal for that exchange, which settles it either
-way: if Ollama's response never included a `tool_calls` key at all,
-that's the streaming-support risk flagged when this was built; if it did
-and a call was parsed, the missing-Pillow theory above is confirmed and
-the fix really is just `pip install -r requirements.txt`.
+**Confirmed, not just a strong read of the transcript**: `pip show
+Pillow` in the orchestrator's actual venv came back "Package(s) not
+found." Pillow really was never installed -- it landed in
+`requirements.txt` the same round `capture_screen` was built, and the
+next bundle after that was docs-only, giving no natural "run pip
+install again" trigger. Fixed with `pip install -r requirements.txt`
+re-run in that venv. This confirms the *crash* is explained; it doesn't
+yet confirm the rest of the loop (Ollama actually calling the tool
+through the streaming endpoint, `describe_image` getting a sensible
+result back) -- that's the retest still pending, and the still-open
+half of the streaming-tool-calls question from when this was built.
 
 ## "You're" mispronounced by SoVITS -- fixed proactively, same pattern as the dash fix
 
