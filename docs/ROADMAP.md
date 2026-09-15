@@ -415,25 +415,29 @@ awaiting on-machine confirmation · ⬜ not started)
   channel her situational awareness runs through — see
   `docs/DECISIONS.md`'s round-7 entry for why text scene-state was
   picked over feeding her rendered frames.
-  **Round 8: first real apartment render dropped in.** A user-supplied
-  standalone Three.js scene — kitchen, living/dining, bedroom, and
-  bathroom, pastel "dollhouse" look, day/noon/evening/night lighting
-  presets, its own orbit-style camera controls — now lives at
-  `public/apartment/index.html`, linked from the sandbox's info panel.
-  Deliberately *not* merged into `sandbox.ts`'s own VRM scene yet: it's
-  self-contained (own renderer/camera/lighting/animate loop, Three.js
-  r128 via a CDN `<script>` tag rather than this project's bundled ESM
-  `three`), and the user asked for it to just be wired in and reachable
-  for now — the room/furniture layout itself is expected to change
-  before any deeper integration, so this round didn't touch the
-  apartment's own code at all. This is step 1 of the round-7 plan above
-  (room geometry), done as a drop-in rather than a from-scratch Blender
-  build since the asset already existed. Still ahead, per that plan:
-  porting the scene into the real character-bearing scene (which also
-  means updating a couple of APIs this file uses that don't exist on
-  the project's newer `three` version), the per-room navmesh, the
-  sit/cook/read anchors, and the scene-state channel to `persona.py`.
-  See `docs/DECISIONS.md`.
+  **Round 8: first real apartment render dropped in**, as a standalone
+  linked-to page — turned out to be a dead end within one message once
+  actually opened from inside the Tauri shell (`target="_blank"` there
+  just reopens the shell's own bound window rather than reaching an
+  arbitrary route), so it didn't last as the plan. See round 9.
+  **Round 9: the apartment replaces `buildStudio()` as the sandbox's
+  real scene**, not a linked page — `src/apartment.ts` ports the same
+  four-room geometry into an ESM module against this project's own
+  `three` (the r128-vs-`^0.185.1` API gap flagged in round 8 is now
+  actually resolved, not just noted), and `boot()` builds it directly
+  into the character-bearing scene. This is step 1 of the round-7 plan
+  above (room geometry), done as a port of the existing asset rather
+  than a from-scratch Blender build. Also done this round, ahead of
+  where the round-7 plan expected it: a first-pass per-room navmesh —
+  point 2 of that plan, "even a flat convex-hull check to start" — as a
+  small union of hand-derived clear-floor rectangles chained through
+  their overlaps, replacing `WanderController`'s old free-roam square.
+  It is not a true navmesh (no polygon geometry, no obstacle avoidance
+  within a room) and doesn't attempt point 3 (sit/cook/read anchors) or
+  point 4 (the scene-state channel to `persona.py`) at all — those
+  remain open below. Full reasoning on the scale conversion, the two
+  three.js properties that don't inherit a parent group's scale, and the
+  r128-vs-modern light-falloff change, in `docs/DECISIONS.md`.
 
 ## Open decisions
 
@@ -459,8 +463,12 @@ Still open:
   down when they're not in the mood to be chided).
 - Live2D model source for anything beyond local prototyping (free sample vs.
   purchased vs. commissioned) and its license terms.
-- Full-apartment room build (Phase 10 round 7 plan / round 8 first
-  drop-in): the navmesh, sit/cook/read anchors, and scene-state channel
-  are still unbuilt, and the round-8 apartment render itself still needs
-  porting into the real scene before any of that can connect to the
-  character — see the round-7/round-8 entries above.
+- Full-apartment room build (Phase 10 round 7 plan / round 9 first real
+  drop-in): the room geometry is in and a first-pass navmesh exists, but
+  it's rectangles, not real polygons or obstacle avoidance within a
+  room; sit/cook/read anchors and the scene-state channel to
+  `persona.py` are both still entirely unbuilt — see the round-7/round-9
+  entries above. Also genuinely unverified rather than just unbuilt: how
+  any of it actually looks and whether the room-table clearances/light
+  levels read right in practice — no GPU/browser in the sandbox any of
+  this was built in.

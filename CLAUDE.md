@@ -101,14 +101,60 @@ CDN `<script>` tag with its own global `THREE`, not this project's
 bundled ESM `three` (`^0.185.1`), and some APIs it uses
 (`renderer.outputEncoding`/`THREE.sRGBEncoding`) don't exist on the
 newer version — porting it into the real scene is real work for later,
-not a drop-in. Per instruction, the room/furniture layout itself is
-expected to change before that integration happens, so no time was spent
-tuning it now. See `docs/DECISIONS.md`.
+not a drop-in.
+**Round 8 lasted about one message.** The standalone page turned out to
+be a dead end in practice: opened from inside the actual Tauri shell,
+`target="_blank"` doesn't reach an arbitrary route — it just reopens the
+shell's own bound window. Splitting "the apartment" and "the character"
+into two unconnected pages was never going to let her actually live in
+it anyway, so round 9 is the real thing.
+**Round 9: the apartment is the sandbox's scene now, not a linked-to
+page.** `public/apartment/` is deleted; `src/apartment.ts` ports the
+same geometry into a real ESM module against this project's own `three`,
+and `sandbox.ts`'s old `buildStudio()` box is gone — `boot()` calls
+`buildApartment(scene)` directly. Three porting issues came up that
+weren't obvious from the diff (full reasoning in `docs/DECISIONS.md`,
+short version here):
+- **Scale.** The apartment is authored ~2.4x life size (6-unit ceilings).
+  Scaled the room down to meet her (`APARTMENT_SCALE`), not her up —
+  every locomotion constant in this file is tuned in metres, and scaling
+  a VRM up risks its gravity-tuned spring bones.
+- **Two three.js properties don't inherit a parent group's scale**:
+  a light's shadow-camera frustum extents, and point-light `distance`.
+  Checked against the actual three.js source in `node_modules`, not
+  assumed — both needed a manual post-scale pass.
+- **Light falloff changed between r128 and this three version.** r128's
+  default was a bounded `(1-d/cutoff)^decay`; modern three is unbounded
+  `1/d^decay`, which turns every lamp into a hot spot at the authored
+  decay of 2. Forcing `decay = 0` restores the bounded falloff the
+  original intensities were tuned against.
+The old free-roam square `WanderController` is gone too, replaced with a
+small rectangle-union navmesh (`WalkableArea` + a rewritten
+`WanderController`) built from a hand-derived table of clear-floor
+patches in `apartment.ts` — real per-room navmesh work was explicitly
+future scope as of round 7's plan; this doesn't do sit/cook/read anchors
+or true polygon geometry, just enough rectangles, chained through their
+overlaps, that she can reach all four rooms without a path ever cutting
+through a wall or a piece of furniture. Checked three ways beyond
+`tsc --noEmit`, none of which needed a GPU: the rect table was parsed
+back out of the file and checked for connectivity/containment; the
+apartment module was actually executed in Node (stubbed 2D canvas, no
+WebGL needed) and its scene graph inspected; and the real
+`WalkableArea`/`WanderController` classes were extracted verbatim from
+this file and run through 40 simulated minutes of wandering with a
+deliberate overshoot on every step, and never once left walkable floor.
+**Still not verified: how any of this actually looks.** No GPU/browser
+in this sandbox, same as every round before this one — the furniture
+clearances in the room table were read out of coordinates in the
+builders, not off a render, and the lighting numbers are reasoned from
+reading the three.js source, not seen. Expect to nudge both once this
+is on screen.
 **A second session is working on the shell/UI in parallel** — this
 session's work stays scoped to the sandbox (`sandbox.html`,
-`src/sandbox.ts`, `src/sandbox.css`, `src/sandbox-hud.ts`) and these
-docs, not `index.html`/`src/main.ts`/`src/style.css`.
-Full writeup for rounds 6-8 in `docs/DECISIONS.md`.
+`src/sandbox.ts`, `src/sandbox.css`, `src/apartment.ts`,
+`src/sandbox-hud.ts`) and these docs, not
+`index.html`/`src/main.ts`/`src/style.css`.
+Full writeup for rounds 6-9 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map
