@@ -3,6 +3,14 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils, type VRM } from "@pixiv/three-vrm";
 import { VRMAnimationLoaderPlugin, createVRMAnimationClip, type VRMAnimation } from "@pixiv/three-vrm-animation";
 import { setupSandboxHud } from "./sandbox-hud";
+import {
+  buildApartment,
+  apartmentToWorld,
+  APARTMENT_MODES,
+  type ApartmentMode,
+  type ApartmentHandle,
+  type RoomRect,
+} from "./apartment";
 
 // Same character asset the desktop shell uses -- see README.md's "Putting
 // your VRoid model in" section. Nothing sandbox-specific about the model
@@ -152,17 +160,33 @@ const GESTURE_FOR_EMOTION: Partial<Record<string, string>> = {
 };
 
 const TURN_RATE_RAD_S = 4; // how fast she reorients to face her movement direction -- was 10 (a 180° snap in ~0.3s, effectively instant); with only the crude procedural sway to compare it against, that snap wasn't very noticeable, but next to a real authored walk cycle it reads as a jarring robotic pop, per the user's own "kinda awkward" report. 4 rad/s takes ~0.8s for a full about-face -- still brisk, not sluggish, but no longer an instant snap. Untested against real motion, same as everything else in this file -- a reasoned adjustment, not a measurement.
-const WALL_CLEARANCE_M = 0.3; // hard position clamp, independent of any locomotion timing -- see stepAlong()'s own comment for why this exists as a second, unconditional layer rather than trusting the arrival-phase timing alone
 const ARRIVE_RADIUS_M = 0.08; // "close enough" to a wander target for WanderController to call it arrived
 
 // ---------------------------------------------------------------------
-// Room -- a real bounded box now (floor + four walls + ceiling), not an
-// infinite fog-faded void; see buildStudio()'s own comment. Half-size in
-// meters from the room's center to a wall.
+// The apartment.
+//
+// This used to be buildStudio(): a plain white box with a grid floor,
+// four walls and a ceiling at ROOM_HALF_SIZE/ROOM_HEIGHT. That box was
+// only ever scaffolding to watch locomotion against -- it did its job
+// through the whole walk-direction saga in rounds 4-6, and with walking
+// confirmed fixed there is no reason to keep staring at a grey cube.
+// It is gone; src/apartment.ts builds the real four-room apartment in
+// its place and owns the scene's background, fog and lighting.
+//
+// Two pieces of the old studio deliberately did NOT survive:
+//
+//   - ROOM_LIGHT_LAYER and roomFillLight. That was a layer-masked
+//     hemisphere light whose entire job was to brighten near-white box
+//     geometry without also washing out the character's MToon shading.
+//     The apartment is textured and has its own four-mode lighting rig,
+//     so there is no flat-grey-box problem left to solve, and keeping a
+//     second hidden fill light would just fight that rig.
+//   - scene.background. apartment.ts drives background and fog from the
+//     active lighting mode; setting it here too would race with that.
+//
+// The character key light DOES survive, for the reason given below.
 // ---------------------------------------------------------------------
-const ROOM_HALF_SIZE = 4.5;
-const ROOM_HEIGHT = 3.2;
-const WANDER_MARGIN_M = 0.5; // keeps her from wandering right up against a wall
+const WANDER_MARGIN_M = 0.5; // keeps her from wandering right up against a wall or a piece of furniture
 
 // Same arm-down rest pose as main.ts's applyIdlePose (VRM's bind pose is
 // a T-pose by default, see that function's own comment for the full
@@ -182,126 +206,22 @@ function applyRestPose(vrm: VRM): void {
   humanoid.getNormalizedBoneNode("rightLowerArm")?.rotation.set(0, REST_ELBOW_Y, 0);
 }
 
-// ---------------------------------------------------------------------
-// Studio environment: a plain white *box*, per the brief -- floor, four
-// walls, and a ceiling, all at ROOM_HALF_SIZE/ROOM_HEIGHT, no fog and no
-// background gradient standing in for a horizon. Earlier draft of this
-// file used scene.fog to fade a much larger floor into the white
-// background at a distance, reading as an unbounded void -- replaced
-// outright, not just tuned down, since the brief was explicit that it's
-// supposed to read as a box, not an infinite plane. Choosing an actual
-// *decorated* room / selectable backgrounds is still the *other* half of
-// ROADMAP.md's Phase 10 entry, deliberately not this file's job -- see
-// docs/DECISIONS.md.
-// ---------------------------------------------------------------------
-// Objects on this layer (in addition to their default layer 0) are lit
-// by roomFillLight below, on top of whatever the default-layer
-// keyLight/HemisphereLight already contribute -- room geometry only
-// (floor/walls/ceiling/grid), never the character (vrm.scene, added
-// separately in boot(), is never given this layer). See roomFillLight's
-// own comment for why this exists as a separate light+layer rather than
-// just turning the existing lights up.
-const ROOM_LIGHT_LAYER = 1;
-
-function buildStudio(scene: THREE.Scene): void {
-  scene.background = new THREE.Color(0xffffff);
-
-  const size = ROOM_HALF_SIZE * 2;
-  const wallMat = new THREE.MeshStandardMaterial({
-    color: 0xf5f5f7,
-    roughness: 0.95,
-    metalness: 0,
-    side: THREE.DoubleSide, // visible from outside the box too, since the free-fly camera isn't confined to its interior
-  });
-  const floorMat = new THREE.MeshStandardMaterial({ color: 0xefeff2, roughness: 0.95, metalness: 0, side: THREE.DoubleSide });
-
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(size, size), floorMat);
-  floor.rotation.x = -Math.PI / 2;
-  floor.layers.enable(ROOM_LIGHT_LAYER);
-  scene.add(floor);
-
-  const ceiling = new THREE.Mesh(new THREE.PlaneGeometry(size, size), wallMat);
-  ceiling.rotation.x = Math.PI / 2;
-  ceiling.position.y = ROOM_HEIGHT;
-  ceiling.layers.enable(ROOM_LIGHT_LAYER);
-  scene.add(ceiling);
-
-  const wallGeo = new THREE.PlaneGeometry(size, ROOM_HEIGHT);
-  const north = new THREE.Mesh(wallGeo, wallMat);
-  north.position.set(0, ROOM_HEIGHT / 2, -ROOM_HALF_SIZE);
-  north.layers.enable(ROOM_LIGHT_LAYER);
-  scene.add(north);
-  const south = new THREE.Mesh(wallGeo, wallMat);
-  south.position.set(0, ROOM_HEIGHT / 2, ROOM_HALF_SIZE);
-  south.rotation.y = Math.PI;
-  south.layers.enable(ROOM_LIGHT_LAYER);
-  scene.add(south);
-  const east = new THREE.Mesh(wallGeo, wallMat);
-  east.position.set(ROOM_HALF_SIZE, ROOM_HEIGHT / 2, 0);
-  east.rotation.y = -Math.PI / 2;
-  east.layers.enable(ROOM_LIGHT_LAYER);
-  scene.add(east);
-  const west = new THREE.Mesh(wallGeo, wallMat);
-  west.position.set(-ROOM_HALF_SIZE, ROOM_HEIGHT / 2, 0);
-  west.rotation.y = Math.PI / 2;
-  west.layers.enable(ROOM_LIGHT_LAYER);
-  scene.add(west);
-
-  // Faint floor grid, just enough to read depth/scale on an otherwise
-  // featureless white floor.
-  const grid = new THREE.GridHelper(size, 12, 0xd6d6da, 0xe9e9ec);
-  const gridMat = grid.material as THREE.Material;
-  gridMat.transparent = true;
-  gridMat.opacity = 0.7;
-  grid.position.y = 0.002; // avoid z-fighting with the floor plane
-  grid.layers.enable(ROOM_LIGHT_LAYER);
-  scene.add(grid);
-
-  // Lighting: fixed in world space (a small overhead-front rig, like a
-  // real photography softbox), not tied to the camera -- the camera is
-  // now a free-flying spectator that can end up anywhere, so a
-  // camera-relative light (the previous draft's approach) would swing
-  // wildly as it moved. A DirectionalLight has no falloff/position
-  // dependence for what it lights (only its angle matters), so it stays
-  // correct as she wanders around the room too.
-  //
-  // Intensities and the hemisphere's colors were both turned down/
-  // neutralized from the previous draft to fix a flat gray sheen washing
-  // out the jacket -- MToon's toon shading reads its own lit/shadow bands
-  // from the light direction, and too much ambient/hemisphere fill (plus
-  // the previous draft's slightly blue-gray hemisphere ground color)
-  // flattens those bands into a uniform gray wash instead of a clean
-  // highlight/shadow split. Same underlying cause as the "jacket
-  // artifact" DECISIONS.md entry from Phase 7, same style of fix (reduce
-  // fill, don't fight MToon's own shading model) -- not independently
-  // re-verified against a real render here either, for the same reason
-  // Phase 7's wasn't: no GPU/browser in this sandbox. See
-  // docs/DECISIONS.md. These two stay on the default layer (0), so they
-  // keep lighting the character exactly as before -- untouched by the
-  // brightening below.
-  const keyLight = new THREE.DirectionalLight(0xffffff, 0.55);
-  keyLight.position.set(1.5, ROOM_HEIGHT * 0.9, 2.5);
-  scene.add(keyLight);
-  scene.add(new THREE.HemisphereLight(0xffffff, 0xf3f3f3, 0.5));
-
-  // Room-only brightening ("light the box up" -- the walls/floor above
-  // are specified near-white, 0xf5f5f7/0xefeff2, but at the intensities
-  // above (tuned down specifically to protect the character's MToon
-  // shading, see the comment just above) they were reading as flat
-  // medium gray in every screenshot so far rather than actually
-  // near-white. Simply turning the existing lights up would brighten the
-  // room but risks reintroducing exactly the "flat gray wash" character
-  // artifact those intensities were deliberately lowered to fix. Layers
-  // sidestep that tradeoff instead of trying to balance it: this light
-  // only affects objects explicitly enabled on ROOM_LIGHT_LAYER above
-  // (floor/walls/ceiling/grid) -- the character, added on the default
-  // layer only in boot(), is entirely unaffected by it. Untested
-  // visually, same as the rest of this function -- no GPU/browser in
-  // this sandbox -- but logically it can only brighten room geometry,
-  // never the character, regardless of how the intensity below is tuned.
-  const roomFillLight = new THREE.HemisphereLight(0xffffff, 0xe4e4e8, 0.9);
-  roomFillLight.layers.set(ROOM_LIGHT_LAYER);
-  scene.add(roomFillLight);
+// A soft, directionless key for the character specifically.
+//
+// Worth keeping even though the apartment brings a full lighting rig.
+// MToon reads its lit/shadow bands off light *direction*, and the
+// apartment's own key swings from (14,24,18) at midday round to
+// (-8,20,-10) at night; letting her banding swing with it would make
+// her read as a differently-shaded character depending on the time of
+// day. A low fixed fill on top of the apartment's rig keeps her face
+// legible in every mode. Intensity is deliberately low so the
+// apartment's own lighting still does the work of setting the mood --
+// the "don't fight MToon with fill light" lesson from the Phase 7
+// jacket artifact still applies. Not visually confirmed: no GPU here.
+function addCharacterFill(scene: THREE.Scene): void {
+  const fill = new THREE.DirectionalLight(0xffffff, 0.35);
+  fill.position.set(1.5, 3.0, 2.5);
+  scene.add(fill);
 }
 
 // A soft circular shadow decal that tracks the character's feet -- cheap
@@ -410,17 +330,74 @@ class ProceduralWalker {
 // "where should she be walking to, if anywhere right now" and doesn't
 // care how that answer was decided.
 // ---------------------------------------------------------------------
+// ---------------------------------------------------------------------
+// Walkable area: the union of apartment.ts's floor rects, and the last
+// line of defence against her ending up inside a wall or a sofa.
+//
+// This replaces the old `ROOM_HALF_SIZE - WALL_CLEARANCE_M` square
+// clamp. That clamp existed because the "arriving" walk phase
+// deliberately keeps walking for up to a full gait cycle past the
+// wander target so the stop clip can start on the loop's seam, and
+// nothing stopped that grace stride from carrying her through a wall.
+// The reasoning is unchanged; only the shape of the legal region is.
+//
+// A union of rectangles isn't convex, so this can't be a min/max on
+// each axis any more. Instead: if she's inside any rect, leave her
+// alone -- that keeps doorways and room-to-room overlaps passable --
+// and only if she's outside all of them push her back to the nearest
+// point on the nearest rect. No extra clearance is subtracted here,
+// unlike the old square: these rects are already inset patches of
+// clear floor, not wall positions, so shrinking them again would eat
+// the doorway overlaps WanderController routes through.
+// ---------------------------------------------------------------------
+class WalkableArea {
+  constructor(private readonly rects: RoomRect[]) {}
+
+  private static closestPointOn(r: RoomRect, x: number, z: number): { x: number; z: number; d2: number } {
+    const cx = Math.min(r.maxX, Math.max(r.minX, x));
+    const cz = Math.min(r.maxZ, Math.max(r.minZ, z));
+    const dx = cx - x;
+    const dz = cz - z;
+    return { x: cx, z: cz, d2: dx * dx + dz * dz };
+  }
+
+  /** Nearest legal standing position to (x, z). Returns the input
+   * unchanged when it's already on walkable floor. */
+  clamp(x: number, z: number): { x: number; z: number } {
+    let best = { x, z, d2: Infinity };
+    for (const r of this.rects) {
+      const c = WalkableArea.closestPointOn(r, x, z);
+      if (c.d2 === 0) return { x, z }; // inside this rect -- nothing to do
+      if (c.d2 < best.d2) best = c;
+    }
+    return { x: best.x, z: best.z };
+  }
+}
+
 const IDLE_MIN_S = 3;
 const IDLE_MAX_S = 8;
+/** Odds a given walk leg leaves the room she's in, rather than
+ * wandering within it. Low enough that she settles somewhere for a
+ * while, high enough that all four rooms get used. */
+const ROOM_CHANGE_CHANCE = 0.35;
+/** Clearance kept when aiming at a doorway/overlap patch. Much smaller
+ * than WANDER_MARGIN_M -- the bathroom doorway is only ~0.7m wide, so a
+ * 0.5m margin would collapse it to a single point. */
+const DOORWAY_MARGIN_M = 0.12;
 
 class WanderController {
   private target: THREE.Vector3 | null = null;
   private idleUntil = 0;
   private elapsed = 0;
-  private readonly bound: number;
+  private readonly rooms: RoomRect[];
+  /** Index into `rooms` of the rect she is currently considered to be
+   * standing in. Every walk leg is planned relative to this. */
+  private here = 0;
 
-  constructor(bound: number) {
-    this.bound = bound;
+  constructor(rooms: RoomRect[], startAt: THREE.Vector3) {
+    if (rooms.length === 0) throw new Error("WanderController: no walkable rooms");
+    this.rooms = rooms;
+    this.here = this.roomContaining(startAt) ?? 0;
   }
 
   /** Returns where she should currently be walking toward, or null if
@@ -449,9 +426,69 @@ class WanderController {
     return null;
   }
 
+  /** Index of the first rect containing `p`, or null if she's somehow
+   * outside all of them. */
+  private roomContaining(p: THREE.Vector3): number | null {
+    for (let i = 0; i < this.rooms.length; i++) {
+      const r = this.rooms[i];
+      if (p.x >= r.minX && p.x <= r.maxX && p.z >= r.minZ && p.z <= r.maxZ) return i;
+    }
+    return null;
+  }
+
+  /** The shared area of two rects, or null if they don't touch. */
+  private static overlap(a: RoomRect, b: RoomRect): RoomRect | null {
+    const minX = Math.max(a.minX, b.minX);
+    const maxX = Math.min(a.maxX, b.maxX);
+    const minZ = Math.max(a.minZ, b.minZ);
+    const maxZ = Math.min(a.maxZ, b.maxZ);
+    if (minX >= maxX || minZ >= maxZ) return null;
+    return { name: `${a.name}|${b.name}`, minX, maxX, minZ, maxZ };
+  }
+
+  private static pointIn(r: RoomRect, margin: number): THREE.Vector3 {
+    // Shrink by the margin, but never past the rect's own centre -- a
+    // doorway-sized overlap can easily be narrower than 2*margin, and
+    // an inverted range would put the target outside the rect entirely.
+    const cx = (r.minX + r.maxX) / 2;
+    const cz = (r.minZ + r.maxZ) / 2;
+    const halfX = Math.max(0, (r.maxX - r.minX) / 2 - margin);
+    const halfZ = Math.max(0, (r.maxZ - r.minZ) / 2 - margin);
+    return new THREE.Vector3(
+      cx + (Math.random() * 2 - 1) * halfX,
+      0,
+      cz + (Math.random() * 2 - 1) * halfZ,
+    );
+  }
+
+  /** Pick somewhere to walk.
+   *
+   * The invariant that keeps her out of walls: a straight line between
+   * two points inside one convex rect stays inside that rect, and every
+   * rect in apartment.ts's table is a piece of clear floor. So a leg
+   * either stays inside the current rect, or -- when she changes rooms
+   * -- aims at a point inside the *overlap* with an adjacent rect, which
+   * by definition is still inside the current one. Arriving there makes
+   * the neighbour the current rect, and the next leg can range over all
+   * of it. No pathfinding, no corner-cutting.
+   */
   private pickPoint(): THREE.Vector3 {
-    const r = this.bound;
-    return new THREE.Vector3((Math.random() * 2 - 1) * r, 0, (Math.random() * 2 - 1) * r);
+    const current = this.rooms[this.here];
+    const neighbours: Array<{ index: number; via: RoomRect }> = [];
+    for (let i = 0; i < this.rooms.length; i++) {
+      if (i === this.here) continue;
+      const via = WanderController.overlap(current, this.rooms[i]);
+      if (via) neighbours.push({ index: i, via });
+    }
+
+    // Mostly potter about the room she's already in; head somewhere else
+    // often enough that she actually uses the whole apartment.
+    if (neighbours.length > 0 && Math.random() < ROOM_CHANGE_CHANCE) {
+      const pick = neighbours[Math.floor(Math.random() * neighbours.length)];
+      this.here = pick.index;
+      return WanderController.pointIn(pick.via, DOORWAY_MARGIN_M);
+    }
+    return WanderController.pointIn(current, WANDER_MARGIN_M);
   }
 }
 
@@ -550,6 +587,8 @@ async function loadClip(loader: GLTFLoader, vrm: VRM, filename: string): Promise
 // ---------------------------------------------------------------------
 class CharacterController {
   private facing = 0;
+  /** Set once in boot() -- see setWalkableArea(). */
+  private walkable: WalkableArea | null = null;
   private readonly walker: ProceduralWalker;
   private readonly mixer: THREE.AnimationMixer;
 
@@ -841,7 +880,6 @@ class CharacterController {
 
   private stepAlong(dir: THREE.Vector3, delta: number): void {
     const step = this.walkSpeedMps * delta;
-    const clamp = ROOM_HALF_SIZE - WALL_CLEARANCE_M;
     // Real bug, found by re-reading the logic against the user's own
     // "collides into walls" report, not guessed: the "arriving" phase
     // above deliberately keeps walking for up to a full gait cycle past
@@ -857,10 +895,33 @@ class CharacterController {
     // of room bounds (WanderController's own target-picking already
     // stays clear of the walls; this only guards the *extra* distance
     // the animation-phase system adds on top of that).
-    this.vrm.scene.position.x = Math.min(clamp, Math.max(-clamp, this.vrm.scene.position.x + dir.x * step));
-    this.vrm.scene.position.z = Math.min(clamp, Math.max(-clamp, this.vrm.scene.position.z + dir.z * step));
+    this.moveClamped(dir, step);
     this.walkBoutDistanceM += step;
     this.updateFacing(dir, delta);
+  }
+
+  /** Where she's allowed to stand. Injected rather than constructed
+   * here because the rect table is the apartment's, and the apartment
+   * is built in boot(). Null means "unconstrained", which is what the
+   * old code did before any room existed. */
+  setWalkableArea(area: WalkableArea): void {
+    this.walkable = area;
+  }
+
+  /** Advance her position along `dir` by `step`, then pull her back onto
+   * walkable floor if that took her off it. */
+  private moveClamped(dir: THREE.Vector3, step: number): void {
+    const pos = this.vrm.scene.position;
+    const nx = pos.x + dir.x * step;
+    const nz = pos.z + dir.z * step;
+    if (!this.walkable) {
+      pos.x = nx;
+      pos.z = nz;
+      return;
+    }
+    const safe = this.walkable.clamp(nx, nz);
+    pos.x = safe.x;
+    pos.z = safe.z;
   }
 
   private beginWalkStart(): void {
@@ -943,9 +1004,10 @@ class CharacterController {
         const dir = toTarget.clone().normalize();
         speedFraction = Math.min(1, dist / FALLBACK_SLOWDOWN_RADIUS_M);
         const step = Math.min(dist, FALLBACK_WALK_SPEED_MPS * speedFraction * delta);
-        const clamp = ROOM_HALF_SIZE - WALL_CLEARANCE_M; // same defensive clamp as stepAlong() above -- this path eases to a stop on its own and doesn't have the "arriving" phase's overshoot risk, but there's no reason to leave it unguarded either
-        this.vrm.scene.position.x = Math.min(clamp, Math.max(-clamp, this.vrm.scene.position.x + dir.x * step));
-        this.vrm.scene.position.z = Math.min(clamp, Math.max(-clamp, this.vrm.scene.position.z + dir.z * step));
+        // Same defensive clamp as stepAlong() above -- this path eases to a
+        // stop on its own and doesn't have the "arriving" phase's overshoot
+        // risk, but there's no reason to leave it unguarded either.
+        this.moveClamped(dir, step);
         this.updateFacing(dir, delta);
       }
     }
@@ -1111,6 +1173,33 @@ function isTypingTarget(el: Element | null): boolean {
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
 }
 
+/** Build the time-of-day switch in the info panel from the apartment's
+ * own mode list, so adding a mode in apartment.ts is all it takes. The
+ * ported scene used to hunt for `.modeBtn` elements itself; that DOM
+ * coupling was dropped in the port, which leaves the active-state
+ * bookkeeping here where the rest of the sandbox's UI lives. */
+function setupModeButtons(apartment: ApartmentHandle): void {
+  const host = document.getElementById("sandbox-modes");
+  if (!host) return;
+  const buttons = new Map<ApartmentMode, HTMLButtonElement>();
+  const refresh = (): void => {
+    const active = apartment.currentMode();
+    for (const [mode, btn] of buttons) btn.classList.toggle("active", mode === active);
+  };
+  for (const mode of APARTMENT_MODES) {
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = mode;
+    btn.addEventListener("click", () => {
+      apartment.setMode(mode);
+      refresh();
+    });
+    buttons.set(mode, btn);
+    host.appendChild(btn);
+  }
+  refresh();
+}
+
 // ---------------------------------------------------------------------
 // Boot
 // ---------------------------------------------------------------------
@@ -1123,11 +1212,22 @@ async function boot(): Promise<void> {
   renderer.setSize(window.innerWidth, window.innerHeight);
 
   const scene = new THREE.Scene();
-  buildStudio(scene);
+  // Fog has to exist up front for the lighting modes to drive it; its
+  // colour and distances are overwritten immediately by initMode('day').
+  scene.fog = new THREE.Fog(0xeaf2ff, 10, 30);
+  const apartment = buildApartment(scene);
+  addCharacterFill(scene);
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
-  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 60);
-  camera.position.set(0, 1.5, 3.2);
-  const flyCamera = new FlyCamera(camera, renderer.domElement, Math.PI, -0.08);
+  // Start looking into the living room from outside the open front wall,
+  // roughly standing-eye height. Far plane pushed out from 60 to 80: the
+  // apartment is ~15m end to end, so from one corner the far end plus a
+  // little fly-back room needs more than the old white box ever did.
+  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 80);
+  const camStart = apartmentToWorld(2.5, 13.5);
+  camera.position.set(camStart.x, 1.6, camStart.z);
+  const flyCamera = new FlyCamera(camera, renderer.domElement, Math.PI, -0.05);
 
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -1139,8 +1239,16 @@ async function boot(): Promise<void> {
   VRMUtils.combineSkeletons(vrm.scene);
   VRMUtils.combineMorphs(vrm);
   applyRestPose(vrm);
+  // Spawn in the middle of the lounge rather than at world origin. Origin
+  // happens to land in the living room already (apartment.ts recentres on
+  // that room deliberately), but pinning it to a named rect means a later
+  // re-layout of the apartment moves her with it instead of stranding her
+  // inside the new furniture.
+  const spawn = apartmentToWorld(2.5, 7.7);
+  vrm.scene.position.set(spawn.x, 0, spawn.z);
   scene.add(vrm.scene);
-  scene.add(buildContactShadow());
+  const contactShadow = buildContactShadow();
+  scene.add(contactShadow);
 
   function layout(): void {
     renderer.setSize(window.innerWidth, window.innerHeight);
@@ -1216,8 +1324,10 @@ async function boot(): Promise<void> {
     if (clip) character.registerIdleBase(clip, true);
   }
 
-  const wander = new WanderController(ROOM_HALF_SIZE - WANDER_MARGIN_M);
+  const wander = new WanderController(apartment.rooms, vrm.scene.position);
+  character.setWalkableArea(new WalkableArea(apartment.rooms));
   const idleGestures = new IdleGestureScheduler();
+  setupModeButtons(apartment);
   statusEl.textContent = character.usingRealWalk
     ? `Model loaded · real walk cycle · ${character.idleBaseCount} idle pose(s) · ${character.gestureCount} gesture(s) loaded`
     : `Model loaded · procedural walk (world-walk.vrma not found in public/vrm-animations/) · ${character.idleBaseCount} idle pose(s) · ${character.gestureCount} gesture(s) loaded`;
@@ -1259,6 +1369,14 @@ async function boot(): Promise<void> {
       target === null && !character.isWalking && !hud.isTurnActive() && !character.isGesturing,
       (name) => character.playGesture(name),
     );
+    apartment.update(delta, clock.elapsedTime);
+    // The contact-shadow decal used to be added once and left at the
+    // origin. In a 4.5m box with her mostly near the middle that was
+    // easy to miss; across a 15m apartment a shadow puddle sitting in
+    // the lounge while she's in the kitchen would not be. It tracks her
+    // feet now.
+    contactShadow.position.x = vrm.scene.position.x;
+    contactShadow.position.z = vrm.scene.position.z;
     vrm.update(delta);
     renderer.render(scene, camera);
   }

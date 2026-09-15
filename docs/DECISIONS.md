@@ -3020,3 +3020,284 @@ time. Everything above touched only sandbox-side files
 (`sandbox.html`, `src/sandbox.css`) plus a new `public/apartment/`
 asset and these docs -- same isolation discipline as Phase 10 round 2's
 original shell/sandbox split.
+
+## Round 9: the apartment becomes the real scene, not a linked page
+
+Round 8's standalone page died almost immediately. The user's own
+report: opened from inside the actual Tauri shell, the sandbox's
+`target="_blank"` link didn't reach `/apartment/` at all -- it just
+reopened the shell's own bound window, because Tauri's webview resolves
+new-window requests against the app's configured window URL rather than
+an arbitrary href. Splitting "the apartment" and "the character that's
+supposed to live in it" into two pages that can't even both be open at
+once was never going to work as an end state anyway; the instruction
+this round was explicit and unambiguous: put the apartment *in* the
+sandbox, for real, and remove the placeholder box outright.
+
+### What moved
+
+`public/apartment/index.html` is deleted. `src/apartment.ts` is new: the
+same room-building logic, ported to an ESM module against this
+project's own `three` (`^0.185.1`) instead of the r128 CDN global. It
+exports `buildApartment(scene)`, returning `{ root, rooms, update,
+setMode, initMode, currentMode }` -- no renderer, no camera, no input
+handling, no animate loop of its own; `sandbox.ts`'s `boot()` owns all
+of that and just calls `apartment.update(dt, elapsed)` once a frame.
+`buildStudio()`, `ROOM_HALF_SIZE`/`ROOM_HEIGHT`, `ROOM_LIGHT_LAYER`, and
+`roomFillLight` are all gone with the box they existed for.
+
+The port itself was done mechanically rather than by hand-retyping
+~1050 lines from memory of having read them: the original script was
+sliced out of the uploaded HTML by exact line range, then a small Python
+pass applied the same handful of substitutions everywhere they occurred
+(`scene.add(` -> `root.add(`, the three encoding-API rename below,
+adding TypeScript parameter types to the ~30 helper functions) rather
+than retyping each call site, so anything *not* deliberately changed is
+verified identical to the source rather than merely believed to be. The
+one deliberate content change: `addBook()` was dropped -- defined in the
+original but never actually called (confirmed by grep), and
+`noUnusedLocals` would have rejected it as dead code if kept.
+
+### Three porting issues that weren't obvious from the diff
+
+**1. Scale.** The apartment is authored in what amount to dollhouse
+units -- 6-unit ceilings, 5-unit doors, a 9-unit room depth -- roughly
+2.4x life size. Every locomotion constant in `sandbox.ts`
+(`FALLBACK_WALK_SPEED_MPS`, step length, `TURN_RATE_RAD_S`, arrival
+radii) is tuned in metres for a 1.0-scale VRM. Two ways to close that
+gap: scale the character up, or scale the room down. Scaled the room
+down (`APARTMENT_SCALE = 2.5/6`, pinned to ceiling height, which is the
+single cue most likely to give away a wrong scale once a person is
+standing under it) rather than the character, because scaling a VRM up
+is not obviously safe -- its spring-bone physics (hair, skirt) are
+tuned against real gravity at 1.0 scale, and there was no way to check
+in this sandbox whether scaling the mesh would also need re-tuning
+`gravityPower`/`stiffness` on every spring bone to still look right.
+Scaling the room is a single multiply with no such risk.
+
+**2. Two three.js properties are world-space and do not inherit a
+parent group's scale.** This was checked against the actual three.js
+source under `node_modules/three/src`, not assumed from general
+three.js knowledge, because getting it wrong would have silently broken
+shadows or lamp falloff in a way that would only show up as "looks
+subtly off" with no error:
+  - `LightShadow.updateMatrices()` (`lights/LightShadow.js`) parents the
+    shadow camera to nothing; it copies only the light's *world
+    position* (`_lightPositionWorld.setFromMatrixPosition(light.matrixWorld)`)
+    and aims it at the target's world position. The ortho frustum's
+    `left/right/top/bottom/near/far` are set once, in the original
+    dollhouse-unit values, and never get multiplied by the parent
+    group's scale.
+  - `WebGLLights.js` uses `light.distance` directly as a shader uniform
+    (`uniforms.distance = distance`) while position comes from
+    `matrixWorld`. Same story: the number, not a scaled derivative of
+    it.
+  Fixed in one place, `applyScaleFixups()`, run once after the whole
+  tree exists: the shadow camera's six frustum fields and the two shadow
+  bias fields (also world-space depth offsets) are multiplied by `S`,
+  and every `PointLight` found via `root.traverse()` has `.distance`
+  scaled the same way. `PointsMaterial.size` under `sizeAttenuation` is
+  also a world-space diameter and got the same treatment for the
+  sparkle motes.
+
+**3. Point-light falloff changed shape between r128 and this three
+version -- not just its default toggle, its actual curve.** r128's
+non-physical lighting used a bounded falloff,
+`(1 - d/cutoffDistance)^decay`, which is 1 at the bulb and a clean 0 at
+`cutoffDistance` regardless of `decay`. Checked
+`node_modules/three/src/renderers/shaders/ShaderChunk/lights_pars_begin.glsl.js`:
+modern three's `getDistanceAttenuation()` is the physically-based
+`1/max(d^decay, 0.01)`, separately windowed toward zero near
+`cutoffDistance` but otherwise unbounded and equal to the old formula
+only at `decay=0`. At the authored `decay=2` (every `PointLight` call in
+the file), this is a materially different curve, not a units/intensity
+mismatch fixable by a constant multiplier -- it blows up close to the
+bulb and falls off much faster with distance, which reads as a small
+hot spot surrounded by near-darkness rather than the gentle pool of
+light the original was tuned to produce. There is also no
+`legacyLights`/`physicallyCorrectLights` toggle left to fall back to --
+grepped `WebGLRenderer.js` for both names, neither exists in this three
+version, so this isn't a one-line opt-out. `applyScaleFixups()` sets
+`decay = 0` on every point light, which restores the old *shape* of
+falloff (bounded, roughly linear-ish, controlled by `distance` alone)
+so the originally-authored intensity numbers stay meaningful instead of
+needing to be re-tuned from scratch against an unfamiliar curve.
+Reasoned from the shader source, not confirmed by eye -- no GPU here.
+
+### The character's lighting, and why one piece of the old rig survived
+
+`ROOM_LIGHT_LAYER`/`roomFillLight` are gone -- that whole mechanism
+existed only to brighten the old box's near-white geometry without also
+washing out the character's MToon shading, and a textured apartment with
+its own four-mode lighting rig doesn't have a flat-grey-box problem to
+solve. `scene.background` and `scene.fog` are no longer set in
+`sandbox.ts` at all; `apartment.ts`'s lighting-mode system drives both
+now (a `THREE.Fog` still has to exist on the scene *before*
+`buildApartment()` runs, since `applyLiveState()` mutates an existing
+fog rather than constructing one, so `boot()` creates a placeholder that
+gets overwritten on the first `initMode('day')` call inside
+`buildApartment()`).
+
+One piece did survive, renamed `addCharacterFill()`: a low, fixed,
+directionless `DirectionalLight` on the character specifically. Reason:
+the apartment's own key light swings hard across its four modes, from
+`(14,24,18)` at midday to `(-8,20,-10)` at night, and MToon's toon
+shading reads its lit/shadow band split from light *direction* --
+letting her banding swing with the room's mood lighting would make her
+read as a differently-shaded character depending on the time of day,
+which is a worse problem than a static room ever was. A low fixed fill
+(`0.35`, well under the apartment's own `dirI` of `0.85-1.3`) keeps her
+face legible in every mode without overpowering whichever mode is
+active. This is the same "don't fight MToon's own shading with fill
+light" lesson as the Phase 7 jacket artifact and the original
+`roomFillLight` comment -- carried forward, not rediscovered, but not
+independently re-confirmed against a real render either, for the same
+reason neither of those was: no GPU/browser in this sandbox.
+
+### The navmesh: rectangles, not a real polygon mesh
+
+`WanderController` no longer picks a point in a square centered on the
+origin. Round 7's plan (above) explicitly scoped a real per-room navmesh
+as future work, suggesting "even a flat convex-hull check to start" --
+this round built that starting version, not the real thing.
+
+The design: `apartment.ts` exports a table of named axis-aligned
+rectangles (`RoomRect`), each one a patch of floor confirmed clear of
+furniture by reading coordinates out of the room-builder functions
+(table sits in `ROOM_RECTS_LOCAL`, in the apartment's own dollhouse
+units, converted to world metres by the same `apartmentToWorld()` used
+for the spawn point and camera target). `sandbox.ts` gets two new
+classes: `WalkableArea`, a last-resort position clamp that snaps a point
+to the nearest rectangle only if it's inside none of them; and a
+rewritten `WanderController` that picks a target either inside the room
+she's currently considered to be in, or -- with `ROOM_CHANGE_CHANCE`
+(0.35) probability per leg -- inside the *overlap* between her current
+room and an adjacent one.
+
+That overlap-targeting is the whole trick, and it's why this works
+without pathfinding: a straight line between any two points inside one
+convex rectangle stays inside that rectangle. So a leg either stays
+entirely within the room she's in, or is aimed at a point that is, by
+construction, inside *both* the current room and the destination room's
+rectangles simultaneously. There is no leg that can cut a corner through
+a wall, because there is no target that was ever picked outside the
+rectangle the walk started in. Arriving at an overlap point makes the
+new room "current" for the next leg, and the next leg can then range
+over that whole room. The bathroom is the one genuinely walled-off room
+in the apartment; its rectangle only overlaps `bedroom` through a
+narrow `bath-door` rectangle sized to the actual doorway gap
+(x 16, z 5.4-7.1), so she has to pass through that gap rather than
+being able to aim anywhere near the dividing wall.
+
+Kitchen/dining/lounge share one open-plan strip with no dividing walls
+at all in the original geometry, so those four rectangles
+(`corridor`/`kitchen`/`dining`/`lounge-run`/`lounge-tv`) are just
+different clear patches of the same floor, deliberately overlapping
+generously with each other -- there's no doorway to thread there, so
+there was no reason to pinch those transitions down the way `bath-door`
+is.
+
+### Verification actually performed, in increasing order of how much it proves
+
+This is the part worth reading closely, because "ported 1050 lines of
+someone else's three.js scene with no GPU to look at it" is exactly the
+kind of change where "compiles clean" and "is actually correct" can
+diverge, and this project's whole documented history (rounds 4-6) is a
+case study in diagnostics that checked a value against itself and
+missed the real bug. Four different checks were run, each one closer to
+the real thing than the last:
+
+1. **`tsc --noEmit` and both production builds.** Necessary, proves
+   nothing beyond types lining up and the module graph resolving.
+   `sandbox.html` was bundled with an explicit one-off Vite config
+   (`rollupOptions.input`) since the project's default `vite build` only
+   covers `index.html`/the shell -- confirmed this by listing `dist/`
+   after a normal build and seeing no `sandbox.html` in it, so a green
+   `npx vite build` alone would NOT have caught a broken sandbox module
+   graph.
+2. **The rect table, parsed back out of the committed file (not a copy
+   kept in a test) and checked for connectivity and containment.** A
+   short Python script regexes `ROOM_RECTS_LOCAL` straight out of
+   `src/apartment.ts`, builds the overlap graph between all eight
+   rectangles, and confirms every rectangle is reachable from the one
+   containing the spawn point via a breadth-first search over
+   non-degenerate overlaps, plus that no rectangle escapes the
+   apartment's outer shell or crosses the bedroom/bathroom wall (except
+   `bath-door`, which is supposed to). Caught nothing this time, but
+   would have caught an unreachable room immediately -- exactly the
+   failure mode a purely visual read of the source can't easily catch
+   by eye across an 8-rectangle table.
+3. **`buildApartment()` actually executed, in Node, not just
+   type-checked.** It never touches WebGL -- only the scene graph plus
+   `document.createElement('canvas')` and a 2D context for its
+   procedural textures, both stubbed. Bundled with esbuild
+   (`--platform=neutral --external:three`) and run against real `three`
+   from `node_modules`. This is the check that actually caught something
+   real: a comment claiming world origin sits in "the living/dining
+   room" was true geometrically but misleading in effect, since that
+   exact point is where the coffee table sits and isn't itself
+   walkable -- the code was already correct (spawn is pinned to a named
+   rect, not origin), but the comment was corrected once the harness
+   printed out which rectangle actually contains origin (none) and
+   forced the question. Also confirmed by running it: mesh count (387),
+   that every point light actually got `decay=0` and a scaled
+   `distance`, that the shadow camera frustum was multiplied by `S` and
+   not left at dollhouse-unit values, the built root's bounding box
+   (~15.6 x 2.8 x 3.8m, floor at y~-0.08m -- consistent with a
+   2.5m-ceiling conversion of the authored 6-unit height), and that
+   switching modes and running 90 frames of `update()` doesn't throw and
+   leaves `scene.fog.far` at a sane in-metres value rather than still a
+   dollhouse-unit number or `NaN` from a bad lerp.
+4. **The real `WalkableArea` and `WanderController` classes, extracted
+   verbatim out of `sandbox.ts` by source-slicing (not reimplemented),
+   run through a 40-simulated-minute wander** against the real rect
+   table, with every step deliberately overshooting its target by 35% to
+   stand in for the walk system's own documented "arriving" overshoot
+   (the exact failure mode the old `ROOM_HALF_SIZE - WALL_CLEARANCE_M`
+   clamp existed to catch). Zero frames landed off walkable floor across
+   roughly 144,000 simulated ticks, and all eight rectangles -- including
+   the bathroom, only reachable through its narrow doorway overlap --
+   were visited at least once. This is the strongest check available
+   without a GPU: it isn't a description of what the code should do,
+   it's the actual shipped decision logic run for a long time against
+   the actual shipped data and checked against the actual invariant the
+   design depends on.
+
+**Still not verified by any of the above, and unverifiable without a
+GPU/browser:** whether the room actually looks right. The furniture
+clearances in `ROOM_RECTS_LOCAL` were derived by reading coordinates out
+of the builder functions and reasoning about what they imply, not by
+looking at a render -- they're the kind of thing that's right until
+proven otherwise by an actual screenshot, and were kept as a flat,
+commented data table specifically so they're fast to nudge once there's
+something to look at. Same caveat on the lighting: the scale/falloff
+reasoning above is checked against the three.js source, which is a much
+stronger form of "reasoned" than earlier rounds' guesses, but it is
+still reasoning, not a screenshot.
+
+### Camera and spawn
+
+Character spawn moved from an implicit `(0,0,0)` (which happened to be
+the old box's center) to an explicit `apartmentToWorld(2.5, 7.7)` --
+roughly the middle of the lounge floor, a named point rather than an
+assumption that origin is walkable (see the harness finding above: it
+isn't). The contact-shadow decal, previously added once at a fixed
+position and never updated -- silently correct only because both it and
+the character defaulted to the same origin in the old room -- now tracks
+`vrm.scene.position` every frame in `animate()`, since that coincidence
+no longer holds and an unfixed decal would otherwise sit under the
+coffee table while she's across the room. `FlyCamera`'s starting
+position moved to a point at the open front edge of the apartment,
+looking in; its far clip plane went from 60 to 80 to comfortably fit the
+apartment's ~15m span.
+
+### Scope note
+
+A second, parallel session is working on the shell/UI
+(`index.html`/`src/main.ts`/`src/style.css`) at the same time. Everything
+this round touched stayed on the sandbox side: `sandbox.html`,
+`src/sandbox.css`, `src/sandbox.ts`, the new `src/apartment.ts`, and
+these docs. `public/apartment/` is deleted rather than left to go stale
+now that `src/apartment.ts` is the canonical copy of this scene --
+keeping both around was a guaranteed way to eventually edit one and
+forget the other existed.

@@ -101,25 +101,40 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Just a way in to the standalone apartment page (public/apartment/) --
-   unrelated to anything else in this panel, so it's not folded into
-   #sandbox-status. Needs its own pointer-events: auto since #sandbox-info
-   itself is click-through. */
-#sandbox-apartment-link {
+/* Time-of-day switch for the apartment's lighting modes. Buttons are
+   built in sandbox.ts from APARTMENT_MODES rather than written out here,
+   so adding a mode to apartment.ts is enough. Needs its own
+   pointer-events: auto since #sandbox-info itself is click-through. */
+#sandbox-modes {
+  display: flex;
+  gap: 4px;
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--panel-border);
   pointer-events: auto;
 }
 
-#sandbox-apartment-link a {
-  color: var(--ink);
-  font-weight: 600;
-  text-decoration: none;
+#sandbox-modes button {
+  flex: 1;
+  padding: 3px 0;
+  border: 1px solid var(--panel-border);
+  border-radius: 5px;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  font-size: 11px;
+  text-transform: capitalize;
+  cursor: pointer;
 }
 
-#sandbox-apartment-link a:hover {
-  text-decoration: underline;
+#sandbox-modes button:hover {
+  color: var(--ink);
+}
+
+#sandbox-modes button.active {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fff;
 }
 
 /* ---- Captions: same word-by-word reveal + individually-fading trail

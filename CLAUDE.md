@@ -6,12 +6,8 @@ screen/camera vision. She's less a chatbot and more **a guide who lives on
 the PC** — tell her what you're trying to do, she gives you the next
 concrete step, and keeps half an eye on the screen while that task is
 active to nudge you back if you wander off (Task Guide Mode — the flagship
-behavior, see `docs/ARCHITECTURE.md`). Observe-and-advise only by default
-(Conversation Mode); an explicit, gated **Work Mode** (shell only, Phase 11
-in `docs/ROADMAP.md`) lets her act too — e.g. drive a browser via
-Playwright for real tasks. This reverses this doc's original framing,
-deliberately, per the user (`docs/DECISIONS.md`). The sandbox/companion
-room stays observe-only regardless of mode.
+behavior, see `docs/ARCHITECTURE.md`). She never touches the mouse/keyboard
+or executes anything herself: observe-and-advise only.
 
 **Non-negotiable constraint: 100% local.** No cloud LLM calls, no cloud TTS,
 no telemetry. Everything — inference, voice, memory — runs on the user's own
@@ -94,77 +90,71 @@ across rounds 4-6 is fully done.
 reconciled/renumbered into these docs) — a full multi-room apartment via
 CC0 asset-pack furniture, a per-room navmesh, named sit/cook/read
 anchors, and a text scene-state channel to `persona.py` rather than a
-first-person camera feed. Nothing in round 7 is built yet. **Round 6 is now confirmed closed by
-the user** (walks properly, idles, does basic gestures, no wall
-clipping — "a great start"); richer animation variety is deferred
-until custom animation packs are purchased, and round 7 is paused for
-the same reason. Sequencing decided for what comes next: **Phase 9
-(UI) → Phase 4 (vision/OCR) → Phase 11 (Work Mode / agentic tool
-harness)**. The "cursor via Playwright" question from last round is
-resolved — real action, deliberately reversing the observe-and-advise
-constraint above, scoped to browser automation, gated behind Work
-Mode, shell-only. Full spec: `docs/ROADMAP.md`'s Phase 11 entry.
-**Phase 9 (UI overhaul) is now underway**: pastel/lavender reskin plus
-a persistent conversation-log panel (grew Phase 9's original "no
-backend changes" scope by one real feature -- a `transcript_log` table
-and `get_log`/`clear_log` WebSocket messages, see
-`docs/ROADMAP.md`). Sandbox-verified for real (committed tests,
-`tsc`/`vite build` both clean) but **not yet confirmed in an actual
-browser** — no GPU/browser here, same as every prior visual change.
-**Confirmed working by the user on their machine.**
-**Phase 4 Round 1 is also built** (started once Phase 9 was confirmed):
-a real tool-calling loop in `_run_turn`, with `capture_screen` (returns
-a text description via an internal VLM call, never raw pixels) and
-`read_clipboard` as the first two tools. Sandbox-verified for real (21
-new tests, three ad hoc end-to-end runs including the tool-loop-stuck
-safety cap and a regression check against plain no-tool-call turns).
-**Real unknowns, not yet tested on the user's machine**: whether Ollama
-actually streams `tool_calls` reliably for `qwen3.5:9b`, and whether
-`PIL.ImageGrab`/`pyperclip` behave as expected on Windows — see
-`docs/ROADMAP.md`'s Phase 4 entry for the fallback plan if the
-streaming approach doesn't hold up. Task Guide Mode's own scheduled-
-capture/off-task-chide loop (the actual flagship half of Phase 4) is
-still not built — Round 1 only covers on-demand tool calls.
-**Tool-calling investigation, resolved:** first real test showed the
-tools weren't firing at all; the Pillow-missing theory that followed
-turned out to be a red herring (a real bug worth fixing, but not the
-actual cause -- she was just echoing a word the user had typed at her,
-not reacting to a real tool error). Root cause, found through a series
-of isolated raw-Ollama tests that ruled out thinking mode, streaming,
-and the model's own capability one at a time: `SYSTEM_PROMPT` still had
-a line from before Phase 4 existed — "You can only observe and advise.
-You never control the mouse or keyboard..." — telling the model, every
-single turn, that it cannot actually do anything, directly undermining
-the tool-calling being offered in the same request. **Fixed** — the
-prompt now explicitly names both tools and tells her to use them for
-real, with a canary test guarding against the old line quietly coming
-back. Also fixed this round: the conversation-log panel's text wasn't
-actually copy-pasteable (a global `user-select: none` with no
-override), and a voice fix — "you're" specifically gets mangled by
-the cloned SoVITS voice, so both the system prompt and a regex safety
-net (same pattern as the existing dash-to-comma fix) now convert it to
-"you are". **Retest on the user's real machine still pending** to
-confirm the prompt fix actually holds in the full app.
-**Round 8 (separate, parallel session): a real apartment render
-exists now**, dropped into `public/apartment/index.html` as its own
-standalone page (linked from the sandbox's info panel) — four rooms
-(kitchen, living/dining, bedroom, bathroom), pastel dollhouse look,
-day/noon/evening/night lighting presets. Deliberately kept standalone
-rather than merged into `sandbox.ts`'s own scene: it's built against
-Three.js r128 loaded from a CDN `<script>` tag with its own global
-`THREE`, not this project's bundled ESM `three` (`^0.185.1`), and some
-APIs it uses (`renderer.outputEncoding`/`THREE.sRGBEncoding`) don't
-exist on the newer version — porting it into the real scene is real
-work for later, not a drop-in. Per instruction, the room/furniture
-layout itself is expected to change before that integration happens,
-so no time was spent tuning it now. See `docs/DECISIONS.md`.
-**Two sessions have been running in parallel**: this session on the
-shell/UI/tools (`index.html`, `src/main.ts`, `src/style.css`,
-`orchestrator/`), the round-8 one scoped to the sandbox
-(`sandbox.html`, `src/sandbox.ts`, `src/sandbox.css`,
-`src/sandbox-hud.ts`) and the standalone apartment page above — hence
-this file needing a manual merge where both sessions wrote to the same
-narrative docs. Full writeup for all rounds in `docs/DECISIONS.md`.
+first-person camera feed. Nothing in round 7 is built yet.
+**Round 8: a real apartment render exists now**, dropped into
+`public/apartment/index.html` as its own standalone page (linked from
+the sandbox's info panel) — four rooms (kitchen, living/dining, bedroom,
+bathroom), pastel dollhouse look, day/noon/evening/night lighting
+presets. Deliberately kept standalone rather than merged into
+`sandbox.ts`'s own scene: it's built against Three.js r128 loaded from a
+CDN `<script>` tag with its own global `THREE`, not this project's
+bundled ESM `three` (`^0.185.1`), and some APIs it uses
+(`renderer.outputEncoding`/`THREE.sRGBEncoding`) don't exist on the
+newer version — porting it into the real scene is real work for later,
+not a drop-in.
+**Round 8 lasted about one message.** The standalone page turned out to
+be a dead end in practice: opened from inside the actual Tauri shell,
+`target="_blank"` doesn't reach an arbitrary route — it just reopens the
+shell's own bound window. Splitting "the apartment" and "the character"
+into two unconnected pages was never going to let her actually live in
+it anyway, so round 9 is the real thing.
+**Round 9: the apartment is the sandbox's scene now, not a linked-to
+page.** `public/apartment/` is deleted; `src/apartment.ts` ports the
+same geometry into a real ESM module against this project's own `three`,
+and `sandbox.ts`'s old `buildStudio()` box is gone — `boot()` calls
+`buildApartment(scene)` directly. Three porting issues came up that
+weren't obvious from the diff (full reasoning in `docs/DECISIONS.md`,
+short version here):
+- **Scale.** The apartment is authored ~2.4x life size (6-unit ceilings).
+  Scaled the room down to meet her (`APARTMENT_SCALE`), not her up —
+  every locomotion constant in this file is tuned in metres, and scaling
+  a VRM up risks its gravity-tuned spring bones.
+- **Two three.js properties don't inherit a parent group's scale**:
+  a light's shadow-camera frustum extents, and point-light `distance`.
+  Checked against the actual three.js source in `node_modules`, not
+  assumed — both needed a manual post-scale pass.
+- **Light falloff changed between r128 and this three version.** r128's
+  default was a bounded `(1-d/cutoff)^decay`; modern three is unbounded
+  `1/d^decay`, which turns every lamp into a hot spot at the authored
+  decay of 2. Forcing `decay = 0` restores the bounded falloff the
+  original intensities were tuned against.
+The old free-roam square `WanderController` is gone too, replaced with a
+small rectangle-union navmesh (`WalkableArea` + a rewritten
+`WanderController`) built from a hand-derived table of clear-floor
+patches in `apartment.ts` — real per-room navmesh work was explicitly
+future scope as of round 7's plan; this doesn't do sit/cook/read anchors
+or true polygon geometry, just enough rectangles, chained through their
+overlaps, that she can reach all four rooms without a path ever cutting
+through a wall or a piece of furniture. Checked three ways beyond
+`tsc --noEmit`, none of which needed a GPU: the rect table was parsed
+back out of the file and checked for connectivity/containment; the
+apartment module was actually executed in Node (stubbed 2D canvas, no
+WebGL needed) and its scene graph inspected; and the real
+`WalkableArea`/`WanderController` classes were extracted verbatim from
+this file and run through 40 simulated minutes of wandering with a
+deliberate overshoot on every step, and never once left walkable floor.
+**Still not verified: how any of this actually looks.** No GPU/browser
+in this sandbox, same as every round before this one — the furniture
+clearances in the room table were read out of coordinates in the
+builders, not off a render, and the lighting numbers are reasoned from
+reading the three.js source, not seen. Expect to nudge both once this
+is on screen.
+**A second session is working on the shell/UI in parallel** — this
+session's work stays scoped to the sandbox (`sandbox.html`,
+`src/sandbox.ts`, `src/sandbox.css`, `src/apartment.ts`,
+`src/sandbox-hud.ts`) and these docs, not
+`index.html`/`src/main.ts`/`src/style.css`.
+Full writeup for rounds 6-9 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map
@@ -195,9 +185,6 @@ Full phase-by-phase status: `docs/ROADMAP.md`.
   belongs in the orchestrator, not the shell.
 - Camera access always goes through the explicit permission + indicator path
   in `docs/ARCHITECTURE.md` — don't add a silent/continuous capture mode.
-- Tool availability is mode-gated (Conversation Mode vs. Work Mode) and
-  shell-only, per Phase 11 (`docs/ROADMAP.md`) — the sandbox/companion room
-  never gets tool-calling, OCR, or browser/cursor control, by design.
 - Prefer editing/extending an existing tool over adding a new overlapping one.
 - When a fix or design choice isn't obvious from the diff alone, add it to
   `docs/DECISIONS.md` in the same change, not as an afterthought.

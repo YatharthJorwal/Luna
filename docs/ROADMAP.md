@@ -18,11 +18,6 @@
   character — when the user has drifted off-task, until the task is finished
   or the user explicitly says to drop it. The flagship behavior, not a side
   feature — full spec in `docs/ARCHITECTURE.md`.
-- **Work Mode** (shell only, explicit toggle, off by default — Phase 11):
-  a gated agentic tool harness that can act, not just advise — Playwright
-  browser automation, plus the vision tools below. Reverses the
-  "observe and advise, not act" line further down this list, deliberately,
-  well after that line was first written — see `docs/DECISIONS.md`.
 - Persistent memory that survives app restarts (not just session/context memory).
 - Vision tools, invoked on demand by the model, not a continuous stream:
   screen capture, clipboard read, OCR fallback, camera capture.
@@ -38,11 +33,8 @@
 - No cloud fallback mode.
 - No elaborate avatar customization, marketplace, monetization, or multi-character
   support. One character, done well.
-- No auto-playing games. Taking control of input devices is otherwise no
-  longer categorically out of scope — see Work Mode above and Phase 11 —
-  but it's narrow (Playwright browser automation, not general OS input),
-  gated behind an explicit toggle, and shell-only; the sandbox/companion
-  room stays observe-only with no exceptions.
+- No auto-playing games or taking control of input devices — she can *see* and
+  *advise*, not act on the user's behalf.
 - Live2D model asset itself is **not something Claude generates** — needs to
   be sourced (free sample for prototyping, purchased, or commissioned) and
   licensed properly by the user.
@@ -169,92 +161,11 @@ awaiting on-machine confirmation · ⬜ not started)
   conversations rather than the synthetic transcripts tested here — both
   parsers are deliberately forgiving specifically because this was a
   real open question, not an assumption.
-- 🔶 **Phase 4 — Vision tools + Task Guide Mode.** Round 1 built and
-  sandbox-verified: `capture_screen` and `read_clipboard` live as real
-  tools, wired through a genuine tool-calling loop in `app.py`'s
-  `_run_turn` (`llm.stream_reply_with_tools`, `tools/` package). "Look
-  at my screen" / "what's on my clipboard" now works as an on-demand
-  ask mid-conversation -- the model decides whether to call a tool,
-  the orchestrator runs it and hands the result back, up to
-  `MAX_TOOL_ROUNDS` (3) chained calls before giving up gracefully
-  (`TOOL_STUCK_LINE`). `capture_screen` returns a *text description*,
-  never raw pixels, via a small internal one-shot VLM call
-  (`llm.describe_image`) -- matches `docs/ARCHITECTURE.md`'s "pull, not
-  push" vision-tools section exactly. Not gated by Conversation/Work
-  Mode -- that's Phase 11, still ahead of this in the build order but
-  documented first; these two tools are simply always available for
-  now, same as Phase 4 was originally scoped before Phase 11 existed.
-
-  **Sandbox-verified for real:** 21 new tests (`test_llm.py`'s
-  `_normalize_tool_calls` parsing, `tools/test_tools.py`'s vision
-  functions with `PIL.ImageGrab`/`pyperclip` mocked), plus three ad hoc
-  end-to-end runs through the actual `app.py`/`_run_turn` code with a
-  fake `llm.stream_reply_with_tools`: one confirming a full
-  tool-call → result → final-reply round trip (including that the
-  emotion tag and transcript log both come out right on the far side
-  of a tool call), one confirming the `MAX_TOOL_ROUNDS` cap actually
-  stops a model stuck re-calling a tool instead of hanging the turn,
-  and one confirming plain no-tool-call turns and the LLM-unreachable
-  fallback are both completely unaffected by any of this (regression
-  check against Phase 2/9's existing behavior).
-
-  **First real-world test (on the user's actual machine): tools weren't
-  being called at all.** Asked directly to look at the screen or read
-  the clipboard, she replied in character instead -- deflecting,
-  demanding the user paste/show it themselves. Full investigation, in
-  order (also in `docs/DECISIONS.md`):
-  1. Pillow genuinely was missing (`pip show Pillow` came back "not
-     found") and got installed -- a real, separate bug, but a red
-     herring for *this* symptom: her earlier "the Pillow thing" line
-     turned out to just be her echoing a word the user themselves had
-     typed at her ("use pillow"), not evidence a tool had actually run.
-     Worth fixing regardless, didn't explain the silence.
-  2. Diagnostic logging (`[luna] tool-calling:` in the orchestrator's
-     terminal) showed Ollama's response never contained a `tool_calls`
-     key at all, across every real attempt -- even after the Pillow fix.
-  3. `ollama show qwen3.5:9b` confirmed the model has the `tools`
-     capability. A raw, isolated call straight to Ollama (bypassing Luna
-     entirely) with a trivial "use this calculator tool" prompt
-     immediately got a correct `tool_calls` response, both non-streaming
-     and streaming, both with `think: false` -- ruling out thinking mode,
-     streaming, and the model's basic capability as the cause, one at a
-     time, each with a real test rather than a guess.
-  4. A further isolated call using the *real* `capture_screen`/
-     `read_clipboard` schemas verbatim and a real "what's on my screen"
-     prompt, but with **no system prompt at all**, also got a correct
-     `tool_calls` response.
-  5. **Root cause found**: `persona.py`'s `SYSTEM_PROMPT` still had a
-     line from before Phase 4 existed -- "You can only observe and
-     advise. You never control the mouse or keyboard..." -- telling the
-     model, in plain language, on every single turn, that it cannot
-     actually do anything. That framing was fighting the tool-calling
-     capability being offered to it in the same request. **Fixed**: the
-     line now explicitly tells her she has these two real tools and
-     should use them for real, while keeping the "no mouse/keyboard/
-     code/files" boundary for everything else (still true, Phase 11
-     hasn't landed). A canary test (`test_persona.py`) guards against
-     this exact line quietly coming back in a future prompt edit.
-  **Retest on the user's real machine still pending** to confirm the fix
-  actually holds in the full app, not just in an isolated curl call.
-
-  **Not verified, real unknowns until tested on the user's machine:**
-  whether `PIL.ImageGrab.grab()` and `pyperclip.paste()` behave as
-  expected on the user's real Windows machine/multi-monitor setup (this
-  sandbox has no display at all); and whether `qwen3.5:9b` reaches for
-  these tools sensibly rather than over- or under-calling them now that
-  the prompt actually tells it to -- tuning that is real Round 2/3
-  territory once there's actual usage to react to. The streaming/
-  thinking/model-capability questions from when this was built are now
-  resolved (see step 3 above) -- both confirmed working correctly.
-
-  **Not built yet (later rounds):** `ocr_region` (explicitly a fallback
-  for imprecise VLM OCR per `docs/ARCHITECTURE.md`, not needed for the
-  core loop above to work); `capture_camera` (needs its own permission +
-  indicator design, per the same doc); and the actual flagship half of
-  this phase -- Task Guide Mode's *scheduled* `capture_screen` polling
-  and off-task chiding while a task is active. Round 1 only covers
-  on-demand tool calls the model makes mid-conversation; nothing here
-  runs on a timer yet.
+- ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
+  `read_clipboard` + OCR fallback, tool-calling loop live. On-demand "look at
+  my screen" works for coding help, and the scheduled-capture /
+  off-task-chide loop works end-to-end for at least one flagship scenario
+  (the Flappy Bird walkthrough is a good test case).
 - ⬜ **Phase 5 — Camera + game-assist polish.** Gated camera tool, light
   game-context awareness (e.g. active-window detection), expression/emotion
   mapping refined.
@@ -335,67 +246,10 @@ awaiting on-machine confirmation · ⬜ not started)
   Still open, not blocking: whether qwen3.5:9b reliably produces a
   recognizable tag across real conversations rather than the synthetic
   cases tested here.
-- 🔶 **Phase 9 — UI overhaul.** Original scope was pure `index.html`/
-  `style.css` work with "no protocol or backend changes" -- that grew by
-  one real feature during the actual build, at the user's request: a
-  persistent conversation-log panel, which needed a small backend/
-  protocol addition after all (see below). Built:
-  1. **Pastel/lavender reskin** of the existing HUD -- swapped
-     `style.css`'s color variables (cooler violet-on-near-black →
-     warmer pink/lavender family) and the caption glow's hardcoded
-     colors to match; no structural/layout changes, same transparent-
-     stage-is-the-star philosophy as before. **Not verified**: how this
-     actually reads on screen -- no browser/GPU in this sandbox, same
-     caveat as every other visual change in this project.
-  2. **Persistent conversation-log panel.** A new `#log-button` in the
-     HUD toggles a floating card (`#log-panel`) listing every turn as
-     `{user_name}: ...` / `Luna: ...` pairs, oldest-first, with a
-     "Clear Log" button. Backend: a new `transcript_log` SQLite table
-     (`memory/db.py`), CRUD in `memory/store.py`, and two new WebSocket
-     message types (`get_log`/`clear_log`, answered with `log` --
-     see `ws-client.ts`'s protocol comment) -- deliberately separate
-     from Phase 3's facts/episodes tables and never read by recall.py
-     or written by consolidation.py, since this is a plain verbatim
-     record for the user's own review, not something fed back into her
-     memory/context. `app.py`'s `_run_turn` now tracks a `spoken_parts`
-     list alongside the existing `reply_parts` (they diverge on
-     purpose: `reply_parts` feeds LLM history and excludes the
-     LLM-unreachable fallback line; `spoken_parts` is everything
-     actually sent to `_send_speak`, unconditionally, including that
-     fallback line and a partial reply if the turn was stopped
-     mid-sentence) and logs one row per turn regardless of how it
-     ended. A new `session.user_name` config field (`config.yaml`)
-     labels the user's own lines. **Sandbox-verified for real, not just
-     reasoned about:** 5 new committed tests in
-     `memory/test_memory.py` (roundtrip, blank-input skip, a real
-     user-line-with-blank-reply case, clear, clear-on-empty-db — all
-     passing alongside the existing 29), plus two ad hoc end-to-end
-     WebSocket runs through the actual `app.py` code (real
-     `TestClient` websocket, real SQLite writes): one exercising
-     `get_log`/`clear_log` directly, one running a full stubbed
-     `_run_turn` (fake `llm.stream_reply`/`synthesize`, real everything
-     else) confirming the logged text matches exactly what was sent via
-     `speak`. Frontend: `npx tsc --noEmit` and a full `npm run build`
-     both pass clean with the new markup/CSS/TS in place, and the log
-     panel's markup/CSS variables were confirmed present in the actual
-     built `dist/` output. **Not verified**: any of it actually working
-     in a real browser -- clicking the button, the panel's live
-     appearance, scroll behavior -- same no-GPU-no-browser caveat as
-     the reskin above; this is "logically checked and type-safe", not
-     "seen working."
-  Known gaps, not built: the STT-failure fallback line and the
-  observer-surface-busy decline are never logged (both happen before
-  `_run_turn`, with no corresponding user turn to pair against in the
-  requested `user: / assistant:` shape); no export/search over the log
-  beyond scrolling it; no pagination (unlikely to matter soon for a
-  single-user local app, per store.py's own reasoning). **Confirmed
-  working by the user on their real machine** (reskin, log panel, and
-  persistence across a restart all checked). **One real bug found on
-  first use and fixed:** the log's text wasn't actually selectable/
-  copy-pasteable -- `body`'s global `user-select: none` (needed so
-  dragging the window doesn't highlight text everywhere) applied to
-  `#log-panel` too, with no override. Fixed with a `user-select: text`
-  rule scoped to just that panel.
+- ⬜ **Phase 9 — UI overhaul.** Replace the plain input box/HUD with
+  something more visually considered — color, less utilitarian chrome.
+  Pure `index.html`/`style.css` work, no protocol or backend changes, no
+  dependency on any other phase — can happen independently, any time.
 - 🔶 **Phase 10 — Environments.** Two of the three requested (VR explicitly
   scoped out by the user themselves as currently unachievable): (1) desktop
   companion mode — draggable corner presence, reacting to cursor
@@ -510,14 +364,11 @@ awaiting on-machine confirmation · ⬜ not started)
   diagnostics (`debugFacingTravelText`, `debugFootTraceText`,
   `debugHipsWorldFacingText`) and their on-screen readouts have been
   removed; `directionToFacingAngle()` (the actual fix) stays.
-  **Round 6 closed.** The user confirmed on-machine that the remaining
-  round-6 tuning (wall clamp, walk-start facing, turn rate, idle-variety
-  gestures) all read correctly in motion on top of the already-resolved
-  direction fix — she walks properly, idles occasionally, does basic
-  gestures, and doesn't clip through walls. Called "a great start."
-  Richer animation variety (more gesture types, refined gait) is
-  explicitly deferred until the user sources additional custom
-  animation packs — not a bug backlog, just paused pending assets.
+  **Round 6, fully closed:** the user confirmed on their real machine
+  that walking reads as fixed overall now — not just the facing
+  direction, but the wall-clamp and slower turn-rate changes too. The
+  only open item this round left behind is closed; see
+  `docs/DECISIONS.md`.
   **Round 7 (planning only, full apartment) — not built yet, renumbered
   from a parallel session.** The user ran a separate planning
   conversation in parallel with this session's round-5 build work, off
@@ -564,177 +415,29 @@ awaiting on-machine confirmation · ⬜ not started)
   channel her situational awareness runs through — see
   `docs/DECISIONS.md`'s round-7 entry for why text scene-state was
   picked over feeding her rendered frames.
-  **Paused, not cancelled**, for the same reason round 6's extra
-  animation variety is paused: step 3 above (sit/cook/read poses) needs
-  animation clips the user is deferring buying. See "Shell-polish vs.
-  apartment-build" below for the full reasoning and the room-vs-
-  interactions split this suggests if the user wants to make partial
-  progress here without waiting on that purchase. **Update: round 8
-  below, from a separate parallel session, is exactly that
-  room-geometry split** — done before this note was even resolved,
-  since the two sessions were running at the same time.
-- 🔶 **Round 8: first real apartment render dropped in.** A user-supplied
-  standalone Three.js scene — kitchen, living/dining, bedroom, and
-  bathroom, pastel "dollhouse" look, day/noon/evening/night lighting
-  presets, its own orbit-style camera controls — now lives at
-  `public/apartment/index.html`, linked from the sandbox's info panel.
-  Deliberately *not* merged into `sandbox.ts`'s own VRM scene yet: it's
-  self-contained (own renderer/camera/lighting/animate loop, Three.js
-  r128 via a CDN `<script>` tag rather than this project's bundled ESM
-  `three`), and the user asked for it to just be wired in and reachable
-  for now — the room/furniture layout itself is expected to change
-  before any deeper integration, so this round didn't touch the
-  apartment's own code at all. This is step 1 of the round-7 plan above
-  (room geometry), done as a drop-in rather than a from-scratch Blender
-  build since the asset already existed. Still ahead, per that plan:
-  porting the scene into the real character-bearing scene (which also
-  means updating a couple of APIs this file uses that don't exist on
-  the project's newer `three` version), the per-room navmesh, the
-  sit/cook/read anchors, and the scene-state channel to `persona.py`.
-  See `docs/DECISIONS.md`.
-- ⬜ **Phase 11 — Agentic tool harness (Work Mode).** The single biggest
-  scope change in this project's history: reverses the original
-  "observe-and-advise only, never touches the mouse/keyboard" stance
-  from `docs/ARCHITECTURE.md`'s Task Guide Mode spec and the
-  "explicitly out of scope" list above — a decision the user made
-  deliberately, not an oversight (`docs/DECISIONS.md`). Sequenced after
-  Phase 9 (UI) and Phase 4 (vision/OCR), per the user. **Shell only** —
-  the sandbox/companion-room experience stays observe-only and
-  tool-free by design; none of this reaches `src/sandbox.ts`.
-
-  Two modes, one toggle, shell-side only:
-  1. **Conversation Mode (default).** Talking, companionship, memory
-     recall/write. No screen capture, no OCR, no camera, no browser
-     tool, no cursor. Deliberately the leanest tool surface — both for
-     `qwen3.5:9b`'s limited context budget and because this is meant
-     to feel like companionship, not a work session.
-  2. **Work Mode (explicit opt-in).** `capture_screen` + `ocr_region` +
-     `read_clipboard` (Phase 4) plus a new browser-automation tool
-     (Playwright) become available: navigate, click, type, read page
-     text. Memory recall is off by default in this mode, per the
-     user's own framing (save context for the actual task); memory
-     *writing* (consolidation) stays on in the background either way.
-     Camera stays behind its existing separate permission regardless
-     of mode — this doesn't loosen that.
-
-  A third, orthogonal toggle — **Smart Mode** — controls reasoning
-  depth, independent of which mode above is active: off is a fast
-  single-pass reply/tool-call; on runs a slower plan → act → observe →
-  reflect loop before answering, for tasks that need more than one
-  tool call chained together. Off by default, same context-budget
-  reasoning as Conversation Mode's narrower tool list.
-
-  **Tool-calling format:** Hermes-style function calling (the ChatML
-  `<tool_call>`/JSON-arguments schema NousResearch's Hermes line
-  popularized, since adopted more broadly) rather than a bespoke
-  protocol. **Not verified against this project's actual model:**
-  whether `qwen3.5:9b`'s real chat template follows this schema
-  reliably — same "logically checked, not confirmed" territory as
-  everything else built in this sandbox; needs an on-machine test once
-  built, with a forgiving-parse fallback (same philosophy as
-  `consolidation.py`/`forget.py`) if it doesn't.
-
-  **Scope of "her own cursor," v1:** a Playwright-controlled browser
-  instance — she can navigate, click, and fill forms *inside that
-  browser window*, not drive the whole Windows desktop. Meaningfully
-  safer than general OS-level input control (a library like
-  `pyautogui`/`nut.js` operating real screen coordinates across
-  arbitrary apps) and covers most "look this up / fill this form / do
-  this web task" asks on its own. Full desktop-wide control is a real
-  v2 idea, not this phase — a materially bigger risk surface (a wrong
-  coordinate can click anything, not just something inside a
-  sandboxed browser tab) and deserves its own design pass.
-
-  **Safety scaffolding, built in from the start:** a visible indicator
-  whenever Work Mode's browser tool is actually driving something
-  (mirrors the existing camera-indicator precedent below); a short
-  list of action types that pause for the user's confirmation before
-  firing (anything that submits/sends/pays/deletes) unless the user
-  has explicitly told her to proceed without asking for that task; a
-  visible log of what she actually did, since this is a brand-new
-  trust surface; and a hard stop/abort the user can hit mid-task. None
-  of this is built yet — flagged now so it's designed in from the
-  first line of code, not retrofitted later.
-
-  **Also folds in, since it's the same shell-focused stretch of work:**
-  Phase 10(1)'s still-unbuilt "desktop companion mode" — light idle
-  motion in the shell (occasional look-around, noticing the user's
-  cursor nearby, an idle pout) layered on the existing lipsync/
-  expression system, explicitly **no locomotion** — she's stationary
-  in the shell; walking stays sandbox-only (Phase 10(2)/round 6-7).
-
-## Shell-polish vs. apartment-build (current planning discussion)
-
-**Update:** resolved by the user — sequence is Phase 9 → Phase 4 →
-Phase 11 (see above), with Phase 10(1)'s shell idle-motion folded into
-the Phase 11 push since both land in the same file/system. Apartment
-build (round 7) stays paused. Original discussion kept below for the
-reasoning trail.
-
-With round 6 closed, two directions were on the table for what comes
-next, and neither is a small ask.
-
-**Option A — the apartment build (round 7 above).** A MiSide-style
-multi-room apartment with real object interaction (sit, cook, read,
-sleep, bathe, watch TV, play games). The user has SweetHome3D
-installed but found it hard to use solo as a 3D-modeling beginner —
-open to Claude building the room geometry step-by-step instead, with
-the user verifying texture/color/atmosphere choices by eye each round
-(the usual "not verified — no GPU/browser here" caveat applies to
-every visual call made this way, same as every rendering phase before
-this one). The real blocker, already flagged in the round-7 planning
-note above: the *interaction* half of this (sit/cook/read/sleep/bathe/
-play/watch-TV poses) needs bespoke animation clips the user doesn't
-have yet and is deferring purchasing for now. The room-geometry half
-doesn't strictly need those clips — she could walk and idle in a
-nicer room today — but a room full of furniture she can't actually use
-is a smaller win than it sounds, and risks real asset-sourcing/
-placement effort now for a payoff (the interactions) that's blocked on
-a future purchase.
-
-**Option B — shell polish**, several independent pieces of different
-size and risk:
-- UI overhaul (Phase 9 above) — pastel/waifu-themed chatbox, replacing
-  the current utilitarian HUD. Pure HTML/CSS, no protocol changes,
-  lowest-risk item on this list, already scoped as its own
-  independent phase before this discussion.
-- A "hide" toggle for the desktop shell (distinct from the sandbox) —
-  minimize/restore without fully quitting, for real (non-sandbox)
-  localhost runs. Small and contained: Tauri window-visibility +
-  tray-menu work, similar in size to the launcher rework already done
-  in Phase 2.5.
-- On-demand screen vision + OCR, with an explicit on/off toggle rather
-  than an always-on stream — this *is* Phase 4 above (`capture_screen`
-  + `read_clipboard` + OCR fallback + tool-calling loop), not a new
-  idea: the on/off framing the user asked for (so it doesn't run
-  forever and eat RAM) is exactly what this doc's "explicitly out of
-  scope" section already commits to ("no continuous/always-on camera
-  or screen streaming into context"). This is also the direction the
-  flagship Task Guide Mode behavior depends on (`CLAUDE.md`) — building
-  it moves the project toward its own stated centerpiece feature, not
-  just a nice-to-have.
-- Giving her a cursor via Playwright — flagged, not started. Taken
-  literally (Luna moving the mouse / executing actions herself), this
-  runs directly against `CLAUDE.md`'s own non-negotiable framing: she
-  never touches the mouse/keyboard or executes anything herself,
-  observe-and-advise only. Building real input control would be
-  reversing a constraint the user set for the project themselves, not
-  just adding a feature on top of it — worth an explicit confirm before
-  any code gets written. (A cursor/highlight *indicator* drawn on top
-  of the screen — showing where she means without actually moving
-  anything — would fit the existing constraint and might be what was
-  actually meant.)
-
-**Current recommendation:** Phase 4 (vision + OCR + Task Guide Mode)
-first — it's both the smallest step toward the project's own stated
-flagship behavior, and the one item on the shell-polish list that
-isn't pure polish. Phase 9's UI overhaul and the shell hide toggle are
-good lower-risk companions that can slot in before, after, or
-alongside it. The apartment build (Option A) stays parked until the
-animation-pack question resolves; if the user wants partial progress
-meanwhile, splitting out just the room-geometry half (SweetHome3D
-layout → export → load into the existing sandbox, no new interaction
-poses yet) is possible without waiting on that purchase.
+  **Round 8: first real apartment render dropped in**, as a standalone
+  linked-to page — turned out to be a dead end within one message once
+  actually opened from inside the Tauri shell (`target="_blank"` there
+  just reopens the shell's own bound window rather than reaching an
+  arbitrary route), so it didn't last as the plan. See round 9.
+  **Round 9: the apartment replaces `buildStudio()` as the sandbox's
+  real scene**, not a linked page — `src/apartment.ts` ports the same
+  four-room geometry into an ESM module against this project's own
+  `three` (the r128-vs-`^0.185.1` API gap flagged in round 8 is now
+  actually resolved, not just noted), and `boot()` builds it directly
+  into the character-bearing scene. This is step 1 of the round-7 plan
+  above (room geometry), done as a port of the existing asset rather
+  than a from-scratch Blender build. Also done this round, ahead of
+  where the round-7 plan expected it: a first-pass per-room navmesh —
+  point 2 of that plan, "even a flat convex-hull check to start" — as a
+  small union of hand-derived clear-floor rectangles chained through
+  their overlaps, replacing `WanderController`'s old free-roam square.
+  It is not a true navmesh (no polygon geometry, no obstacle avoidance
+  within a room) and doesn't attempt point 3 (sit/cook/read anchors) or
+  point 4 (the scene-state channel to `persona.py`) at all — those
+  remain open below. Full reasoning on the scale conversion, the two
+  three.js properties that don't inherit a parent group's scale, and the
+  r128-vs-modern light-falloff change, in `docs/DECISIONS.md`.
 
 ## Open decisions
 
@@ -749,35 +452,23 @@ Resolved:
   to it are on the user to confirm — not something this doc can verify.
 - STT: in scope after all, via faster-whisper (Phase 2.5) — see the scope
   section above.
-- Round 6 tuning (wall clamp, turn rate, walk-start facing, idle-variety
-  gestures): confirmed reading correctly in motion on the user's
-  machine — round 6 is closed. See the round-6-closed entry above.
-- What comes next: **Phase 9 → Phase 4 → Phase 11**, in that order, per
-  the user — see the Phase 11 entry and "Shell-polish vs.
-  apartment-build" above. Apartment build (round 7) stays paused,
-  though round 8 (above) already made progress on its room-geometry
-  half via a separate parallel session.
-- Cursor via Playwright: clarified — real action, not just a visual
-  indicator, deliberately reversing the earlier observe-and-advise-only
-  stance. Scoped to browser automation (not general OS input), gated
-  behind Work Mode, shell-only. Tracked as Phase 11's actual build, not
-  an open decision anymore.
+- Round 6's wall-clamp/turn-rate/facing-during-start changes: confirmed
+  reading as fixed on the user's real machine, alongside the
+  already-resolved facing/direction bug — see the round-6 entry above and
+  `docs/DECISIONS.md`.
 
 Still open:
 - Task Guide Mode tuning: screenshot interval while a task is active, and how
   aggressive the nagging should be (fixed, or a tone dial the user can turn
   down when they're not in the mood to be chided).
 - Live2D model source for anything beyond local prototyping (free sample vs.
-  purchased vs. commissioned) and its license terms. (Largely moot since the
-  Phase 7 VRM migration, kept here for the record.)
-- Full-apartment room build (Phase 10 round 7 plan / round 8 first
-  drop-in): paused on the interactions half, not cancelled, pending the
-  user sourcing sit/cook/read/sleep/bathe/watch-TV/play-game animation
-  clips. The room-geometry half got a head start in round 8 (above,
-  from a separate parallel session) via a user-supplied standalone
-  render — still needs porting into the real character-bearing scene,
-  plus the per-room navmesh and the sit/cook/read anchors, before any
-  of it can connect to the character. See "Shell-polish vs.
-  apartment-build" above and the round-7/round-8 entries.
-- Shell hide/minimize toggle for real (non-sandbox) localhost runs: not
-  built yet.
+  purchased vs. commissioned) and its license terms.
+- Full-apartment room build (Phase 10 round 7 plan / round 9 first real
+  drop-in): the room geometry is in and a first-pass navmesh exists, but
+  it's rectangles, not real polygons or obstacle avoidance within a
+  room; sit/cook/read anchors and the scene-state channel to
+  `persona.py` are both still entirely unbuilt — see the round-7/round-9
+  entries above. Also genuinely unverified rather than just unbuilt: how
+  any of it actually looks and whether the room-table clearances/light
+  levels read right in practice — no GPU/browser in the sandbox any of
+  this was built in.
