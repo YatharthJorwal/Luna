@@ -87,6 +87,16 @@ _active_connections: set[WebSocket] = set()
 _driver: WebSocket | None = None
 _connection_surface: dict[WebSocket, str] = {}
 
+# Latest ambient description of where Luna is in the apartment, pushed by
+# the sandbox's scene-state channel (see sandbox.ts's pushSceneState and
+# ws-client.ts's sendSceneState). Held as a single latest-wins string rather
+# than a queue: this is standing context, not events, so an older one is
+# never worth replaying. Deliberately module-level and *not* part of
+# `history` -- same reasoning as the memory blocks in _run_turn below: it
+# would otherwise go stale, repeat every turn, and get fed to
+# consolidation.py as though someone had said it out loud.
+_scene_state: str | None = None
+
 # Sent (in character, same as LLM_UNREACHABLE_LINE/STT_UNREACHABLE_LINE
 # below) if an observer connection tries to start a turn anyway -- a
 # stray click on a UI that should already have disabled itself (see
@@ -172,6 +182,18 @@ async def _run_turn(
     forget_hint = await forget.maybe_forget(user_text)
     memory_block = await recall.build_recall_context(user_text, CONFIG.memory.recall_top_k)
     memory_parts = [part for part in (forget_hint, memory_block) if part]
+
+    # Phase 10: where she physically is, if the sandbox has told us. Same
+    # ephemeral-system-message treatment as the memory blocks above, and
+    # placed alongside them so there's only ever one spliced system turn.
+    # This is what lets her say "I'm in the kitchen" because it's true,
+    # rather than because the model picked a room at random.
+    if _scene_state:
+        memory_parts.append(
+            f"Context about your surroundings right now: {_scene_state} "
+            "Mention it only if it is relevant to what is being said -- "
+            "do not narrate your location unprompted."
+        )
 
     if memory_parts:
         combined = " ".join(memory_parts)
@@ -349,6 +371,15 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # instead, now that the task has actually finished
                     # unwinding and it's safe to use the socket again.
                     await websocket.send_json({"type": "turn_end"})
+                continue
+
+            if msg_type == "scene_state":
+                # Ambient context only: never starts a turn, never replies,
+                # and accepted from any connection (observer or driver) since
+                # it describes the world rather than requesting anything.
+                global _scene_state
+                text = (data.get("text") or "").strip()
+                _scene_state = text[:400] or None
                 continue
 
             if msg_type in ("user_text", "user_audio") and websocket is not _driver:

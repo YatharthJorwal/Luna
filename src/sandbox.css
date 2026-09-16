@@ -101,41 +101,60 @@ body {
   font-variant-numeric: tabular-nums;
 }
 
-/* Time-of-day switch for the apartment's lighting modes. Buttons are
-   built in sandbox.ts from APARTMENT_MODES rather than written out here,
-   so adding a mode to apartment.ts is enough. Needs its own
-   pointer-events: auto since #sandbox-info itself is click-through. */
+/* Scene controls: time of day, camera mode, render quality. Rows are built
+   in sandbox.ts from the lists each module exports, so nothing here names a
+   specific mode. Needs pointer-events: auto since #sandbox-info itself is
+   click-through. */
 #sandbox-modes {
-  display: flex;
-  gap: 4px;
   margin-top: 6px;
   padding-top: 6px;
   border-top: 1px solid var(--panel-border);
   pointer-events: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
 }
 
-#sandbox-modes button {
+.sandbox-ctl-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.sandbox-ctl-label {
+  width: 42px;
+  flex: none;
+  color: var(--dim);
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.sandbox-ctl-row button {
   flex: 1;
-  padding: 3px 0;
+  padding: 3px 2px;
   border: 1px solid var(--panel-border);
   border-radius: 5px;
   background: transparent;
   color: var(--dim);
   font: inherit;
-  font-size: 11px;
+  font-size: 10.5px;
   text-transform: capitalize;
   cursor: pointer;
+  transition: background 0.12s, color 0.12s;
 }
 
-#sandbox-modes button:hover {
+.sandbox-ctl-row button:hover {
   color: var(--ink);
+  background: rgba(0, 0, 0, 0.04);
 }
 
-#sandbox-modes button.active {
+.sandbox-ctl-row button.active {
   background: var(--ink);
   border-color: var(--ink);
   color: #fff;
 }
+
 
 /* ---- Captions: same word-by-word reveal + individually-fading trail
    as style.css's current version, re-themed for a light background (dark

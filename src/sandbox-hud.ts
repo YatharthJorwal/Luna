@@ -47,6 +47,10 @@ export interface SandboxHud {
    * window happens to be open) that shouldn't freeze her in place for
    * that entire span. */
   isTurnActive(): boolean;
+  /** Push ambient scene context (which room she's in, time of day, whether
+   * the visitor is embodied and where). Ambient only -- never starts a
+   * turn. See WsClient.sendSceneState. */
+  sendSceneState(text: string): void;
 }
 
 export interface SandboxHudOptions {
@@ -432,6 +436,9 @@ export function setupSandboxHud(vrm: VRM, opts: SandboxHudOptions = {}): Sandbox
     },
     isTurnActive(): boolean {
       return turnActive;
+    },
+    sendSceneState(text: string): void {
+      client.sendSceneState(text);
     },
   };
 }
