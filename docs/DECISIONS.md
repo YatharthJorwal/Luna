@@ -3301,3 +3301,283 @@ these docs. `public/apartment/` is deleted rather than left to go stale
 now that `src/apartment.ts` is the canonical copy of this scene --
 keeping both around was a guaranteed way to eventually edit one and
 forget the other existed.
+
+## Round 10: full rebuild -- new floor plan, real furniture, IBL/post pipeline, first-person mode, she's aware of the flat, and a navmesh verification pass that found two real bugs
+
+The user's instructions this round were explicit and broad: the round-9
+apartment was "kinda crappy," a "starting phase" -- small low-poly furniture,
+dark unlit corners, particles that had drifted out of the building, doors
+that don't open, and a layout she was stuck in one corner of rather than
+walking through. The ask was to go "full throttle," clone the repo fresh to
+get current state, and rebuild rather than patch. This entry covers what
+changed and, in more detail than usual, the verification work -- because a
+chunk of that verification actually caught real bugs before they shipped,
+which is exactly the point of doing it.
+
+### The repo was behind the user's own machine
+
+Cloning fresh from GitHub landed at `a3ed637` -- round 6's tip. Rounds 8 and 9
+existed only as local commits on the user's machine (applied from bundles)
+and had never been pushed. The user's screenshots proved they were running
+round 9 locally, so the git bundles from those rounds (kept from this
+session's own output) were fetched into the fresh clone to reconstruct the
+actual starting point before doing anything else. Worth flagging to the user
+directly: GitHub is not a reliable source of "current state" for this
+project as long as work only ever leaves this sandbox as a bundle.
+
+### Structure: one file to four modules, plus two new top-level ones
+
+`src/apartment.ts` (1555 lines, round 9) is deleted. `src/apartment/` is four
+modules with a clear split of responsibility:
+- `floorplan.ts` -- the entire building as data: room bounds, wall runs with
+  their openings, the navmesh rectangle table, named anchors. No three.js
+  import at all.
+- `materials.ts` -- palette, canvas-generated textures (now 512-1024px with
+  actual grain/grout/weave rather than flat fills), and the geometry
+  primitives (`rbox`, `cyl`, `sph`, `torus`, `lathe`, `cushion`) everything
+  else is built from.
+- `shell.ts` -- turns the floor-plan data into walls with real punched
+  openings (piers, lintels, reveals, architraves), glazed windows, skirting,
+  and animated door leaves on pivots.
+- `furniture.ts` -- the five rooms' worth of furniture, built entirely on the
+  primitives from `materials.ts`.
+- `index.ts` -- wires the above together, owns the lighting-mode state
+  machine, the ambient dust motes, and the public `ApartmentHandle`.
+
+Two new top-level modules: `src/postfx.ts` (the render pipeline) and
+`src/camera-modes.ts` (spectator + first-person visitor, replacing the old
+`FlyCamera` class that used to live inline in `sandbox.ts`).
+
+### Floor plan: authored in metres, from scratch, not ported
+
+Round 9's whole scale-conversion headache (dollhouse units, `APARTMENT_SCALE`,
+manually re-scaling shadow frusta and point-light `distance` because they
+don't inherit a parent group's transform) doesn't exist any more, because
+this floor plan is authored directly in metres. There is no `apartmentToWorld()`
+any more; a coordinate in `floorplan.ts` is already the coordinate the VRM
+stands at.
+
+The layout itself changed shape, not just scale: an L-ish plan around a
+central hallway (living/dining and kitchen along the north side, bedroom and
+bathroom along the south side, connected by a hallway with the front door on
+its east end) rather than round 9's one-room-deep east-west strip. This
+directly answers "it's not necessary we keep this long, horizontal layout."
+Interior walls are genuine 3D geometry (`shell.ts`'s `WallDef`/`Opening`
+system) with piers either side of every doorway, a lintel above, and an apron
+below any window -- not a floor plan implied by furniture placement, which is
+what round 9 actually was.
+
+### Furniture: verified detail-level jump, not an assumed one
+
+The user's specific complaint -- "just simple cubes," "small pellets in the
+name of furniture" -- is a claim about `furniture.ts`'s previous use of bare
+`box()`/`cyl()` calls with no secondary detail. This round's `materials.ts`
+adds `rbox()` (a `RoundedBoxGeometry` wrapper, used for essentially all
+furniture now) and `cushion()` (a rounded box with its top face pulled down
+toward the centre via direct vertex manipulation, so upholstery has a visible
+sag rather than being a flat-topped block). Every material family
+(paint/wood/fabric/metal/ceramic) gets its own roughness/metalness pair,
+which only actually shows up once IBL is providing something for those
+different finishes to reflect (see below).
+
+This is a claim worth actually checking rather than asserting, so it was
+checked: `buildApartment()` was executed for real in Node (bundled with
+esbuild, `--platform=neutral --external:three`, run against real `three`
+from `node_modules`, with `document.createElement('canvas')` and a 2D
+context stubbed -- no WebGL touched at any point, since scene-graph
+construction and procedural-texture drawing don't need it) and the resulting
+tree was walked and measured. Mesh count: round 9's 387 -> round 10's
+**1173**. Triangle count: ~175,588. Both numbers came from actually
+traversing the built `THREE.Group` and summing `geometry.attributes.position.count`,
+not from estimating.
+
+### Lighting and the post-processing pipeline -- and an honest answer on "ray traced"
+
+The user asked by name for "actual ray traced stuff." That claim needs to be
+addressed directly rather than glossed: real-time ray or path tracing is not
+available in a browser WebGL2 context, and this machine also has to run a
+VRM with spring-bone physics, an LLM bridge, and a TTS pipeline at the same
+time as whatever renders the apartment. What *is* available, and what this
+round actually built, is the set of screen-space approximations that most of
+what people react to when they call a render "ray traced" actually comes
+from:
+- **Image-based lighting**: `THREE.PMREMGenerator` fed a `RoomEnvironment`
+  (from `three/examples/jsm/environments/RoomEnvironment.js`), assigned to
+  `scene.environment`. This is what makes the roughness/metalness
+  differences in `materials.ts` visible at all -- under point lights alone,
+  a matte-paint nightstand and a glazed-ceramic mug reflect nothing
+  different; under IBL they do.
+- **GTAO** (`GTAOPass`, ground-truth ambient occlusion) in the post chain
+  (`postfx.ts`) -- contact darkening in corners, under furniture, where a
+  wall meets a floor. This is arguably the single effect that most reads as
+  "raytraced" to a casual viewer, because unoccluded ambient light is one of
+  the most obviously-synthetic things about a naive real-time render.
+- **ACES Filmic tone mapping** (`renderer.toneMapping`) with a mode-driven
+  exposure, so window daylight and night lamps get a highlight rolloff
+  instead of clipping to flat white/grey, which is what the "many dark
+  spaces" complaint was largely about -- round 9's lighting was correct in
+  intensity but had nowhere for bright values to go.
+- **VSM shadows** (`THREE.VSMShadowMap`) for genuinely soft shadow edges
+  rather than PCF's fixed-tap pattern, appropriate for an interior where
+  every shadow is cast by a window or a lampshade, not a hard outdoor sun.
+- **UnrealBloomPass**, strength driven by the active lighting mode (low by
+  day, high at night so the lamps actually glow), and SMAA since the
+  composer bypasses the renderer's own MSAA.
+All of this sits behind a high/medium/low quality switch in the sandbox's
+info panel (GTAO and SMAA both disable at lower tiers), because the combined
+cost of VRM + spring bones + LLM/TTS + this pipeline on a shared card is real
+and untested here.
+
+Four lighting modes (dawn/day/dusk/night, `TimesOfDay` in `apartment/index.ts`)
+replace round 9's carried-over day/noon/evening/night set, tuned for
+physically-correct intensities from the start rather than migrated from an
+r128-era non-physical scene, which sidesteps the entire falloff-curve
+problem round 9 had to reason about after the fact.
+
+### First-person visitor mode, spectator kept
+
+`src/camera-modes.ts` is new. Spectator is the round-9 `FlyCamera` behaviour,
+moved out of `sandbox.ts` into its own module (free-fly, no collision, WASD
++ Space/Shift + right-drag look, scroll for speed) and kept as the default,
+per the explicit "keep the spectator mode" instruction. Visitor is new:
+first-person, eye height, head bob scaled by actual speed, clamped to the
+*same* `WalkableArea` Luna's own `WanderController` uses (so "we are stuck in
+that plane" is literal -- the person and the character share one navmesh),
+and slides along a wall on partial-axis collision rather than stopping dead,
+which is the difference between a floor plan and a place that feels
+inhabitable. Tab toggles between the two modes without needing the panel.
+
+### She knows she's in the apartment
+
+The user asked directly: "I also want Luna to be aware we are in her
+apartment." This is the round-7 plan's point 4 (a text scene-state channel to
+`persona.py`, explicitly chosen over a first-person camera feed back in that
+planning round -- see this doc's earlier round-7 entry for why), left
+unbuilt through round 9 and built now. `ws-client.ts` gets a
+`sendSceneState()` method: fire-and-forget, never a turn, silently dropped if
+the socket isn't open. `app.py` gets a module-level `_scene_state` string,
+updated on receipt and spliced into `_run_turn()`'s memory-block list
+alongside the existing ephemeral system-message injections -- deliberately
+*not* added to `history`, for the same reason the memory blocks aren't: it
+would go stale, repeat itself every subsequent turn, and get fed into
+`consolidation.py` as though someone had said it out loud. `sandbox.ts`
+computes and pushes this at most every two seconds and only on change (room,
+nearest anchor, time of day, visitor presence/room), which is ambient
+context, not telemetry -- a message every frame would be both useless and
+wasteful.
+
+### She looks at you
+
+Not asked for by name -- offered as the "surprise, stick to the core idea"
+the user invited. VRM ships a lookAt rig; `sandbox.ts` points
+`vrm.lookAt.target` at a small tracking object whose position blends between
+"a point ahead of her, in her walking direction" and "wherever the camera
+currently is," gated on two things: distance (under ~5.5m) and a dot-product
+check that she's roughly facing the camera already (not behind her). Without
+that second gate she'd crane her head round to stare at a camera behind her,
+which reads as unsettling rather than attentive -- the gate is what makes it
+read as noticing you rather than tracking you.
+
+### The navmesh: rewritten from 14 rectangles to 20, after a script found two real bugs
+
+This is the part of this round most worth reading carefully, because it is a
+case of verification actually doing its job rather than being a formality
+after the fact.
+
+The round-9 rectangle-union navmesh design is unchanged in principle (see
+that round's entry): convex rectangles, a straight line inside one stays
+inside it, a room change is a walk to a point in the *overlap* between two
+rectangles. What changed is that this round's first draft of the rectangle
+table was checked against the *actual placed coordinates* of every major
+piece of furniture in `furniture.ts` -- computed by hand from each piece's
+local geometry and its `put(group, x, y, z, rotation)` call, not eyeballed
+from the room's general shape -- via a short Python script (kept in this
+session's own working notes, not part of the shipped app). That script found
+two real, shipped-if-unchecked bugs:
+
+1. **The TV media console was sitting inside the open kitchen archway.** Its
+   world position happened to fall at `z=3.0` on the `int-living-kitchen`
+   partition wall, which has an archway opening from `z 1.4` to `z 3.9` --
+   meaning the console was floating in the middle of an open wall gap with
+   no wall behind it, and physically blocking the one wide passage between
+   the living room and the kitchen. Fixed in `furniture.ts`, not by nudging
+   the nav rectangle around it: the console was shrunk (1.9m -> 1.2m wide)
+   and moved to the wall's actual solid pier (`z 0-1.4`). This surfaced a
+   real room-planning constraint worth stating plainly: a full 1.9m-wide TV
+   console does not fit anywhere on that partition wall without either
+   blocking the archway or (on the wall's other solid pier, only 1.1m long)
+   not fitting at all. The fix trades an ideal sofa-facing sightline for
+   actually being mounted against a wall -- flagged here as something worth
+   revisiting once there's a render to judge the trade-off by, not silently
+   accepted as ideal.
+2. **A rectangle overlapped roughly half a metre of the bedroom wardrobe.**
+   Root cause once traced back further: the gap between the bed's east edge
+   and the desk's west edge was only 0.25m in the original placement, too
+   narrow for any nav rectangle to route through at all without either
+   touching the bed or the desk/chair. Fixed at the source -- the desk (and
+   its chair and lamp, which share its world position) moved 0.3m east,
+   widening the gap to 0.55m -- rather than by shrinking a rectangle down to
+   fit an impractically tight gap.
+
+Fixing these two, plus getting every doorway rectangle to have genuine
+positive-area overlap with the room rectangles either side of it (the
+original round-9-style table had several rectangles that only *touched* at a
+shared boundary -- e.g. a room rectangle's `maxZ` exactly equal to a doorway
+rectangle's `minZ` -- which is a zero-width intersection and silently breaks
+the overlap-based connectivity graph even though the two numbers look
+adjacent when read by eye), meant redesigning the table properly rather than
+patching two entries. The result is 20 rectangles instead of 14: more
+granular, each one small enough to reason about individually, with inline
+comments in `floorplan.ts` stating which specific furniture edge each
+boundary is clearing and by how much.
+
+Five of the nine named anchors moved too, for the same reason: `sofa`,
+`dining`, `fridge`, and `desk` were all originally placed either on top of or
+overlapping the furniture piece they're named after (an anchor is meant to
+be *where she stands*, not the coordinates of the object itself), caught by
+the same script checking anchor points against furniture footprints.
+
+**Verification performed, in order of how much each proves:**
+1. `tsc --noEmit` and both production builds (shell + sandbox, the latter
+   via the same one-off Vite config as previous rounds, since the default
+   build still doesn't cover `sandbox.html`).
+2. The furniture/rectangle/anchor audit script described above, re-run after
+   every fix until it reported zero overlaps and zero anchors-inside-furniture.
+3. `buildApartment()` actually executed in Node (see the furniture-detail
+   section above for the harness) -- 20 checks covering mesh/triangle counts,
+   footprint dimensions, all four doors actually swinging on command *and*
+   on proximity (and staying shut when the subject is elsewhere), lighting
+   modes cross-fading without throwing and leaving fog/bloom at sane
+   in-metres values, the ambient dust motes never drifting outside the
+   building after 10 simulated minutes (the direct fix for "particles
+   somehow shifted out of map" -- traced to the old `Points` object sitting
+   at world origin while its geometry lived 10+ units away, so the slow
+   rotation swept a huge arc through and past the building; the geometry is
+   generated centred on the apartment now, so the same rotation keeps it
+   inside), and the scene-state describe function resolving room and anchor
+   correctly.
+4. **The real `WalkableArea` and `WanderController` classes, extracted
+   verbatim from `sandbox.ts` by source-slicing (not reimplemented), run
+   through two simulated hours of wandering** against the real 20-rectangle
+   table, with a deliberate 35% overshoot on every step standing in for the
+   walk system's own "arriving" grace stride. Zero frames landed off
+   walkable floor across roughly 432,000 simulated ticks, and all five
+   rooms and all nine anchors were reached -- directly answering "she just
+   stays in that little bedroom space," which was the user's original
+   complaint about round 9's behaviour.
+
+**Still not verified, and cannot be from here: how any of it actually
+looks.** Every clearance number above is arithmetic on real placed
+coordinates, which is a meaningfully stronger claim than round 9's
+eyeballed table -- but it is still not a screenshot. No GPU/browser in this
+sandbox, same as every round before this one.
+
+### Scope note
+
+Same isolation discipline as every round since Phase 10 round 2: everything
+this round touched is sandbox-side (`sandbox.html`, `src/sandbox.css`,
+`src/sandbox.ts`, `src/sandbox-hud.ts`, `src/ws-client.ts`, the new
+`src/apartment/`, `src/postfx.ts`, `src/camera-modes.ts`,
+`orchestrator/app.py`) and these docs -- no changes to
+`index.html`/`src/main.ts`/`src/style.css`, which a second, parallel session
+is working on.

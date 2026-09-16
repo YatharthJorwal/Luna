@@ -5,12 +5,16 @@ import { VRMAnimationLoaderPlugin, createVRMAnimationClip, type VRMAnimation } f
 import { setupSandboxHud } from "./sandbox-hud";
 import {
   buildApartment,
-  apartmentToWorld,
-  APARTMENT_MODES,
-  type ApartmentMode,
+  TIMES_OF_DAY,
+  ANCHORS,
+  CENTRE,
+  type TimeOfDay,
   type ApartmentHandle,
-  type RoomRect,
-} from "./apartment";
+  type NavPatch,
+  type Anchor,
+} from "./apartment/index";
+import { createPostFX, QUALITIES, type Quality, type PostFX } from "./postfx";
+import { createCameraRig, type CameraRig, type CameraMode } from "./camera-modes";
 
 // Same character asset the desktop shell uses -- see README.md's "Putting
 // your VRoid model in" section. Nothing sandbox-specific about the model
@@ -186,7 +190,6 @@ const ARRIVE_RADIUS_M = 0.08; // "close enough" to a wander target for WanderCon
 //
 // The character key light DOES survive, for the reason given below.
 // ---------------------------------------------------------------------
-const WANDER_MARGIN_M = 0.5; // keeps her from wandering right up against a wall or a piece of furniture
 
 // Same arm-down rest pose as main.ts's applyIdlePose (VRM's bind pose is
 // a T-pose by default, see that function's own comment for the full
@@ -206,23 +209,6 @@ function applyRestPose(vrm: VRM): void {
   humanoid.getNormalizedBoneNode("rightLowerArm")?.rotation.set(0, REST_ELBOW_Y, 0);
 }
 
-// A soft, directionless key for the character specifically.
-//
-// Worth keeping even though the apartment brings a full lighting rig.
-// MToon reads its lit/shadow bands off light *direction*, and the
-// apartment's own key swings from (14,24,18) at midday round to
-// (-8,20,-10) at night; letting her banding swing with it would make
-// her read as a differently-shaded character depending on the time of
-// day. A low fixed fill on top of the apartment's rig keeps her face
-// legible in every mode. Intensity is deliberately low so the
-// apartment's own lighting still does the work of setting the mood --
-// the "don't fight MToon with fill light" lesson from the Phase 7
-// jacket artifact still applies. Not visually confirmed: no GPU here.
-function addCharacterFill(scene: THREE.Scene): void {
-  const fill = new THREE.DirectionalLight(0xffffff, 0.35);
-  fill.position.set(1.5, 3.0, 2.5);
-  scene.add(fill);
-}
 
 // A soft circular shadow decal that tracks the character's feet -- cheap
 // grounding cue instead of real shadow-mapping (which MToon's toon
@@ -331,34 +317,45 @@ class ProceduralWalker {
 // care how that answer was decided.
 // ---------------------------------------------------------------------
 // ---------------------------------------------------------------------
-// Walkable area: the union of apartment.ts's floor rects, and the last
-// line of defence against her ending up inside a wall or a sofa.
+// Walkable area + wandering.
 //
-// This replaces the old `ROOM_HALF_SIZE - WALL_CLEARANCE_M` square
-// clamp. That clamp existed because the "arriving" walk phase
-// deliberately keeps walking for up to a full gait cycle past the
-// wander target so the stop clip can start on the loop's seam, and
-// nothing stopped that grace stride from carrying her through a wall.
-// The reasoning is unchanged; only the shape of the legal region is.
+// The navmesh is still a union of convex rectangles (the round-9
+// design, and the property it rests on is unchanged: a straight line
+// between two points inside one rectangle stays inside it, so a walk
+// leg that never leaves its rectangle can never cut through a wall).
+// What changed with the new apartment is scale and intent. There are
+// now nine rooms' worth of patches plus five doorways, and the flat is
+// big enough that picking uniformly random points would have her
+// drifting aimlessly around a 108 sq m space forever.
 //
-// A union of rectangles isn't convex, so this can't be a min/max on
-// each axis any more. Instead: if she's inside any rect, leave her
-// alone -- that keeps doorways and room-to-room overlaps passable --
-// and only if she's outside all of them push her back to the nearest
-// point on the nearest rect. No extra clearance is subtracted here,
-// unlike the old square: these rects are already inset patches of
-// clear floor, not wall positions, so shrinking them again would eat
-// the doorway overlaps WanderController routes through.
+// So wandering is now anchor-driven: floorplan.ts names the places
+// worth standing -- the sofa, the kitchen counter, her desk, the
+// basin -- and she picks one of those as a destination, routes to it
+// through whatever doorways lie between, stands there for the dwell
+// time that anchor declares, and then picks another. Random points
+// within a room are still used, but only as filler between anchors,
+// which is what stops it looking like a patrol route.
+//
+// Routing is breadth-first over the patch-overlap graph. It's a small
+// graph (14 nodes) recomputed only when she picks a new destination,
+// so there's no reason to do anything cleverer.
 // ---------------------------------------------------------------------
 class WalkableArea {
-  constructor(private readonly rects: RoomRect[]) {}
+  constructor(private readonly rects: NavPatch[]) {}
 
-  private static closestPointOn(r: RoomRect, x: number, z: number): { x: number; z: number; d2: number } {
+  private static closestPointOn(r: NavPatch, x: number, z: number): { x: number; z: number; d2: number } {
     const cx = Math.min(r.maxX, Math.max(r.minX, x));
     const cz = Math.min(r.maxZ, Math.max(r.minZ, z));
     const dx = cx - x;
     const dz = cz - z;
     return { x: cx, z: cz, d2: dx * dx + dz * dz };
+  }
+
+  contains(x: number, z: number): boolean {
+    for (const r of this.rects) {
+      if (x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ) return true;
+    }
+    return false;
   }
 
   /** Nearest legal standing position to (x, z). Returns the input
@@ -367,89 +364,100 @@ class WalkableArea {
     let best = { x, z, d2: Infinity };
     for (const r of this.rects) {
       const c = WalkableArea.closestPointOn(r, x, z);
-      if (c.d2 === 0) return { x, z }; // inside this rect -- nothing to do
+      if (c.d2 === 0) return { x, z };
       if (c.d2 < best.d2) best = c;
     }
     return { x: best.x, z: best.z };
   }
 }
 
-const IDLE_MIN_S = 3;
-const IDLE_MAX_S = 8;
-/** Odds a given walk leg leaves the room she's in, rather than
- * wandering within it. Low enough that she settles somewhere for a
- * while, high enough that all four rooms get used. */
-const ROOM_CHANGE_CHANCE = 0.35;
-/** Clearance kept when aiming at a doorway/overlap patch. Much smaller
- * than WANDER_MARGIN_M -- the bathroom doorway is only ~0.7m wide, so a
- * 0.5m margin would collapse it to a single point. */
-const DOORWAY_MARGIN_M = 0.12;
+const IDLE_MIN_S = 2.5;
+const IDLE_MAX_S = 6;
+/** Odds a new destination is a named anchor rather than a random spot. */
+const ANCHOR_CHANCE = 0.72;
+const WANDER_MARGIN_M = 0.28;
+const DOORWAY_MARGIN_M = 0.1;
+
+interface Leg {
+  point: THREE.Vector3;
+  /** Set when this leg ends at a named anchor. */
+  anchor: Anchor | null;
+}
 
 class WanderController {
-  private target: THREE.Vector3 | null = null;
+  private queue: Leg[] = [];
+  private active: Leg | null = null;
   private idleUntil = 0;
   private elapsed = 0;
-  private readonly rooms: RoomRect[];
-  /** Index into `rooms` of the rect she is currently considered to be
-   * standing in. Every walk leg is planned relative to this. */
   private here = 0;
+  private readonly patches: NavPatch[];
+  private readonly adj: number[][];
 
-  constructor(rooms: RoomRect[], startAt: THREE.Vector3) {
-    if (rooms.length === 0) throw new Error("WanderController: no walkable rooms");
-    this.rooms = rooms;
-    this.here = this.roomContaining(startAt) ?? 0;
+  constructor(patches: NavPatch[], startAt: THREE.Vector3) {
+    if (patches.length === 0) throw new Error("WanderController: no walkable patches");
+    this.patches = patches;
+    this.adj = patches.map((_, i) =>
+      patches.map((__, j) => j).filter((j) => j !== i && WanderController.overlap(patches[i], patches[j]) !== null),
+    );
+    this.here = this.patchContaining(startAt.x, startAt.z) ?? 0;
   }
 
-  /** Returns where she should currently be walking toward, or null if
-   * she should just stand where she is. `paused` (true while a
-   * conversation turn is in flight -- see sandbox.ts's boot()) freezes
-   * the decision clock rather than picking a new destination while
-   * she's meant to be standing and talking; an already-in-progress walk
-   * is allowed to finish reaching its target rather than snapping to a
-   * halt mid-stride. */
+  /** Where she should be walking, or null to stand still. */
   getTarget(delta: number, currentPos: THREE.Vector3, paused: boolean): THREE.Vector3 | null {
-    if (this.target) {
-      const dist = flatDistance(currentPos, this.target);
-      if (dist < ARRIVE_RADIUS_M) {
-        this.target = null;
-        this.idleUntil = this.elapsed + IDLE_MIN_S + Math.random() * (IDLE_MAX_S - IDLE_MIN_S);
+    if (this.active) {
+      if (flatDistance(currentPos, this.active.point) < ARRIVE_RADIUS_M) {
+        const reached = this.active;
+        this.active = null;
+        const next = this.queue.shift();
+        if (next) {
+          this.active = next;
+          return next.point;
+        }
+        const dwell = reached.anchor
+          ? reached.anchor.dwell[0] + Math.random() * (reached.anchor.dwell[1] - reached.anchor.dwell[0])
+          : IDLE_MIN_S + Math.random() * (IDLE_MAX_S - IDLE_MIN_S);
+        this.idleUntil = this.elapsed + dwell;
+        this.lastAnchor = reached.anchor;
       } else {
-        return this.target;
+        return this.active.point;
       }
     }
     if (paused) return null;
     this.elapsed += delta;
     if (this.elapsed >= this.idleUntil) {
-      this.target = this.pickPoint();
-      return this.target;
+      this.plan(currentPos);
+      this.active = this.queue.shift() ?? null;
+      return this.active?.point ?? null;
     }
     return null;
   }
 
-  /** Index of the first rect containing `p`, or null if she's somehow
-   * outside all of them. */
-  private roomContaining(p: THREE.Vector3): number | null {
-    for (let i = 0; i < this.rooms.length; i++) {
-      const r = this.rooms[i];
-      if (p.x >= r.minX && p.x <= r.maxX && p.z >= r.minZ && p.z <= r.maxZ) return i;
+  /** The anchor she most recently arrived at, for the scene-state text. */
+  lastAnchor: Anchor | null = null;
+
+  /** Facing she should settle into on arrival, if the anchor asks for one. */
+  restingFacing(): number | null {
+    return this.active === null && this.lastAnchor ? this.lastAnchor.facing : null;
+  }
+
+  private patchContaining(x: number, z: number): number | null {
+    for (let i = 0; i < this.patches.length; i++) {
+      const r = this.patches[i];
+      if (x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ) return i;
     }
     return null;
   }
 
-  /** The shared area of two rects, or null if they don't touch. */
-  private static overlap(a: RoomRect, b: RoomRect): RoomRect | null {
+  private static overlap(a: NavPatch, b: NavPatch): NavPatch | null {
     const minX = Math.max(a.minX, b.minX);
     const maxX = Math.min(a.maxX, b.maxX);
     const minZ = Math.max(a.minZ, b.minZ);
     const maxZ = Math.min(a.maxZ, b.maxZ);
     if (minX >= maxX || minZ >= maxZ) return null;
-    return { name: `${a.name}|${b.name}`, minX, maxX, minZ, maxZ };
+    return { name: `${a.name}|${b.name}`, room: b.room, minX, maxX, minZ, maxZ };
   }
 
-  private static pointIn(r: RoomRect, margin: number): THREE.Vector3 {
-    // Shrink by the margin, but never past the rect's own centre -- a
-    // doorway-sized overlap can easily be narrower than 2*margin, and
-    // an inverted range would put the target outside the rect entirely.
+  private static pointIn(r: NavPatch, margin: number): THREE.Vector3 {
     const cx = (r.minX + r.maxX) / 2;
     const cz = (r.minZ + r.maxZ) / 2;
     const halfX = Math.max(0, (r.maxX - r.minX) / 2 - margin);
@@ -461,34 +469,79 @@ class WanderController {
     );
   }
 
-  /** Pick somewhere to walk.
-   *
-   * The invariant that keeps her out of walls: a straight line between
-   * two points inside one convex rect stays inside that rect, and every
-   * rect in apartment.ts's table is a piece of clear floor. So a leg
-   * either stays inside the current rect, or -- when she changes rooms
-   * -- aims at a point inside the *overlap* with an adjacent rect, which
-   * by definition is still inside the current one. Arriving there makes
-   * the neighbour the current rect, and the next leg can range over all
-   * of it. No pathfinding, no corner-cutting.
-   */
-  private pickPoint(): THREE.Vector3 {
-    const current = this.rooms[this.here];
-    const neighbours: Array<{ index: number; via: RoomRect }> = [];
-    for (let i = 0; i < this.rooms.length; i++) {
-      if (i === this.here) continue;
-      const via = WanderController.overlap(current, this.rooms[i]);
-      if (via) neighbours.push({ index: i, via });
+  /** Breadth-first path between patches, as a list of patch indices. */
+  private route(from: number, to: number): number[] | null {
+    if (from === to) return [to];
+    const prev = new Map<number, number>();
+    const seen = new Set([from]);
+    const q = [from];
+    while (q.length) {
+      const cur = q.shift() as number;
+      for (const n of this.adj[cur]) {
+        if (seen.has(n)) continue;
+        seen.add(n);
+        prev.set(n, cur);
+        if (n === to) {
+          const path = [to];
+          let c = to;
+          while (c !== from) {
+            c = prev.get(c) as number;
+            path.unshift(c);
+          }
+          return path;
+        }
+        q.push(n);
+      }
+    }
+    return null;
+  }
+
+  /** Fill the leg queue with a route to a freshly chosen destination. */
+  private plan(currentPos: THREE.Vector3): void {
+    this.here = this.patchContaining(currentPos.x, currentPos.z) ?? this.here;
+    this.queue = [];
+
+    let destPatch: number;
+    let destPoint: THREE.Vector3;
+    let destAnchor: Anchor | null = null;
+
+    if (Math.random() < ANCHOR_CHANCE) {
+      const options = ANCHORS.filter((a) => a.id !== this.lastAnchor?.id);
+      const a = options[Math.floor(Math.random() * options.length)];
+      const pi = this.patchContaining(a.x, a.z);
+      if (pi === null) {
+        // Anchor isn't on the navmesh -- fall back rather than get stuck.
+        destPatch = Math.floor(Math.random() * this.patches.length);
+        destPoint = WanderController.pointIn(this.patches[destPatch], WANDER_MARGIN_M);
+      } else {
+        destPatch = pi;
+        destPoint = new THREE.Vector3(a.x, 0, a.z);
+        destAnchor = a;
+      }
+    } else {
+      const roomPatches = this.patches
+        .map((p, i) => ({ p, i }))
+        .filter(({ p }) => !p.doorway);
+      const pick = roomPatches[Math.floor(Math.random() * roomPatches.length)];
+      destPatch = pick.i;
+      destPoint = WanderController.pointIn(pick.p, WANDER_MARGIN_M);
     }
 
-    // Mostly potter about the room she's already in; head somewhere else
-    // often enough that she actually uses the whole apartment.
-    if (neighbours.length > 0 && Math.random() < ROOM_CHANGE_CHANCE) {
-      const pick = neighbours[Math.floor(Math.random() * neighbours.length)];
-      this.here = pick.index;
-      return WanderController.pointIn(pick.via, DOORWAY_MARGIN_M);
+    const path = this.route(this.here, destPatch);
+    if (!path) {
+      // Unreachable (shouldn't happen -- the harness checks connectivity) --
+      // just wander within the current patch rather than freezing.
+      this.queue.push({ point: WanderController.pointIn(this.patches[this.here], WANDER_MARGIN_M), anchor: null });
+      return;
     }
-    return WanderController.pointIn(current, WANDER_MARGIN_M);
+    // One waypoint per doorway crossed: aim at the overlap between each
+    // consecutive pair, which is inside both, so no leg leaves its patch.
+    for (let k = 0; k < path.length - 1; k++) {
+      const via = WanderController.overlap(this.patches[path[k]], this.patches[path[k + 1]]);
+      if (via) this.queue.push({ point: WanderController.pointIn(via, DOORWAY_MARGIN_M), anchor: null });
+    }
+    this.queue.push({ point: destPoint, anchor: destAnchor });
+    this.here = destPatch;
   }
 }
 
@@ -1060,144 +1113,123 @@ class CharacterController {
   }
 }
 
-// ---------------------------------------------------------------------
-// Fly camera: a free spectator camera, not tied to the character at all
-// -- per the brief, the person watching is a spectator here, not a
-// controller of anything. WASD flies (full 3D, relative to wherever the
-// camera is currently looking), Space/Shift move purely vertically,
-// right-drag looks around in place, middle-drag pans, scroll adjusts fly
-// speed. Deliberately not three/examples/jsm/controls/OrbitControls.js
-// (the previous draft's choice) -- OrbitControls always orbits *around a
-// target point*, which is the wrong shape entirely for "fly anywhere and
-// look around freely."
-// ---------------------------------------------------------------------
-const LOOK_SENSITIVITY = 0.0028;
-const PAN_SENSITIVITY = 0.0022;
-const PITCH_LIMIT = Math.PI / 2 - 0.01;
-const BASE_FLY_SPEED = 2.2; // m/s
-const MIN_FLY_SPEED = 0.4;
-const MAX_FLY_SPEED = 12;
 
-class FlyCamera {
-  private yaw: number;
-  private pitch: number;
-  private speed = BASE_FLY_SPEED;
-  private rotating = false;
-  private panning = false;
-  private readonly keys = new Set<string>();
+/** Scratch vectors for the per-frame look-at maths, so the hot loop
+ * doesn't allocate. */
+const TMP_HEAD = new THREE.Vector3();
+const TMP_TO_CAM = new THREE.Vector3();
+const TMP_FLAT = new THREE.Vector3();
+const TMP_AHEAD = new THREE.Vector3();
+const LOOK_BLEND = { value: 0 };
 
-  constructor(
-    private camera: THREE.PerspectiveCamera,
-    private dom: HTMLElement,
-    initialYaw: number,
-    initialPitch: number,
-  ) {
-    this.yaw = initialYaw;
-    this.pitch = initialPitch;
-    this.camera.rotation.order = "YXZ";
-
-    // Right-click is "look around," not the browser's context menu.
-    this.dom.addEventListener("contextmenu", (e) => e.preventDefault());
-    this.dom.addEventListener("mousedown", this.onMouseDown);
-    window.addEventListener("mousemove", this.onMouseMove);
-    window.addEventListener("mouseup", this.onMouseUp);
-    this.dom.addEventListener("wheel", this.onWheel, { passive: false });
-    window.addEventListener("keydown", this.onKeyDown);
-    window.addEventListener("keyup", this.onKeyUp);
-  }
-
-  private onMouseDown = (e: MouseEvent): void => {
-    if (e.button === 2) this.rotating = true;
-    else if (e.button === 1) {
-      this.panning = true;
-      e.preventDefault(); // stops the browser's middle-click autoscroll cursor from appearing
-    }
-  };
-
-  private onMouseUp = (e: MouseEvent): void => {
-    if (e.button === 2) this.rotating = false;
-    if (e.button === 1) this.panning = false;
-  };
-
-  private onMouseMove = (e: MouseEvent): void => {
-    if (this.rotating) {
-      this.yaw -= e.movementX * LOOK_SENSITIVITY;
-      this.pitch -= e.movementY * LOOK_SENSITIVITY;
-      this.pitch = THREE.MathUtils.clamp(this.pitch, -PITCH_LIMIT, PITCH_LIMIT);
-    } else if (this.panning) {
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
-      const up = new THREE.Vector3(0, 1, 0).applyQuaternion(this.camera.quaternion);
-      this.camera.position.addScaledVector(right, -e.movementX * PAN_SENSITIVITY);
-      this.camera.position.addScaledVector(up, e.movementY * PAN_SENSITIVITY);
-    }
-  };
-
-  private onWheel = (e: WheelEvent): void => {
-    e.preventDefault();
-    this.speed = THREE.MathUtils.clamp(this.speed * (e.deltaY < 0 ? 1.12 : 0.89), MIN_FLY_SPEED, MAX_FLY_SPEED);
-  };
-
-  private onKeyDown = (e: KeyboardEvent): void => {
-    // While the chat input (or anything else) is focused, WASD/space
-    // should type/scroll normally, not fly the camera.
-    if (isTypingTarget(document.activeElement)) return;
-    this.keys.add(e.key.toLowerCase());
-    if (e.key === " ") e.preventDefault(); // stop the page from scrolling / re-clicking a focused button
-  };
-
-  private onKeyUp = (e: KeyboardEvent): void => {
-    this.keys.delete(e.key.toLowerCase());
-  };
-
-  update(delta: number): void {
-    this.camera.rotation.set(this.pitch, this.yaw, 0, "YXZ");
-
-    if (!isTypingTarget(document.activeElement)) {
-      const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(this.camera.quaternion);
-      const right = new THREE.Vector3(1, 0, 0).applyQuaternion(this.camera.quaternion);
-      const move = new THREE.Vector3();
-      if (this.keys.has("w") || this.keys.has("arrowup")) move.add(forward);
-      if (this.keys.has("s") || this.keys.has("arrowdown")) move.sub(forward);
-      if (this.keys.has("a") || this.keys.has("arrowleft")) move.sub(right);
-      if (this.keys.has("d") || this.keys.has("arrowright")) move.add(right);
-      if (move.lengthSq() > 0) move.normalize().multiplyScalar(this.speed * delta);
-      this.camera.position.add(move);
-
-      if (this.keys.has(" ")) this.camera.position.y += this.speed * delta;
-      if (this.keys.has("shift")) this.camera.position.y -= this.speed * delta;
-    }
-  }
-}
+const ROOM_LABELS: Record<string, string> = {
+  living: "the living room",
+  kitchen: "the kitchen",
+  hall: "the hallway",
+  bedroom: "her bedroom",
+  bathroom: "the bathroom",
+};
 
 function isTypingTarget(el: Element | null): boolean {
   return el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement;
 }
 
-/** Build the time-of-day switch in the info panel from the apartment's
- * own mode list, so adding a mode in apartment.ts is all it takes. The
- * ported scene used to hunt for `.modeBtn` elements itself; that DOM
- * coupling was dropped in the port, which leaves the active-state
- * bookkeeping here where the rest of the sandbox's UI lives. */
-function setupModeButtons(apartment: ApartmentHandle): void {
+/**
+ * Build the scene controls in the info panel: time of day, camera mode, and
+ * render quality. All three are generated from the lists their owning module
+ * exports, so adding a time of day or a quality tier needs no change here.
+ */
+interface SceneControls {
+  syncCamera(): void;
+}
+
+function setupSceneControls(
+  apartment: ApartmentHandle,
+  postfx: PostFX,
+  rig: CameraRig,
+): SceneControls {
   const host = document.getElementById("sandbox-modes");
-  if (!host) return;
-  const buttons = new Map<ApartmentMode, HTMLButtonElement>();
-  const refresh = (): void => {
-    const active = apartment.currentMode();
-    for (const [mode, btn] of buttons) btn.classList.toggle("active", mode === active);
+  const noop: SceneControls = { syncCamera: () => {} };
+  if (!host) return noop;
+
+  const row = (label: string): HTMLDivElement => {
+    const d = document.createElement("div");
+    d.className = "sandbox-ctl-row";
+    const l = document.createElement("span");
+    l.className = "sandbox-ctl-label";
+    l.textContent = label;
+    d.appendChild(l);
+    host.appendChild(d);
+    return d;
   };
-  for (const mode of APARTMENT_MODES) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.textContent = mode;
-    btn.addEventListener("click", () => {
-      apartment.setMode(mode);
-      refresh();
+
+  // --- time of day ---------------------------------------------------------
+  const todRow = row("time");
+  const todBtns = new Map<TimeOfDay, HTMLButtonElement>();
+  const refreshTod = (): void => {
+    for (const [m, b] of todBtns) b.classList.toggle("active", m === apartment.timeOfDay());
+  };
+  for (const m of TIMES_OF_DAY) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = m;
+    b.addEventListener("click", () => {
+      apartment.setTimeOfDay(m);
+      refreshTod();
     });
-    buttons.set(mode, btn);
-    host.appendChild(btn);
+    todBtns.set(m, b);
+    todRow.appendChild(b);
   }
-  refresh();
+  refreshTod();
+
+  // --- camera mode ---------------------------------------------------------
+  const camRow = row("view");
+  const camBtns = new Map<CameraMode, HTMLButtonElement>();
+  const refreshCam = (): void => {
+    for (const [m, b] of camBtns) b.classList.toggle("active", m === rig.mode());
+  };
+  for (const [m, text] of [["spectator", "spectate"], ["visitor", "walk in"]] as const) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.addEventListener("click", () => {
+      rig.setMode(m);
+      refreshCam();
+    });
+    camBtns.set(m, b);
+    camRow.appendChild(b);
+  }
+  refreshCam();
+
+  // --- quality -------------------------------------------------------------
+  const qRow = row("render");
+  const qBtns = new Map<Quality, HTMLButtonElement>();
+  const refreshQ = (): void => {
+    for (const [q, b] of qBtns) b.classList.toggle("active", q === postfx.quality());
+  };
+  for (const q of QUALITIES) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = q;
+    b.addEventListener("click", () => {
+      postfx.setQuality(q);
+      refreshQ();
+    });
+    qBtns.set(q, b);
+    qRow.appendChild(b);
+  }
+  refreshQ();
+
+  // Tab toggles the camera mode without reaching for the panel, since that's
+  // the control you actually want while you're walking around.
+  window.addEventListener("keydown", (e) => {
+    if (e.code !== "Tab" || isTypingTarget(document.activeElement)) return;
+    e.preventDefault();
+    rig.setMode(rig.mode() === "spectator" ? "visitor" : "spectator");
+    refreshCam();
+  });
+
+  return { syncCamera: refreshCam };
 }
 
 // ---------------------------------------------------------------------
@@ -1208,26 +1240,29 @@ async function boot(): Promise<void> {
   const statusEl = document.getElementById("sandbox-status") as HTMLDivElement;
 
   const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
-  renderer.setPixelRatio(window.devicePixelRatio || 1);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = true;
+  // VSM gives genuinely soft shadow edges rather than PCF's fixed 3x3 tap,
+  // which matters a lot indoors where every shadow is a soft one cast by a
+  // window or a lampshade. It needs the higher normalBias set on the sun in
+  // apartment/index.ts to avoid light leaking through thin geometry.
+  renderer.shadowMap.type = THREE.VSMShadowMap;
+  // Filmic response curve. Without this the bright window panels clip to
+  // flat white and the night lamps read as grey, because the default
+  // (linear) mapping has no highlight rolloff at all.
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.05;
 
   const scene = new THREE.Scene();
   // Fog has to exist up front for the lighting modes to drive it; its
-  // colour and distances are overwritten immediately by initMode('day').
-  scene.fog = new THREE.Fog(0xeaf2ff, 10, 30);
-  const apartment = buildApartment(scene);
-  addCharacterFill(scene);
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+  // colour and distances are overwritten immediately by the initial mode.
+  scene.fog = new THREE.Fog(0xc9e0f2, 22, 70);
 
-  // Start looking into the living room from outside the open front wall,
-  // roughly standing-eye height. Far plane pushed out from 60 to 80: the
-  // apartment is ~15m end to end, so from one corner the far end plus a
-  // little fly-back room needs more than the old white box ever did.
-  const camera = new THREE.PerspectiveCamera(50, window.innerWidth / window.innerHeight, 0.05, 80);
-  const camStart = apartmentToWorld(2.5, 13.5);
-  camera.position.set(camStart.x, 1.6, camStart.z);
-  const flyCamera = new FlyCamera(camera, renderer.domElement, Math.PI, -0.05);
+  const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.05, 160);
+  const apartment = buildApartment(scene, renderer);
+
+  const postfx = createPostFX(renderer, scene, camera, "high");
 
   const loader = new GLTFLoader();
   loader.register((parser) => new VRMLoaderPlugin(parser));
@@ -1239,21 +1274,42 @@ async function boot(): Promise<void> {
   VRMUtils.combineSkeletons(vrm.scene);
   VRMUtils.combineMorphs(vrm);
   applyRestPose(vrm);
-  // Spawn in the middle of the lounge rather than at world origin. Origin
-  // happens to land in the living room already (apartment.ts recentres on
-  // that room deliberately), but pinning it to a named rect means a later
-  // re-layout of the apartment moves her with it instead of stranding her
-  // inside the new furniture.
-  const spawn = apartmentToWorld(2.5, 7.7);
-  vrm.scene.position.set(spawn.x, 0, spawn.z);
+  // Spawn at a named anchor rather than a bare coordinate, so re-laying out
+  // the apartment moves her with it instead of stranding her in a wall.
+  const sofaAnchor = ANCHORS.find((a) => a.id === "sofa") ?? ANCHORS[0];
+  vrm.scene.position.set(sofaAnchor.x, 0, sofaAnchor.z);
+  vrm.scene.rotation.y = sofaAnchor.facing;
   scene.add(vrm.scene);
+  // She casts real shadows now that the room has real lights.
+  vrm.scene.traverse((o) => {
+    const m = o as THREE.Mesh;
+    if (m.isMesh) {
+      m.castShadow = true;
+      m.receiveShadow = false; // MToon + received shadow maps reads muddy
+    }
+  });
   const contactShadow = buildContactShadow();
   scene.add(contactShadow);
+
+  // --- she looks at you ----------------------------------------------------
+  // VRM ships a lookAt rig; pointing it at a target object makes her track
+  // it with eyes and (via the humanoid) a little head turn. This is the
+  // single cheapest thing in the whole build for making her feel present
+  // rather than animated, so it's wired straight to the camera: whichever
+  // mode you're in, if you're close enough and roughly in front of her, she
+  // notices you. `autoUpdate` off so we only apply it when we want it.
+  const lookTarget = new THREE.Object3D();
+  scene.add(lookTarget);
+  if (vrm.lookAt) {
+    vrm.lookAt.target = lookTarget;
+    vrm.lookAt.autoUpdate = true;
+  }
 
   function layout(): void {
     renderer.setSize(window.innerWidth, window.innerHeight);
     camera.aspect = window.innerWidth / window.innerHeight;
     camera.updateProjectionMatrix();
+    postfx.setSize(window.innerWidth, window.innerHeight);
   }
   layout();
   window.addEventListener("resize", layout);
@@ -1324,10 +1380,19 @@ async function boot(): Promise<void> {
     if (clip) character.registerIdleBase(clip, true);
   }
 
-  const wander = new WanderController(apartment.rooms, vrm.scene.position);
-  character.setWalkableArea(new WalkableArea(apartment.rooms));
+  const walkable = new WalkableArea(apartment.patches);
+  const wander = new WanderController(apartment.patches, vrm.scene.position);
+  character.setWalkableArea(walkable);
+
+  // Spectator starts just inside the hallway looking down the flat, which
+  // shows off the sightline through to the living room. Visitor mode drops
+  // you at the front door -- you arrive like a guest.
+  camera.position.set(CENTRE.x + 0.4, 1.65, CENTRE.z + 3.4);
+  const rig = createCameraRig(camera, renderer.domElement, walkable, {
+    x: 9.4, z: 5.85, yaw: Math.PI / 2,
+  });
   const idleGestures = new IdleGestureScheduler();
-  setupModeButtons(apartment);
+  const hudControls = setupSceneControls(apartment, postfx, rig);
   statusEl.textContent = character.usingRealWalk
     ? `Model loaded · real walk cycle · ${character.idleBaseCount} idle pose(s) · ${character.gestureCount} gesture(s) loaded`
     : `Model loaded · procedural walk (world-walk.vrma not found in public/vrm-animations/) · ${character.idleBaseCount} idle pose(s) · ${character.gestureCount} gesture(s) loaded`;
@@ -1349,11 +1414,39 @@ async function boot(): Promise<void> {
     },
   });
 
+  // --- scene awareness -----------------------------------------------------
+  // Round 7's plan point 4, finally wired: tell the orchestrator where she
+  // is and what's around her in plain text, so anything she says about the
+  // flat comes from the app knowing, not the model guessing. Only pushed on
+  // change and at most every couple of seconds -- this is context, not
+  // telemetry, and a message per frame would be useless and expensive.
+  let lastStateKey = "";
+  let stateTimer = 0;
+  function pushSceneState(dt: number): void {
+    stateTimer += dt;
+    if (stateTimer < 2) return;
+    stateTimer = 0;
+    const s = apartment.describe(vrm.scene.position, rig.visitorPosition(), rig.mode() === "visitor");
+    const key = `${s.room}|${s.at}|${s.timeOfDay}|${s.visitorRoom}|${s.visitorPresent}`;
+    if (key === lastStateKey) return;
+    lastStateKey = key;
+    const parts = [`Luna is in ${s.roomLabel}`];
+    if (s.at) parts.push(`(${s.at})`);
+    parts.push(`It is ${s.timeOfDay}.`);
+    if (s.visitorPresent) {
+      const sameRoom = s.visitorRoom === s.room;
+      parts.push(sameRoom
+        ? "You are in the room with her."
+        : `You are in ${ROOM_LABELS[s.visitorRoom ?? "hall"]}.`);
+    }
+    hud.sendSceneState(parts.join(" "));
+  }
+
   const clock = new THREE.Clock();
   function animate(): void {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
-    flyCamera.update(delta);
+    rig.update(delta);
     updateBlink(delta);
     hud.tick(delta);
     const target = wander.getTarget(delta, vrm.scene.position, hud.isTurnActive());
@@ -1369,17 +1462,43 @@ async function boot(): Promise<void> {
       target === null && !character.isWalking && !hud.isTurnActive() && !character.isGesturing,
       (name) => character.playGesture(name),
     );
-    apartment.update(delta, clock.elapsedTime);
-    // The contact-shadow decal used to be added once and left at the
-    // origin. In a 4.5m box with her mostly near the middle that was
-    // easy to miss; across a 15m apartment a shadow puddle sitting in
-    // the lounge while she's in the kitchen would not be. It tracks her
-    // feet now.
+    // Doors open for whoever is closest to them -- her while she's walking a
+    // route, or you when you're the one in the flat.
+    const doorSubject = rig.mode() === "visitor"
+      ? (rig.visitorPosition() ?? vrm.scene.position)
+      : vrm.scene.position;
+    apartment.update(delta, clock.elapsedTime, doorSubject);
+
+    // --- she notices you ---------------------------------------------------
+    // Track the camera when it's near her and roughly in front; otherwise
+    // let her look where she's going. The dot-product gate matters: without
+    // it she cranes round to stare at a camera behind her head, which reads
+    // as creepy rather than attentive.
+    const head = vrm.humanoid?.getNormalizedBoneNode("head");
+    if (head) {
+      head.getWorldPosition(TMP_HEAD);
+      TMP_TO_CAM.copy(camera.position).sub(TMP_HEAD);
+      const dist = TMP_TO_CAM.length();
+      const facing = new THREE.Vector3(Math.sin(vrm.scene.rotation.y), 0, Math.cos(vrm.scene.rotation.y));
+      TMP_FLAT.set(TMP_TO_CAM.x, 0, TMP_TO_CAM.z).normalize();
+      const inFront = facing.dot(TMP_FLAT);
+      const wantsToLook = dist < 5.5 && inFront > -0.15 && !character.isWalking;
+      LOOK_BLEND.value = THREE.MathUtils.lerp(LOOK_BLEND.value, wantsToLook ? 1 : 0, Math.min(1, 2.6 * delta));
+      // Blend between "looking at you" and a neutral point ahead of her.
+      TMP_AHEAD.copy(TMP_HEAD).addScaledVector(facing, 2.2);
+      lookTarget.position.lerpVectors(TMP_AHEAD, camera.position, LOOK_BLEND.value);
+    }
+
     contactShadow.position.x = vrm.scene.position.x;
     contactShadow.position.z = vrm.scene.position.z;
     vrm.update(delta);
-    renderer.render(scene, camera);
+
+    postfx.setBloom(apartment.bloomStrength());
+    renderer.toneMappingExposure = apartment.exposure();
+    pushSceneState(delta);
+    postfx.render(delta);
   }
+  hudControls.syncCamera();
   animate();
 }
 

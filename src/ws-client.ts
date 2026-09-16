@@ -201,6 +201,21 @@ export class WsClient {
     this.socket.send(JSON.stringify({ type: "user_audio", audio_b64: audioB64 }));
   }
 
+  /**
+   * Push ambient context about where Luna is and what's around her.
+   *
+   * Deliberately fire-and-forget and deliberately *not* a turn: it never
+   * changes connection state, never prompts a reply, and is silently
+   * dropped if the socket isn't up. The orchestrator is free to ignore the
+   * message type entirely -- an older `app.py` that doesn't know about it
+   * will just not match it, which is why this doesn't wait for an ack.
+   * See docs/DECISIONS.md on the scene-state channel.
+   */
+  sendSceneState(text: string): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: "scene_state", text }));
+  }
+
   /** Tells the orchestrator to cancel whatever's currently generating (if
    * anything -- a no-op on its side if nothing is). Client-side audio
    * playback is stopped separately and immediately by main.ts's

@@ -438,6 +438,27 @@ awaiting on-machine confirmation · ⬜ not started)
   remain open below. Full reasoning on the scale conversion, the two
   three.js properties that don't inherit a parent group's scale, and the
   r128-vs-modern light-falloff change, in `docs/DECISIONS.md`.
+  **Round 10: full rebuild, not an iteration on round 9.** Every point
+  round 9 left open is addressed: `src/apartment/` (four modules) replaces
+  the single-file port with a real L-shaped floor plan authored in metres
+  from the start (no more dollhouse-unit scale conversion), walls with
+  actual punched openings and four doors that open/close on approach,
+  furniture rebuilt on rounded/lathed primitives (mesh count 387 → 1173,
+  triangle count ~175k, both verified by running the build, not
+  estimated), image-based lighting + a GTAO/bloom/SMAA post chain
+  (`src/postfx.ts`), a first-person visitor mode alongside spectator
+  (`src/camera-modes.ts`, Tab toggles), the scene-state channel to
+  `persona.py` that round 9 explicitly left unbuilt (point 4 of the
+  round-7 plan, now done), and a proper look-at rig so she tracks the
+  camera. The navmesh went from 14 hand-eyeballed rectangles to 20,
+  rebuilt after a verification script cross-checked every rectangle
+  against furniture.ts's actual placement coordinates and found two real
+  bugs (a console sitting inside an open archway; a rectangle overlapping
+  the wardrobe) before any of it shipped — full account in
+  `docs/DECISIONS.md`. What round 7's plan still calls for and this round
+  still doesn't do: sit/cook/read *animation* (she stands at an anchor
+  facing a direction, no dedicated poses yet) and true per-room polygon
+  navmesh geometry rather than rectangles.
 
 ## Open decisions
 
@@ -463,12 +484,17 @@ Still open:
   down when they're not in the mood to be chided).
 - Live2D model source for anything beyond local prototyping (free sample vs.
   purchased vs. commissioned) and its license terms.
-- Full-apartment room build (Phase 10 round 7 plan / round 9 first real
-  drop-in): the room geometry is in and a first-pass navmesh exists, but
-  it's rectangles, not real polygons or obstacle avoidance within a
-  room; sit/cook/read anchors and the scene-state channel to
-  `persona.py` are both still entirely unbuilt — see the round-7/round-9
-  entries above. Also genuinely unverified rather than just unbuilt: how
-  any of it actually looks and whether the room-table clearances/light
-  levels read right in practice — no GPU/browser in the sandbox any of
-  this was built in.
+- Full-apartment room build (Phase 10 round 7 plan / round 10 full
+  rebuild): the scene-state channel is now built and the navmesh got a
+  real verification pass (20 rectangles, cross-checked against furniture
+  placement by script, two real bugs found and fixed before shipping —
+  see the round-10 entry above and `docs/DECISIONS.md`). Still open from
+  the original round-7 plan: true per-room polygon navmesh geometry
+  rather than rectangles, and sit/cook/read *animation* — she currently
+  stands at a named anchor facing a direction, with no dedicated pose.
+  Also genuinely unverified rather than just unbuilt, unchanged from
+  every round before this one: how any of it actually looks, whether the
+  furniture layout and lighting read right in practice, and whether the
+  TV's wall-fit-over-sightline placement trade-off (see round 10) is
+  worth revisiting once there's a render to judge it by — no
+  GPU/browser in the sandbox any of this was built in.

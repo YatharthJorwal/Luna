@@ -154,7 +154,60 @@ session's work stays scoped to the sandbox (`sandbox.html`,
 `src/sandbox.ts`, `src/sandbox.css`, `src/apartment.ts`,
 `src/sandbox-hud.ts`) and these docs, not
 `index.html`/`src/main.ts`/`src/style.css`.
-Full writeup for rounds 6-9 in `docs/DECISIONS.md`.
+
+**Round 10: the apartment was rebuilt from scratch, not touched up.**
+`src/apartment.ts` is gone; `src/apartment/` is four modules now
+(`floorplan.ts` the layout as data, `materials.ts` the palette/textures/
+geometry primitives, `shell.ts` the walls and doors, `furniture.ts` the
+five rooms, `index.ts` ties it together). Two new top-level modules:
+`src/postfx.ts` (the render pipeline) and `src/camera-modes.ts`
+(spectator + first-person visitor). Highlights, full reasoning in
+`docs/DECISIONS.md`:
+- **A real L-shaped floor plan in metres**, not one long strip: living/
+  dining, kitchen, bedroom, bathroom around a central hallway, walls
+  with actual punched openings (piers, lintels, reveals, architraves),
+  four doors that swing open on approach and shut behind whoever passed
+  through.
+- **Furniture rebuilt on rounded/lathed/sagging-cushion primitives**
+  instead of bare boxes — verified mesh count 387 → 1173, ~175k
+  triangles, not eyeballed.
+- **Image-based lighting** (`RoomEnvironment` + PMREM), ACES filmic tone
+  mapping, VSM soft shadows, and a post chain (GTAO / bloom / SMAA)
+  behind a high/medium/low switch — the honest answer to "make it ray
+  traced": real path tracing isn't on the table in a browser, this is
+  the screen-space approximation stack that the offline-render look
+  actually comes from.
+- **First-person visitor mode alongside spectator** (Tab toggles):
+  eye-height, head-bob, clamped to the same navmesh she uses, slides
+  along walls rather than stopping dead.
+- **She's aware of the apartment.** A `scene_state` message
+  (`ws-client.ts` → `app.py`) tells the orchestrator which room she's
+  in, the nearest named anchor, the time of day, and whether/where a
+  visitor is standing — spliced into the prompt the same way the
+  memory blocks already are, per-turn, never stored in history.
+- **She looks at the camera** when it's close and roughly in front of
+  her, via VRM's own lookAt rig — gated on distance and facing so she
+  doesn't crane round to stare at a camera behind her head.
+- **The navmesh was rewritten from 14 rectangles to 20** after a script
+  cross-checked every rectangle against the *actual* furniture placement
+  coordinates and found two real bugs before any of it shipped: the TV
+  console was sitting inside the open kitchen archway (moved, and
+  shrunk — a full-width console genuinely does not fit anywhere on that
+  wall without blocking either the archway or the balcony doors, a
+  real room-planning constraint, not a nav-mesh nitpick), and a
+  rectangle overlapped half a metre of the wardrobe (fixed by widening
+  the bed/desk gap, which was too narrow to route through at all). A
+  two-simulated-hour run of the real `WanderController` afterward
+  reaches all five rooms and all nine named anchors with zero frames
+  spent off walkable floor.
+**Still not verified: how any of it looks.** No GPU/browser in this
+sandbox, unchanged from every round before this one. The furniture
+layout is now geometrically self-consistent (checked by script, not
+eyeballed) but not aesthetically judged by anyone with eyes on a
+render — the TV's position in particular trades an ideal sofa sightline
+for actually fitting against a wall, which is worth a second look once
+this is on screen.
+Full writeup for rounds 6-10 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map
