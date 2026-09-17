@@ -6,27 +6,16 @@ input box (or click the mic and talk), she thinks with an actual model
 (via Ollama or llama.cpp, your choice in `orchestrator/config.yaml`),
 remembers things across restarts, and replies by voice with lip-sync,
 one sentence at a time as she "thinks" of them. See `/CLAUDE.md` at the
-repo root for the full architecture and roadmap.
+repo root for the full architecture and roadmap, and `/handoff.md` for
+where things stand right now.
 
-**Phase 4 Round 1 (this bundle): on-demand vision + clipboard tools via
-a real tool-calling loop.** The note below was still describing Phase 7
-(the VRM migration) -- stale for a few bundles now; this replaces it
-with what's actually needed for the current one.
-
-**After pulling this bundle:**
-1. `pip install -r requirements.txt` (from `orchestrator/`) -- picks up
-   `Pillow` (screenshot capture) and `pyperclip` (clipboard reads), both
-   new this round. No system-level install needed for either on Windows
-   (unlike `faster-whisper`'s CUDA/cuDNN notes further down) -- both work
-   out of the box.
-2. No `npm install` needed this round -- no frontend dependency changes.
-3. Nothing else to configure -- `capture_screen`/`read_clipboard` are
-   available to her automatically once the orchestrator restarts with
-   the new code. Try asking her to look at your screen, or read what
-   you've copied, and see what comes back -- this is genuinely untested
-   against a real Ollama server, so the first real try is the actual
-   verification. See `docs/ROADMAP.md`'s Phase 4 entry for exactly
-   what's confirmed vs. still unknown.
+**Note on the paragraph above and everything below it in this README:**
+this file is setup/run instructions and doesn't change much round to
+round. For "what's actually going on right now" — current state, what
+just happened, what's still open — read `/handoff.md` first. (An earlier
+version of this file kept a hand-updated "this bundle" note here instead;
+that note went stale more than once because there was nowhere else for
+it to live. `handoff.md` replaces that pattern.)
 
 ## Putting your VRoid model in
 
@@ -66,39 +55,55 @@ with what's actually needed for the current one.
    file in a VRM viewer (e.g. https://hub.vroid.com/en/ has an online one)
    to confirm those expressions are actually present.
 
-## Full-body sandbox (Phase 10 groundwork)
+## Full-body sandbox (Phase 10)
 
 A separate, dev-only page — a second, real way to see and talk to Luna,
-not just a static preview. Her space, not yours: you're a spectator here,
-flying a free camera around; she's the one who decides where she stands
-and walks (today, via a simple placeholder wander behavior — see
-`docs/DECISIONS.md` — real AI-driven navigation is a later step).
+not just a static preview. As of Phase 10 round 10 this is a real
+five-room apartment (living/dining, kitchen, bedroom, bathroom, hallway)
+she actually walks around in on her own, not a placeholder box.
 
 1. **Run it:** `npm run sandbox` (or `npm run dev` and open
    `http://localhost:1420/sandbox.html` yourself). Same `public/vrm/luna.vrm`
    model as the main shell.
-2. **Camera (you):** WASD flies, relative to wherever you're currently
-   looking. Space/Shift move straight up/down. Right-click-drag looks
-   around in place; middle-click-drag pans; scroll adjusts fly speed.
-   You're not tied to her at all — fly wherever.
-3. **Her (not you):** she wanders the room on her own and stands still
-   while actually mid-conversation. There's nothing here that lets you
-   move her directly, on purpose.
-4. **Talk to her:** same chatbox/mic/captions as the desktop shell, `/` to
+2. **Two ways to view it, `Tab` swaps between them:**
+   - **Spectate** (default) — a free camera, not tied to her at all. WASD
+     flies relative to wherever you're looking, Space/Shift move straight
+     up/down, right-click-drag looks around, scroll adjusts fly speed.
+   - **Walk in** — first-person, on foot, at her eye height. WASD walks,
+     Shift runs, click the canvas to look around (pointer lock — Esc
+     releases it without leaving the mode), `C` crouches. You're clamped
+     to the same walkable floor she is, so you're genuinely in the
+     apartment with her, not floating through walls.
+3. **Her (not you):** she wanders the apartment on her own — all five
+   rooms, routed through doorways, pausing at named spots (the sofa, the
+   kitchen counter, her desk, and so on) — and stands still while
+   actually mid-conversation. There's nothing here that lets you move her
+   directly, on purpose.
+4. **Doors open on approach** (hers or yours) and shut again once nobody's
+   near them.
+5. **The info panel** (top-left) has three more controls: **time of day**
+   (dawn/day/dusk/night, changes the lighting), and **render quality**
+   (high/medium/low — drops the ambient-occlusion and antialiasing passes
+   at lower tiers if the frame rate needs it).
+6. **Talk to her:** same chatbox/mic/captions as the desktop shell, `/` to
    focus the input. If the shell is *also* open and connected, whichever
    one connected first is the one that can actually talk to her — the
    other shows a status message and won't let you send anything, rather
    than both windows racing to reply at once. See `docs/DECISIONS.md`'s
    "Phase 10 (partial), round 2" entry for exactly how that's decided.
-5. **Animation:** with no animation file present, she walks via a small
-   procedural (code-only) walk cycle. Drop a `walk.vrma` file at
-   `public/vrm-animations/walk.vrma` (see that folder's own `README.txt`)
-   to use a real walk cycle instead; picked up automatically on reload, no
-   code changes needed.
-6. **Tuning:** movement/room constants are at the top of `src/sandbox.ts`
-   (`WALK_SPEED_MPS`, `TURN_RATE_RAD_S`, `ROOM_HALF_SIZE`, fly-camera speed
-   constants, etc.) — hand-tuned by eye, same spirit as the main shell's
-   own `CAMERA_*` constants.
+7. **Animation:** a full walk cycle, idle variety, and emotion gestures
+   ship in `public/vrm-animations/` already (the "Hanami" VRMA pack, see
+   that folder's own `NOTICE.md` for attribution) and are used
+   automatically — nothing to add yourself. If those files are ever
+   missing, she falls back to a small procedural walk rather than not
+   moving at all.
+8. **Tuning:** the apartment's own layout lives as data in
+   `src/apartment/floorplan.ts` (room bounds, walls, the walkable-area
+   table, named anchors) rather than constants scattered through
+   `sandbox.ts`. Movement/camera tuning that *is* still in `src/sandbox.ts`
+   and `src/camera-modes.ts` (`TURN_RATE_RAD_S`, `FALLBACK_WALK_SPEED_MPS`,
+   fly/walk speed constants, etc.) is hand-tuned by eye, same spirit as the
+   main shell's own `CAMERA_*` constants.
 
 ## What's actually been verified vs. not, honestly
 

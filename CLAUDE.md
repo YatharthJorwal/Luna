@@ -1,13 +1,15 @@
 # Luna — Local AI Desktop Companion
 
-A fully local, offline-capable desktop pet: a Live2D body, a real LLM brain,
-a tsundere personality, persistent long-term memory, and on-demand
+A fully local, offline-capable desktop pet: a 3D VRM avatar, a real LLM
+brain, a tsundere personality, persistent long-term memory, and on-demand
 screen/camera vision. She's less a chatbot and more **a guide who lives on
 the PC** — tell her what you're trying to do, she gives you the next
 concrete step, and keeps half an eye on the screen while that task is
 active to nudge you back if you wander off (Task Guide Mode — the flagship
 behavior, see `docs/ARCHITECTURE.md`). She never touches the mouse/keyboard
-or executes anything herself: observe-and-advise only.
+or executes anything herself in Conversation Mode: observe-and-advise only
+there — Work Mode is a deliberate, later exception with its own safety
+scaffolding, see `docs/ROADMAP.md`'s Phase 11 and `docs/DECISIONS.md`.
 
 **Non-negotiable constraint: 100% local.** No cloud LLM calls, no cloud TTS,
 no telemetry. Everything — inference, voice, memory — runs on the user's own
@@ -212,6 +214,12 @@ Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map
 
+- `handoff.md` — snapshot for orienting a **new session at its start only**:
+  current state, the near-term goal, recent issues, outstanding work. Not a
+  live document — don't edit it mid-session as things change; regenerate it
+  at the end of a session instead, the same way this file's own "Current
+  status" log gets appended to. If it disagrees with `docs/ROADMAP.md` or
+  `docs/DECISIONS.md`, those two are the source of truth, not `handoff.md`.
 - `docs/ARCHITECTURE.md` — system design: the three tiers, why Tauri, why a
   Python orchestrator, personality architecture, memory design, vision
   tools, full Task Guide Mode spec, directory layout.
@@ -221,8 +229,9 @@ Full phase-by-phase status: `docs/ROADMAP.md`.
   decisions still needing input.
 - `docs/DECISIONS.md` — why non-obvious things in the code are the way they
   are, especially fixes forced by reality during implementation (e.g. why
-  `vendor/pixi-live2d5/` exists instead of a normal npm dependency). Read
-  this before assuming something looks like a mistake.
+  the apartment scene scales itself down to meet the character instead of
+  scaling her up — Phase 10 round 9's entry). Read this before assuming
+  something looks like a mistake.
 - `README.md` — human setup/run instructions, not agent context.
 
 ## Working agreement

@@ -161,11 +161,21 @@ awaiting on-machine confirmation · ⬜ not started)
   conversations rather than the synthetic transcripts tested here — both
   parsers are deliberately forgiving specifically because this was a
   real open question, not an assumption.
-- ⬜ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
-  `read_clipboard` + OCR fallback, tool-calling loop live. On-demand "look at
-  my screen" works for coding help, and the scheduled-capture /
-  off-task-chide loop works end-to-end for at least one flagship scenario
-  (the Flappy Bird walkthrough is a good test case).
+- 🔶 **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
+  `read_clipboard` + OCR fallback, tool-calling loop live. Built: a
+  `stream_reply_with_tools()` loop, the two tools, a hard 3-round cap, and
+  Ollama's tool-calling behavior confirmed for real against a live
+  server. First real test then found tool-calling silently never firing
+  at all — root-caused to a stale `SYSTEM_PROMPT` line written before
+  these tools existed ("you can only observe and advise," contradicting
+  the tool-calling capability offered in the same request), not a
+  Pillow/hardware/model-capability issue as first suspected. Fixed, with
+  a regression test guarding the old phrase can't silently come back. See
+  `docs/DECISIONS.md`'s "Phase 4 Round 1" and "Tool-calling wasn't
+  firing" entries for the full step-by-step. **Retest on the user's real
+  machine (the actual app, not an isolated call) still pending** — that's
+  the only thing keeping this at 🔶 instead of ✅. The scheduled-capture/
+  off-task-chide loop (Task Guide Mode's other half) isn't built yet.
 - ⬜ **Phase 5 — Camera + game-assist polish.** Gated camera tool, light
   game-context awareness (e.g. active-window detection), expression/emotion
   mapping refined.
@@ -246,10 +256,22 @@ awaiting on-machine confirmation · ⬜ not started)
   Still open, not blocking: whether qwen3.5:9b reliably produces a
   recognizable tag across real conversations rather than the synthetic
   cases tested here.
-- ⬜ **Phase 9 — UI overhaul.** Replace the plain input box/HUD with
-  something more visually considered — color, less utilitarian chrome.
-  Pure `index.html`/`style.css` work, no protocol or backend changes, no
-  dependency on any other phase — can happen independently, any time.
+- 🔶 **Phase 9 — UI overhaul.** Two independent pieces landed together:
+  a pastel reskin (pure `style.css` color-variable swap, no layout
+  change) and a persistent conversation-log panel — scoped bigger than
+  originally planned here ("no protocol or backend changes") because the
+  user specifically asked for real persistence, not just a styling
+  choice. The log panel got its own `transcript_log` SQLite table
+  (deliberately separate from Phase 3's facts/episodes, so a raw
+  verbatim record never leaks into memory consolidation or recall),
+  new `get_log`/`clear_log` WebSocket messages, and a display-only
+  `session.user_name` config field. Backend verified for real (5 new
+  pytest cases plus two ad hoc end-to-end WebSocket runs through the
+  genuine `app.py`); frontend only structurally verified (`tsc`/
+  `vite build` clean, markup confirmed in the built output) — same
+  "no GPU/browser in this sandbox" limit as everything else. Full
+  reasoning: `docs/DECISIONS.md`'s "Phase 9: pastel reskin + persistent
+  conversation-log panel" entry.
 - 🔶 **Phase 10 — Environments.** Two of the three requested (VR explicitly
   scoped out by the user themselves as currently unachievable): (1) desktop
   companion mode — draggable corner presence, reacting to cursor
@@ -459,6 +481,31 @@ awaiting on-machine confirmation · ⬜ not started)
   still doesn't do: sit/cook/read *animation* (she stands at an anchor
   facing a direction, no dedicated poses yet) and true per-room polygon
   navmesh geometry rather than rectangles.
+- ⬜ **Phase 11 — Work Mode (reversing "observe-and-advise only" for the
+  shell).** A real scope change, not a bug fix: the user deliberately
+  approved letting Luna actually *do* web-based tasks in the shell when
+  asked, rather than only ever describing them — recorded rather than
+  silently overwriting the original constraint, since `CLAUDE.md`,
+  `docs/ARCHITECTURE.md`, and this doc's own scope section all
+  originally stated it unconditionally. Approved: a gated tool-calling
+  harness (Hermes-style function calling) in the shell only, off by
+  default (Conversation Mode), opt-in per session (Work Mode); "her own
+  cursor" as a Playwright-driven browser instance she can navigate/
+  click/type/read inside. Explicitly *not* approved (a v2 idea, not this
+  phase): general OS-level input control across arbitrary desktop apps
+  (`pyautogui`/`nut.js`-style real-screen-coordinate driving) — a
+  materially larger risk surface than a sandboxed browser tab, deserving
+  its own safety pass rather than riding in on this one. Required
+  alongside the harness itself, not as a follow-up: a visible
+  active-indicator, confirm-before-irreversible-action, an action log,
+  and a hard abort. The sandbox/companion room is entirely unaffected —
+  no tools, no camera, no OCR, no cursor there, ever; that boundary
+  didn't move. Also decided alongside this: a third toggle, Smart Mode,
+  independent of Conversation/Work Mode, controlling reasoning depth
+  (single-pass vs. a slower plan→act→observe→reflect loop) as a
+  context-budget lever, not a safety mechanism. Nothing in this phase is
+  built yet — full reasoning in `docs/DECISIONS.md`'s "Reversing
+  'observe-and-advise only' — Work Mode, Phase 11" entry.
 
 ## Open decisions
 
@@ -469,6 +516,10 @@ Resolved:
 - Name: **Luna**.
 - OS: **Windows**, confirmed during Phase 1 build.
 - Live2D rendering library: `pixi-live2d5` (vendored), see `docs/DECISIONS.md`.
+  **Superseded by Phase 7**: the whole Live2D/`pixi-live2d5` stack was
+  replaced with `three` + `@pixiv/three-vrm` (the VRM avatar migration).
+  Left here as the historical record of the Phase 1 decision, not as a
+  description of the current renderer — see Phase 7's entry above.
 - Voice reference source for TTS cloning: user has a sample in hand. Rights
   to it are on the user to confirm — not something this doc can verify.
 - STT: in scope after all, via faster-whisper (Phase 2.5) — see the scope
@@ -482,8 +533,11 @@ Still open:
 - Task Guide Mode tuning: screenshot interval while a task is active, and how
   aggressive the nagging should be (fixed, or a tone dial the user can turn
   down when they're not in the mood to be chided).
-- Live2D model source for anything beyond local prototyping (free sample vs.
-  purchased vs. commissioned) and its license terms.
+- ~~Live2D model source for anything beyond local prototyping (free sample
+  vs. purchased vs. commissioned) and its license terms.~~ Moot as of
+  Phase 7: Live2D is gone entirely, replaced by the VRM avatar pipeline,
+  and the user already has their own `.vrm` model in place
+  (`public/vrm/luna.vrm`, gitignored, user-provided).
 - Full-apartment room build (Phase 10 round 7 plan / round 10 full
   rebuild): the scene-state channel is now built and the navmesh got a
   real verification pass (20 rectangles, cross-checked against furniture

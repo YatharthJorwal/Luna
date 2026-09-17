@@ -7,8 +7,9 @@ Three tiers, talking over localhost only:
 │  SHELL (Tauri, Rust core + native webview)                    │
 │  - transparent/click-through/always-on-top window management  │
 │  - system tray, hotkeys                                       │
-│  - PIXI.js 8 + pixi-live2d5 renders the model (vendored, see   │
-│    vendor/pixi-live2d5/NOTES.md -- not on npm)                 │
+│  - three.js + @pixiv/three-vrm renders the VRM avatar (Phase 7 │
+│    replaced the original Live2D/pixi-live2d5 stack -- see      │
+│    docs/DECISIONS.md for why)                                  │
 │  - input textbox; plays back streamed audio; drives            │
 │    lip-sync + expression from orchestrator events              │
 └───────────────────────────▲────────────────────────────────────┘
@@ -64,7 +65,7 @@ degrade actual coding/reasoning quality. Instead, split into two passes:
    lives — correctness of code fixes, game advice, tool selection.
 2. **Persona pass (fast, small):** rewrites the neutral answer into her voice
    and emits an `emotion` tag (`annoyed`, `smug`, `soft`, `flustered`, …) used
-   to drive Live2D expression + TTS style. Code blocks / exact values pass
+   to drive VRM expression + TTS style. Code blocks / exact values pass
    through untouched — only the narration around them gets stylized.
 
 Phase 2 can collapse this into a single well-prompted pass for latency; split
@@ -140,15 +141,32 @@ This is the actual core loop of the app, not a side feature:
 
 ```
 /                  Tauri app root (Rust core + web frontend)
-  src-tauri/        Rust: window mgmt, tray, hotkeys, IPC
-  src/              PIXI 8 + pixi-live2d5, input box, audio playback,
+  src-tauri/        Rust: window mgmt, tray, hotkeys, IPC, spawns the
+                      orchestrator + TTS server as hidden child processes
+  src/              three.js + @pixiv/three-vrm, input box, audio playback,
                       manual lipsync (lipsync.ts)
-  vendor/pixi-live2d5/  vendored prebuilt copy (not on npm) -- see its NOTES.md
-/orchestrator/      Python: FastAPI/WebSocket server
-  agent/            agent loop, tool definitions, persona pass (Phase 2+)
+    main.ts           desktop shell entry point
+    sandbox.ts        Phase 10 full-body sandbox entry point (dev-only,
+                        `npm run sandbox` -- see README.md)
+    apartment/        the sandbox's apartment scene: floor plan, materials,
+                        walls/doors, furniture, all as data-driven modules
+                        (see docs/DECISIONS.md's Phase 10 round 10 entry)
+    camera-modes.ts   sandbox spectator (free-fly) + first-person visitor
+    postfx.ts         sandbox render pipeline (IBL, tone mapping, GTAO/
+                        bloom/SMAA)
+/orchestrator/      Python: FastAPI/WebSocket server (app.py is the agent
+                      loop + tool dispatch; no separate agent/ subfolder)
   memory/           SQLite schema, consolidation job (Phase 3+)
   tools/            capture_screen, capture_camera, ocr, clipboard (Phase 4+)
-/models/            gitignored — local model weights live outside the repo
-/public/live2d/     the character model (Hiyori placeholder is committed --
-                     see docs/DECISIONS.md; a real model wouldn't be)
+/public/vrm/         the character's .vrm file -- gitignored, user-provided
+                      (see README.md's "Putting your VRoid model in")
+/public/vrm-animations/  the VRMA animation pack (walk cycle, idle variety,
+                      emotion gestures -- see that folder's own NOTICE.md)
 ```
+
+The Live2D/`pixi-live2d5` stack this layout replaced (`public/live2d/`,
+`vendor/pixi-live2d5/`) is gone entirely as of Phase 7 -- see
+`docs/ROADMAP.md`'s Phase 7 entry and `docs/DECISIONS.md` for the migration
+reasoning. `/models/` (gitignored local model weights) doesn't exist as a
+project convention -- model paths are configured per-engine in
+`orchestrator/config.yaml`, see `docs/MODELS.md`.
