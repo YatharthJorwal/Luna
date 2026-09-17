@@ -1195,11 +1195,41 @@ function setupSceneControls(
     b.addEventListener("click", () => {
       rig.setMode(m);
       refreshCam();
+      applyCeilingVisibility();
     });
     camBtns.set(m, b);
     camRow.appendChild(b);
   }
   refreshCam();
+
+  // --- ceiling ---------------------------------------------------------------
+  // Only meaningful in spectator mode: visitor mode forces ceilings back on,
+  // since standing in a room under an open sky reads as broken, not useful.
+  // The preference persists across mode switches so re-entering spectator
+  // restores whatever the user last chose.
+  let ceilingHiddenPref = false;
+  const applyCeilingVisibility = (): void => {
+    apartment.setCeilingsVisible(rig.mode() === "visitor" ? true : !ceilingHiddenPref);
+  };
+  const ceilRow = row("ceiling");
+  const ceilBtns = new Map<boolean, HTMLButtonElement>();
+  const refreshCeil = (): void => {
+    for (const [hidden, b] of ceilBtns) b.classList.toggle("active", hidden === ceilingHiddenPref);
+  };
+  for (const [hidden, text] of [[false, "show"], [true, "hide"]] as const) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = text;
+    b.addEventListener("click", () => {
+      ceilingHiddenPref = hidden;
+      refreshCeil();
+      applyCeilingVisibility();
+    });
+    ceilBtns.set(hidden, b);
+    ceilRow.appendChild(b);
+  }
+  refreshCeil();
+  applyCeilingVisibility();
 
   // --- quality -------------------------------------------------------------
   const qRow = row("render");
@@ -1227,6 +1257,18 @@ function setupSceneControls(
     e.preventDefault();
     rig.setMode(rig.mode() === "spectator" ? "visitor" : "spectator");
     refreshCam();
+    applyCeilingVisibility();
+  });
+
+  // H toggles the ceiling preference directly, for flying around without
+  // reaching for the panel. Only visibly changes anything in spectator mode
+  // (see applyCeilingVisibility); harmless to press in visitor mode, it just
+  // updates the preference for next time you switch back.
+  window.addEventListener("keydown", (e) => {
+    if (e.code !== "KeyH" || isTypingTarget(document.activeElement)) return;
+    ceilingHiddenPref = !ceilingHiddenPref;
+    refreshCeil();
+    applyCeilingVisibility();
   });
 
   return { syncCamera: refreshCam };
@@ -1252,7 +1294,11 @@ async function boot(): Promise<void> {
   // flat white and the night lamps read as grey, because the default
   // (linear) mapping has no highlight rolloff at all.
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
-  renderer.toneMappingExposure = 1.05;
+  // Placeholder for the very first frame; apartment.ts's per-frame
+  // `renderer.toneMappingExposure = apartment.exposure()` (below) overwrites
+  // this immediately after, so keep it in sync with MODES.day's exposure
+  // (the mode the scene boots into) rather than treating it as load-bearing.
+  renderer.toneMappingExposure = 0.95;
 
   const scene = new THREE.Scene();
   // Fog has to exist up front for the lighting modes to drive it; its

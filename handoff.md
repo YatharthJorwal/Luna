@@ -45,66 +45,75 @@ full detail always in `docs/ROADMAP.md`):
 | 10 | Environments (the apartment) | 🔶 — see below, this is where this session's work lives |
 | 11 | Work Mode (shell can act, not just advise) | ⬜ not started, fully scoped/approved |
 
-**Phase 10, specifically — where this session's work sits:** a full
-apartment rebuild landed this round (round 10, on top of rounds 6–9).
-Five real rooms (living/dining, kitchen, bedroom, bathroom, hallway) in
-an L-shaped plan, real walls with punched openings, four doors that open
-on approach, furniture built on rounded/lathed primitives (not bare
-boxes — mesh count 387→1173, verified by actually running the build),
-image-based lighting + a GTAO/bloom/SMAA post chain, spectator +
-first-person visitor camera modes (Tab toggles), a scene-state channel
-so she knows which room she's in and whether someone's visiting, and a
-20-rectangle navmesh verified by simulating two hours of her wandering
-against the real navigation code (not just read by eye) — she reaches
-all five rooms and all nine named spots. Full writeup:
-`docs/DECISIONS.md`'s "Round 10" entry.
+**Phase 10, specifically — where this session's work sits:** the full
+apartment rebuild (round 10) is unchanged in structure this round — five
+real rooms in an L-shaped plan, real walls with punched openings, doors
+that open on approach, image-based lighting + a GTAO/bloom/SMAA post
+chain, spectator + first-person visitor camera modes, a scene-state
+channel, and a 20-rectangle navmesh. What changed this round (round 11)
+is the fix-up pass on the *first real screenshots* of that build — see
+below. Full round-10 writeup still in `docs/DECISIONS.md`'s "Round 10"
+entry; this round's is the "Round 11" entry right after it.
 
-**Just confirmed working on the user's real machine** (this session's
-first actual screenshots, see below for what they showed) — this is the
-first time any of the apartment work has been seen rendered, not just
-verified computationally.
+## What this round did (round 11)
 
-**Repo/git housekeeping:** rounds 8–10 of this session's work, plus the
-other session's Phase 4/9 work, were just merged together on `main` via
-a bundle handoff (this sandbox has no direct push access to the user's
-GitHub). One real merge conflict in `orchestrator/app.py` — two features
-(the other session's `get_log`/`clear_log` handlers, this session's
-`scene_state` handler) landed at the same spot in the file — resolved by
-keeping both. Verified: `tsc --noEmit`, both production builds, and
-every orchestrator `.py` file parses clean post-merge.
+The user's first real screenshots surfaced two concrete issues, both
+flagged with specific leads in the previous handoff, both fixed this
+round:
 
-## Recent issues (from the user's first real look, this session)
+1. **Day-mode lighting was blown out.** `src/apartment/index.ts`'s
+   `MODES.day` had `sunI`, `hemiI`, and `envI` all elevated well above
+   every other mode's levels *simultaneously* (each roughly 1.7-2x
+   dawn's numbers), plus a boosted `exposure` on top — and `day` is the
+   mode the scene boots into, so it was the first thing anyone saw.
+   Brought down: `sunI` 3.1→2.0, `hemiI` 0.95→0.68, `envI` 1.0→0.68,
+   `exposure` 1.05→0.95, `bloom` 0.26→0.32 (day is still the brightest
+   mode, just no longer compounding). `sandbox.ts`'s boot-time
+   `renderer.toneMappingExposure` placeholder was synced to match.
+2. **No ceiling hide/show toggle in spectator mode.** The ceiling
+   meshes already existed in `shell.ts` (one `PlaneGeometry` per room)
+   but had no visibility switch. Added: `ShellResult.ceilings`,
+   `ApartmentHandle.setCeilingsVisible()`/`ceilingsVisible()`, a
+   dev-panel "ceiling" row, and a `KeyH` shortcut — scoped specifically
+   to spectator mode (visitor mode always forces ceilings back on,
+   since standing in a room with no ceiling overhead reads as broken).
 
-Reported directly, from actual screenshots on the real machine:
+**Verification this round:** both production builds clean (`tsc
+--noEmit` plus `index.html` and `sandbox.html` via the usual one-off
+Vite config), and — new this round — `buildApartment()` actually
+executed in Node against real `three` (PMREM/IBL faked out since it's
+unrelated round-10 code; everything else genuine), confirming the new
+day-mode numbers land on the real light objects, a night→day transition
+lerps to them over 90 frames without `NaN`, and the ceiling toggle hides/
+shows exactly 5 meshes (one per room). Full account, including exactly
+what the harness stubbed and why: `docs/DECISIONS.md`'s "Round 11"
+entry.
 
-1. **The lighting is overexposed — "practically blinding."** Concrete
-   lead, not a guess: `src/apartment/index.ts`'s `day` mode has
-   `sunI: 3.1` (a `DirectionalLight` at more than triple `dawn`'s `1.5`),
-   `hemiI: 0.95`, and `envI: 1.0` (full-strength image-based lighting)
-   all compounding, then run through ACES Filmic tone mapping at
-   `exposure: 1.05` (`renderer.toneMappingExposure`, set in
-   `sandbox.ts`'s `boot()` and every frame after from
-   `apartment.exposure()`). The user's own "Day" mode screenshot shows a
-   near-totally-blown-out white render, consistent with this. Likely
-   fix is turning down `day`'s `sunI`/`hemiI`/`envI` and/or `exposure`
-   in that `MODES` table — hasn't been touched yet, flagged, not fixed.
-2. **No ceiling hide/show toggle for the spectator ("flying") camera.**
-   The user's stated plan, not yet built. A real ceiling mesh does exist
-   per room (`shell.ts`'s floor/ceiling loop, one `PlaneGeometry` per
-   room at `y = CEILING_H`), single-sided (`lib.ceiling` has no `side`
-   set, defaults to `FrontSide`) — which is likely *why* the current
-   dollhouse-style overhead screenshot already shows into the rooms
-   without an obvious ceiling in the way: viewed from above/outside,
-   that's the plane's backface, invisible by default. A toggle would
-   need the ceiling meshes collected into `ShellResult` (same pattern
-   `doors`/`glazing`/`daylightPanels` already use in that file) and a
-   visibility switch wired to spectator mode specifically.
+**Not verified, same as every round: how any of it actually looks.** No
+GPU/browser in this sandbox. The lighting fix is reasoned from the
+numbers and the ACES curve, not screenshotted; the ceiling toggle's
+mechanism is confirmed correct, but nobody has flown around with it on
+a real screen yet.
 
-Neither was fixed this session — the explicit instruction this round was
-"do one thing: make this handoff doc," so these are flagged, not acted
-on. They're the natural first pick-up for next time.
+## Repo/git housekeeping
 
-## Outstanding stuff (beyond the two issues above)
+This sandbox has no direct push access to the user's GitHub — work
+leaves as a git bundle, applied on the user's machine via `git fetch
+<bundle> main-mirror:main-mirror && git merge main-mirror && git push
+origin main` (their confirmed preferred syntax; bundle handed over at
+a `C:\Users\User\Downloads\<filename>` path). This round's bundle
+contains one commit on top of whatever `main` looked like at clone
+time, touching `src/apartment/index.ts`, `src/apartment/shell.ts`,
+`src/sandbox.ts`, `handoff.md`, `docs/DECISIONS.md`, `docs/ROADMAP.md`,
+and `CLAUDE.md`.
+
+## Recent issues
+
+None open right now — both of last round's reported issues (above) are
+fixed this round. Next real-machine look is the natural way to find
+what's next.
+
+## Outstanding stuff
 
 From `docs/ROADMAP.md`'s "Still open" list, current as of this write-up:
 - Full-apartment work still ahead: true per-room *polygon* navmesh
@@ -113,13 +122,11 @@ From `docs/ROADMAP.md`'s "Still open" list, current as of this write-up:
   facing a direction — there's no dedicated pose yet).
 - The TV console's placement trades an ideal sofa sightline for actually
   fitting against a wall without blocking the kitchen archway (see round
-  10's `DECISIONS.md` entry) — worth a second look now that there's a
-  real render to judge it by.
+  10's `DECISIONS.md` entry) — worth a second look now that day-mode
+  lighting is fixed and there's a less-blown-out render to judge it by.
 - General "does the furniture layout/lighting actually read right" —
-  everything about the apartment was verified computationally
-  (geometry, connectivity, clearances) but not visually until this
-  round's screenshots, and there's more to check now that it can
-  actually be seen.
+  still genuinely unverified beyond this round's arithmetic-level fix;
+  the first real look at the *corrected* lighting hasn't happened yet.
 - Task Guide Mode tuning: screenshot interval while a task is active, how
   aggressive the nagging should be.
 - Phase 4: retest on the real machine (the actual app, not an isolated
@@ -130,15 +137,17 @@ From `docs/ROADMAP.md`'s "Still open" list, current as of this write-up:
 
 ## Future goal
 
-Immediate: the user is actively testing the apartment for the first
-time now that it's confirmed running — expect feedback on the two issues
-above plus whatever else the first real look-around turns up (this is
-squarely "first-run territory," per this project's own established
-pattern — expect small things, not fundamental breakage).
+Immediate: get this round's two fixes (lighting, ceiling toggle) in
+front of the user's actual screen — that's the only thing that can turn
+"reasoned" into "confirmed" for either of them. Expect either
+confirmation or a further nudge on exact brightness/mood, same
+first-run-territory pattern as every round of this apartment work so
+far.
 
-Medium-term: close the Phase 10 gaps above, get Phase 4 actually
-confirmed end-to-end on the real machine, then pick up Phase 5/6/11 in
-whatever order the user prioritizes.
+Medium-term: close the Phase 10 gaps above (polygon navmesh,
+sit/cook/read animation, the TV placement second look), get Phase 4
+actually confirmed end-to-end on the real machine, then pick up Phase
+5/6/11 in whatever order the user prioritizes.
 
 Overarching: a genuinely useful always-on desktop companion — Task Guide
 Mode as the core loop, eventually extending into Work Mode (Phase 11)

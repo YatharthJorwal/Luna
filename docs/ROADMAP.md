@@ -481,6 +481,24 @@ awaiting on-machine confirmation · ⬜ not started)
   still doesn't do: sit/cook/read *animation* (she stands at an anchor
   facing a direction, no dedicated poses yet) and true per-room polygon
   navmesh geometry rather than rectangles.
+  **Round 11: the first two bugs from actually looking at it, both fixed.**
+  Round 10's apartment got its first real screenshots this round, and two
+  concrete issues came back: `MODES.day` in `src/apartment/index.ts` was
+  stacking sun/hemisphere/environment intensity all above dusk's levels
+  simultaneously, plus a boosted exposure on top, reading as a blown-out
+  white wash on the mode the scene boots into — brought down to still be
+  the brightest mode without three lights and exposure all compounding at
+  once. And spectator (flying) mode had no way to hide the per-room ceiling
+  planes that already existed in `shell.ts` — added a `setCeilingsVisible`
+  toggle (dev-panel row + `KeyH`), scoped to spectator specifically:
+  visitor mode always forces ceilings back on. Both verified by actually
+  executing `buildApartment()` in Node against real `three` (PMREM/IBL
+  stubbed out as unrelated and unchanged; everything else — geometry,
+  lighting state machine, the ceiling array — real) rather than just
+  type-checked. Full account, including exactly what the harness stubbed
+  and why, in `docs/DECISIONS.md`'s round-11 entry. Still not verified:
+  how any of it actually looks — no GPU/browser in this sandbox, same as
+  every round.
 - ⬜ **Phase 11 — Work Mode (reversing "observe-and-advise only" for the
   shell).** A real scope change, not a bug fix: the user deliberately
   approved letting Luna actually *do* web-based tasks in the shell when
@@ -548,7 +566,8 @@ Still open:
   stands at a named anchor facing a direction, with no dedicated pose.
   Also genuinely unverified rather than just unbuilt, unchanged from
   every round before this one: how any of it actually looks, whether the
-  furniture layout and lighting read right in practice, and whether the
-  TV's wall-fit-over-sightline placement trade-off (see round 10) is
-  worth revisiting once there's a render to judge it by — no
-  GPU/browser in the sandbox any of this was built in.
+  furniture layout and lighting read right in practice now that day
+  mode's overexposure is fixed (round 11), and whether the TV's
+  wall-fit-over-sightline placement trade-off (see round 10) is worth
+  revisiting once there's a render to judge it by — no GPU/browser in
+  the sandbox any of this was built in.

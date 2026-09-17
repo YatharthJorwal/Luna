@@ -209,7 +209,31 @@ eyeballed) but not aesthetically judged by anyone with eyes on a
 render — the TV's position in particular trades an ideal sofa sightline
 for actually fitting against a wall, which is worth a second look once
 this is on screen.
-Full writeup for rounds 6-10 in `docs/DECISIONS.md`.
+
+**Round 11: first real screenshots came back, two bugs fixed.** `MODES.day`
+in `src/apartment/index.ts` was stacking sun/hemisphere/environment
+intensity all above dusk's levels at once, plus a boosted exposure on
+top, on the mode the scene boots into — read as a blown-out white wash
+in the user's own screenshot, exactly as the numbers predicted. Brought
+down (`sunI` 3.1→2.0, `hemiI` 0.95→0.68, `envI` 1.0→0.68, `exposure`
+1.05→0.95, `bloom` 0.26→0.32) to still be the brightest time of day
+without three lights and exposure compounding into one wash. Also added
+a ceiling show/hide toggle for spectator (flying) mode — the per-room
+ceiling planes already existed in `shell.ts` but had no visibility
+switch — via `ApartmentHandle.setCeilingsVisible()`, a dev-panel row,
+and a `KeyH` shortcut; scoped specifically to spectator (visitor mode
+always forces ceilings back on, per the user's own framing of the ask).
+Verified this round by actually running `buildApartment()` in Node
+against real `three` (PMREM/IBL faked out since that's round 10's
+unrelated, unchanged code; everything else — the real scene graph,
+lighting state machine, ceiling array — genuine): the new day-mode
+numbers land correctly on the real light objects, a 90-frame night→day
+transition lerps to them without `NaN`, and toggling ceilings hides/
+shows exactly 5 meshes (one per room), not just type-checks clean. Full
+account: `docs/DECISIONS.md`'s round-11 entry. Still not verified: how
+any of it looks — no GPU/browser here, same as always.
+
+Full writeup for rounds 6-11 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

@@ -3581,3 +3581,161 @@ this round touched is sandbox-side (`sandbox.html`, `src/sandbox.css`,
 `orchestrator/app.py`) and these docs -- no changes to
 `index.html`/`src/main.ts`/`src/style.css`, which a second, parallel session
 is working on.
+
+## Round 11: first real screenshots find two bugs -- day-mode overexposure, no ceiling toggle
+
+Round 10 shipped and, for the first time, got looked at on the user's actual
+machine. Two concrete things came back from that first look, both flagged in
+detail in `handoff.md` rather than left as vague "it looks off" reports, and
+both fixed this round.
+
+### The day-mode wash: three lights and an exposure bump, all pointed the same way
+
+`MODES.day` in `src/apartment/index.ts` was not one number too high, it was
+four numbers each individually plausible but never checked against each
+other: `sunI: 3.1` (more than double dawn's `1.5`), `hemiI: 0.95` (roughly
+1.7x dawn's `0.55`), `envI: 1.0` (full-strength IBL, ~1.8x dawn's `0.55`),
+and `exposure: 1.05` on top of all three. Compare dusk, the next-brightest
+mode: `sunI: 1.8`, `hemiI: 0.48`, `envI: 0.45`, `exposure: 1.0` -- day was
+running every one of those levers well past dusk's, simultaneously. ACES
+Filmic tone mapping compresses highlights rather than hard-clipping them,
+but there's a limit to how much it can rescue once three independent light
+contributions are all pushed high at once and then multiplied by an
+above-baseline exposure -- past a point the compression itself reads as a
+flat, saturation-crushed white wash, which is exactly what the user's
+screenshot showed. It's also not a corner case: `let live = cloneState
+(MODES.day)` and `setTimeOfDay('day', true)` at the end of `buildApartment()`
+mean day is the mode the scene boots into, so this was the very first thing
+anyone saw.
+
+Fix, in `src/apartment/index.ts`'s `MODES.day`: `sunI` 3.1 -> 2.0, `hemiI`
+0.95 -> 0.68, `envI` 1.0 -> 0.68, `exposure` 1.05 -> 0.95 (dropped slightly
+*below* the other modes' 1.0 baseline, deliberately, to leave headroom for
+the fact that the other three numbers are still the highest of any mode).
+`bloom` nudged up slightly, 0.26 -> 0.32, to compensate: bloom in this
+pipeline is a highlight-threshold glow, so a less blown-out base scene
+naturally triggers less of it, and day going *starker* than dawn/dusk instead
+of brighter-but-glowier wasn't the goal. Day is still the brightest time of
+day overall (every one of its four numbers is still above dusk's), it just
+no longer stacks three separately-elevated light contributions into one
+compounding wash. `sandbox.ts`'s `renderer.toneMappingExposure = 1.05` boot
+placeholder was brought in line with the new `0.95` too, with a comment
+noting it's overwritten every frame by `apartment.exposure()` regardless --
+it was never load-bearing, just worth keeping honest since it happened to
+equal day's exposure before and would otherwise silently stop matching it.
+
+**Not screenshotted -- reasoned from the numbers and the ACES curve, same
+limitation as every lighting decision in this project's history.** What
+*was* verified this round (see the harness section below): the new numbers
+actually land on the real `THREE.HemisphereLight`/`THREE.DirectionalLight`
+objects and `scene.environmentIntensity` when `setTimeOfDay('day')` runs,
+and a real transition into day over 90 simulated frames lerps toward them
+without producing `NaN` or throwing. That confirms the mechanism is sound;
+it does not confirm the render looks right, because nothing here can render
+it.
+
+### Ceiling hide/show, scoped to spectator mode specifically
+
+The user's ask, and `handoff.md`'s lead: no way to hide or show the ceiling
+while flying around in spectator mode. The ceiling geometry already
+existed -- `shell.ts` builds one `PlaneGeometry` per room at `y = CEILING_H`,
+single-sided (`lib.ceiling` never sets `side`, so it defaults to
+`THREE.FrontSide`) -- which is also *why* the existing dollhouse-style
+overhead spectator shot already reads as ceiling-less from directly above:
+that's the plane's backface, invisible by default, not a toggle doing
+anything. There was never an actual switch, though, so from any angle where
+the frontface *is* visible (level with or below the ceiling, looking up)
+there was no way to get it out of the way.
+
+Implementation, following the same pattern `doors`/`glazing`/
+`daylightPanels` already use in `shell.ts`:
+- `ShellResult` gained a `ceilings: THREE.Mesh[]` field; `buildShell()`
+  pushes each room's ceiling mesh onto it as it's built (5 meshes, one per
+  room in `ROOMS`).
+- `ApartmentHandle` gained `setCeilingsVisible(v: boolean)` and
+  `ceilingsVisible(): boolean`, backed by a local `ceilingsOn` flag in
+  `src/apartment/index.ts` that just sets `.visible` on every mesh in
+  `shell.ceilings`.
+- `sandbox.ts`'s dev panel (`setupSceneControls`) gained a "ceiling"
+  show/hide row, same button-pair pattern as the existing time-of-day and
+  camera-mode rows, plus a `KeyH` shortcut for toggling without reaching for
+  the panel (chosen over `KeyC`, which visitor mode's crouch already owns).
+
+**Scoped to spectator specifically, per the user's own framing of the ask**,
+via an `applyCeilingVisibility()` closure in `sandbox.ts`: the ceiling
+preference (`ceilingHiddenPref`) only actually takes effect while
+`rig.mode() === 'spectator'`; switching to visitor mode always forces
+ceilings back on regardless of the preference, since standing inside a room
+at eye height with no ceiling overhead reads as broken rather than useful,
+and the preference is remembered and reapplied the moment you switch back to
+spectator. `applyCeilingVisibility()` is called after every place the camera
+mode can change -- both dev-panel buttons and the existing `Tab` handler --
+so the two controls can't drift out of sync.
+
+### Verification: a real Node harness this round, not just tsc
+
+Both production builds (`npm run build` for `index.html`, plus the same
+one-off Vite config used in prior rounds, `rollupOptions.input:
+"sandbox.html"`, for the sandbox entry) came back clean, as always -- proves
+the module graph resolves and nothing else.
+
+Beyond that, this round actually executed `buildApartment()` in Node against
+the real, current source -- not a copy, not a reimplementation -- closer to
+round 10's own harness than any round since. `src/apartment/index.ts` was
+bundled with esbuild (`--platform=neutral --external:three`) and run under
+real `three` from `node_modules`. Two things needed stubbing to make that
+possible without a GPU, both scoped as narrowly as they could be:
+- `document.createElement('canvas')`, for the procedural texture drawing in
+  `materials.ts`/`furniture.ts` -- a `Proxy`-based no-op 2D context (any
+  method call is swallowed, `createLinearGradient`/`createRadialGradient`
+  return a stub with a no-op `addColorStop`) so `THREE.CanvasTexture`
+  construction succeeds without ever needing real pixels.
+- `THREE.PMREMGenerator`, which needs a real WebGL context to compile a
+  shader and can't be faked into actually working -- replaced with a
+  no-op class (`compileEquirectangularShader()`/`fromScene()` do nothing
+  and return an inert texture) via a generated shim module that re-exports
+  everything else from real `three` untouched, swapped in for the bare
+  `'three'` specifier only (not the `three/examples/jsm/...` subpath
+  imports, which resolve to real code) through a Node `--experimental-loader`
+  resolve hook. This is unrelated to what changed this round -- IBL
+  construction was round 10's work, already verified there -- so it's
+  stubbed rather than re-proven.
+
+Everything else in the harness run is the real, unmodified pipeline:
+`floorplan.ts`'s room/anchor data, `materials.ts`'s and `furniture.ts`'s
+actual geometry construction, `shell.ts`'s wall/door/ceiling building, and
+`index.ts`'s lighting state machine. Results:
+- `apt.ceilingsVisible()` starts `true`; after `setCeilingsVisible(false)`,
+  walking the real scene graph for horizontal `PlaneGeometry` meshes
+  (the ceiling planes' actual signature: rotated `Math.PI/2` about X) found
+  exactly 5 -- one per room -- all hidden, zero still visible; calling
+  `setCeilingsVisible(true)` brought all 5 back. Confirms the array is wired
+  correctly, not just that the getter/setter pair type-checks.
+- After `setTimeOfDay('day', true)`, the real `HemisphereLight.intensity`
+  read `0.68`, the real `DirectionalLight.intensity` (the sun, distinguished
+  from the dimmer bounce light by intensity) read `2.0`,
+  `scene.environmentIntensity` read `0.68`, and `apt.exposure()`/
+  `apt.bloomStrength()` read `0.95`/`0.32` -- the new numbers actually
+  reaching the objects they're supposed to drive, not just sitting correct
+  in a data table.
+- All four `TIMES_OF_DAY` applied via `setTimeOfDay(t, true)` in sequence
+  without throwing.
+- A `night` -> `day` transition (`setTimeOfDay('day', false)`, non-instant)
+  run for 90 simulated frames at 1/60s landed at `exposure ≈ 0.951`,
+  `hemi ≈ 0.676`, `sun ≈ 1.986` -- converging on the new targets, all finite,
+  no `NaN` anywhere in the lerp.
+
+**Still not verified, same limitation as every round: how any of this
+actually looks.** The harness proves the mechanism -- right values, right
+objects, right mesh count, no exceptions -- not the picture. No GPU/browser
+in this sandbox, unchanged from round 10 and everything before it. The
+harness scripts themselves are one-off, kept in this session's own working
+notes rather than committed, same as round 10's furniture/rectangle audit
+script -- they're diagnostic tooling for this round's specific change, not
+part of the shipped app.
+
+### Scope note
+
+Same isolation discipline as prior rounds: this round touched
+`src/apartment/index.ts`, `src/apartment/shell.ts`, `src/sandbox.ts`, and
+these docs. No changes to `index.html`/`src/main.ts`/`src/style.css`.

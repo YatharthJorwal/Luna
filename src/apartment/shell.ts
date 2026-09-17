@@ -43,6 +43,8 @@ export interface ShellResult {
   glazing: THREE.MeshPhysicalMaterial[];
   /** Fake "sunlight through the glass" panels, dimmed at night. */
   daylightPanels: THREE.Mesh[];
+  /** One plane per room, so spectator mode can hide them for an overhead view. */
+  ceilings: THREE.Mesh[];
 }
 
 /** Segments of a wall's run that are solid, given its openings. */
@@ -323,7 +325,7 @@ function skirting(w: WallDef, lib: MaterialLib, root: THREE.Group): void {
 
 export function buildShell(lib: MaterialLib): ShellResult {
   const root = group('shell');
-  const out: ShellResult = { root, doors: [], glazing: [], daylightPanels: [] };
+  const out: ShellResult = { root, doors: [], glazing: [], daylightPanels: [], ceilings: [] };
 
   // --- floors + ceilings, one slab per room so finishes differ -------------
   for (const r of ROOMS) {
@@ -351,6 +353,7 @@ export function buildShell(lib: MaterialLib): ShellResult {
     c.position.set(cx, CEILING_H, cz);
     c.receiveShadow = true;
     root.add(c);
+    out.ceilings.push(c);
 
     // Crown moulding where ceiling meets wall.
     const crown = lib.trim;

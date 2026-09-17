@@ -99,10 +99,23 @@ const MODES: Record<TimeOfDay, LightState> = {
     lampI: 0.35, windowI: 0.5, envI: 0.55, bloom: 0.5, exposure: 1.0,
   }),
   day: st({
+    // Was sunI 3.1 / hemiI 0.95 / envI 1.0 / exposure 1.05 -- roughly 1.7-2x
+    // dawn's already-fine numbers on *three* separate light contributions at
+    // once, then pushed brighter still by exposure on top. ACES compresses
+    // highlights rather than hard-clipping them, but stacking that much
+    // radiance still reads as a blown-out white wash once it's through the
+    // curve -- which is exactly what the user's screenshot showed, and this
+    // is the default mode the scene boots into (see `let live = ...MODES.day`
+    // below), so it's the first thing anyone sees. Brought down to keep day
+    // the brightest time of day (still above dusk's 1.8/0.48/0.45) without
+    // the three components compounding into a wash, and exposure dropped
+    // slightly below the 1.0 baseline the other modes use to leave headroom
+    // for that compounding. Not verified on a screen in this sandbox --
+    // reasoned from the numbers and the ACES curve, not re-screenshotted.
     sky: 0xbfd9ef, bg: 0xc9e0f2, fogNear: 22, fogFar: 70,
-    hemiSky: 0xf4f9ff, hemiGround: 0xa89880, hemiI: 0.95,
-    sunColor: 0xfff3e0, sunI: 3.1, sunPos: [-10, 14, 9],
-    lampI: 0.0, windowI: 1.0, envI: 1.0, bloom: 0.26, exposure: 1.05,
+    hemiSky: 0xf4f9ff, hemiGround: 0xa89880, hemiI: 0.68,
+    sunColor: 0xfff3e0, sunI: 2.0, sunPos: [-10, 14, 9],
+    lampI: 0.0, windowI: 1.0, envI: 0.68, bloom: 0.32, exposure: 0.95,
   }),
   dusk: st({
     sky: 0xe9a479, bg: 0xd9906d, fogNear: 12, fogFar: 40,
@@ -154,6 +167,11 @@ export interface ApartmentHandle {
   exposure(): number;
   /** Ask a door to open or shut; used by the character and by the visitor. */
   requestDoor(id: string, open: boolean): void;
+  /** Show/hide every room's ceiling plane -- lets spectator mode fly a clear
+   * overhead view instead of relying on the backface-culling accident that
+   * otherwise hides them from directly above. */
+  setCeilingsVisible(v: boolean): void;
+  ceilingsVisible(): boolean;
   /** Human-readable state, for the persona channel. */
   describe(lunaPos: THREE.Vector3, visitorPos: THREE.Vector3 | null, visitorEmbodied: boolean): SceneState;
   dispose(): void;
@@ -361,6 +379,13 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
     }
   }
 
+  // --- ceilings --------------------------------------------------------------
+  let ceilingsOn = true;
+  function setCeilingsVisible(v: boolean): void {
+    ceilingsOn = v;
+    for (const c of shell.ceilings) c.visible = v;
+  }
+
   setTimeOfDay('day', true);
 
   return {
@@ -373,6 +398,8 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
     bloomStrength: () => live.bloom,
     exposure: () => live.exposure,
     requestDoor,
+    setCeilingsVisible,
+    ceilingsVisible: () => ceilingsOn,
 
     update(dt, elapsed, subject) {
       stepTransition(dt);
