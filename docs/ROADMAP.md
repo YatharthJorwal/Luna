@@ -495,10 +495,33 @@ awaiting on-machine confirmation · ⬜ not started)
   executing `buildApartment()` in Node against real `three` (PMREM/IBL
   stubbed out as unrelated and unchanged; everything else — geometry,
   lighting state machine, the ceiling array — real) rather than just
-  type-checked. Full account, including exactly what the harness stubbed
-  and why, in `docs/DECISIONS.md`'s round-11 entry. Still not verified:
-  how any of it actually looks — no GPU/browser in this sandbox, same as
-  every round.
+  type-checked.
+  **Round 12: the procedural room replaced entirely with a prebuilt
+  model.** Round 11's fix didn't fix the real problem — the *next*
+  screenshots showed a UV-checker bathtub texture, a floating disconnected
+  towel, a toilet with no bowl, a blown-out mirror. Hand-authored
+  procedural geometry and canvas textures, built by someone who can't see
+  the result, don't converge. `src/apartment/shell.ts`, `furniture.ts`,
+  and `materials.ts` — the entire procedural room — are deleted.
+  `src/apartment/index.ts` now loads a prebuilt `.glb` apartment (a
+  Sketchfab download the user provided) through the same `GLTFLoader`
+  already used for the VRM avatar (VRM is a glTF extension; no new
+  dependency). `floorplan.ts` is reduced to one placeholder room/navmesh
+  sized to the model's real measured bounding box, since the file has no
+  per-room data worth reading (generic `Object_0`, `Object_1`, ... mesh
+  names) — a real capability loss (no room-level scene-state, no doors,
+  no wall-aware collision) stated plainly rather than hidden, until
+  someone who can see the loaded model can point out real room
+  boundaries. The round-11 ceiling toggle is gone with `shell.ts`.
+  Verification went further than any prior round: the actual 40MB file
+  was loaded through the real `GLTFLoader` (not faked) over a throwaway
+  local HTTP server, confirming 445 meshes / ~271,754 triangles / 82
+  materials — matching a direct `gltf-transform inspect` of the file
+  exactly — assembled into a real `THREE.Scene` at the right position and
+  scale. Texture *pixel* content still can't be checked (no image decoder
+  in Node); full account, including the licensing caveat on the model
+  itself (Sketchfab-sourced, webcomic-themed, license not independently
+  verified), in `docs/DECISIONS.md`'s round-12 entry.
 - ⬜ **Phase 11 — Work Mode (reversing "observe-and-advise only" for the
   shell).** A real scope change, not a bug fix: the user deliberately
   approved letting Luna actually *do* web-based tasks in the shell when
@@ -556,18 +579,27 @@ Still open:
   Phase 7: Live2D is gone entirely, replaced by the VRM avatar pipeline,
   and the user already has their own `.vrm` model in place
   (`public/vrm/luna.vrm`, gitignored, user-provided).
-- Full-apartment room build (Phase 10 round 7 plan / round 10 full
-  rebuild): the scene-state channel is now built and the navmesh got a
-  real verification pass (20 rectangles, cross-checked against furniture
-  placement by script, two real bugs found and fixed before shipping —
-  see the round-10 entry above and `docs/DECISIONS.md`). Still open from
-  the original round-7 plan: true per-room polygon navmesh geometry
-  rather than rectangles, and sit/cook/read *animation* — she currently
-  stands at a named anchor facing a direction, with no dedicated pose.
-  Also genuinely unverified rather than just unbuilt, unchanged from
-  every round before this one: how any of it actually looks, whether the
-  furniture layout and lighting read right in practice now that day
-  mode's overexposure is fixed (round 11), and whether the TV's
-  wall-fit-over-sightline placement trade-off (see round 10) is worth
-  revisiting once there's a render to judge it by — no GPU/browser in
-  the sandbox any of this was built in.
+- Full-apartment room build: round 12 replaced the entire procedural
+  system (round 7-11's hand-built walls/furniture/materials, the
+  20-rectangle navmesh, the round-10 TV placement trade-off — all of it)
+  with a prebuilt model loaded wholesale, because the procedural system
+  was producing visibly broken results nobody building it could see (see
+  `docs/DECISIONS.md`'s round-12 entry). What's open now is different
+  from what was open before: real room boundaries, door positions, and
+  furniture-anchor locations for the *new* model are unknown (it has no
+  per-room data in it — generic mesh names, not `Kitchen_Counter`) and
+  can only be worked out by someone who can actually see the loaded
+  model point out where the walls and furniture are. Until then:
+  `floorplan.ts` is one placeholder room, there are no doors, and
+  sit/cook/read *animation* is further off than before (she wanders to
+  generic scattered points, not real furniture). Also unverified,
+  further than "how it looks": whether the new model's own PBR textures
+  and emissive "glow" materials read right under this round's from-
+  scratch lighting numbers, and whether the model's licensing (a
+  Sketchfab download, not independently confirmed as reusable — see
+  `docs/DECISIONS.md`) is actually clear to keep building on. No
+  GPU/browser in the sandbox any of this was built in, same as always —
+  round 12 got further than prior rounds by loading the real file
+  through the real `GLTFLoader` and confirming geometry/materials
+  assemble correctly, but pixel-level appearance is still nobody's
+  verified.

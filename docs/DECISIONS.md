@@ -3739,3 +3739,170 @@ part of the shipped app.
 Same isolation discipline as prior rounds: this round touched
 `src/apartment/index.ts`, `src/apartment/shell.ts`, `src/sandbox.ts`, and
 these docs. No changes to `index.html`/`src/main.ts`/`src/style.css`.
+
+## Round 12: the procedural apartment is gone -- replaced with a prebuilt model
+
+Round 11 fixed two specific bugs the user's first screenshots surfaced. The
+screenshots after *that* fix showed the deeper problem: a UV-checker/barcode
+texture on the bathtub, a rolled towel floating unattached near the ceiling,
+a toilet with no bowl (just a tank sitting on a black disc), a mirror
+rendering as a solid white blob, and a bathroom light fixture blown out even
+in *night* mode. That's not a lighting-numbers problem -- it's hand-authored
+procedural geometry and canvas-drawn textures (`shell.ts`, `furniture.ts`,
+`materials.ts`) that nobody building them could actually see. The user's
+own conclusion, and the right one: stop hand-authoring 3D content blind and
+swap in something real, the same way the VRM avatar was always a real
+external asset rather than something built in code.
+
+### What changed
+
+The user found and provided `public/apartment/twokinds_modern_trio_apartment.glb`,
+a prebuilt apartment interior downloaded from Sketchfab (~40MB, self-contained,
+generator tag confirms the Sketchfab exporter). This round wires it in as a
+full replacement, not an addition:
+
+- **`src/apartment/shell.ts`, `furniture.ts`, `materials.ts` deleted.** Those
+  three files *were* the procedural room -- walls, doors, furniture geometry,
+  and every hand-drawn canvas texture. Nothing outside `apartment/index.ts`
+  imported them (checked before deleting), so removing them is contained.
+- **`src/apartment/index.ts` rewritten.** `buildApartment()` is now `async`
+  (it has to be: loading a `.glb` is inherently asynchronous, unlike the old
+  procedural build which was synchronous JS). It loads the model through
+  `GLTFLoader` -- the exact same loader class already imported for the VRM
+  avatar, since VRM is itself a glTF extension; no new dependency. Image-based
+  lighting (`RoomEnvironment` + `PMREMGenerator`), ACES tone mapping, the
+  four-time-of-day state machine, and the dust-mote particle system are kept,
+  restructured around the new model instead of the old shell.
+- **`src/apartment/floorplan.ts` rewritten.** The old file had nine real
+  rooms, real wall/door geometry, and named furniture anchors, all hand-
+  measured against the procedural shell. The new model has none of that
+  available to read: `gltf-transform inspect` shows generic `Object_0`,
+  `Object_1`, ... mesh names, not `Kitchen_Counter` or `Bedroom_Door` -- there
+  is no reliable way to derive real room boundaries, door positions, or
+  furniture locations from the file itself. `floorplan.ts` now describes one
+  placeholder room/navmesh rectangle sized to the model's actual measured
+  bounding box, with four generic, scattered anchors (not real furniture
+  positions) so the wander controller has more than one place to go. This is
+  a real capability loss -- no room-level scene-state ("she's in the
+  kitchen"), no doors, no per-room lighting, no wall-aware collision inside
+  the footprint -- stated plainly rather than papered over, because getting
+  any of it back requires someone who can actually see the loaded model
+  point out where the real walls and furniture are. That can't happen from
+  inside this sandbox.
+- **The round-11 ceiling toggle removed.** It was built against `shell.ts`'s
+  ceiling meshes, which no longer exist. Rather than leave a UI row and a
+  `KeyH` shortcut that quietly do nothing, both were deleted from
+  `sandbox.ts`, along with `ApartmentHandle.setCeilingsVisible`/
+  `ceilingsVisible`. Same reasoning for `doors`/`requestDoor`/`DoorLeaf`:
+  confirmed via grep that nothing outside `index.ts` ever consumed them, so
+  they're gone rather than stubbed.
+- **Camera spawn points rewritten**, in `sandbox.ts`. The old spectator/
+  visitor spawn coordinates were tuned by hand against the old floor plan's
+  specific room layout -- meaningless against a 19m x 11m building nobody
+  building this has seen rendered. Spectator now starts pulled back and
+  above the whole footprint (`CENTRE.x, CEILING_H + 6, CENTRE.z + 12`) --
+  guaranteed not to spawn embedded in a wall or a piece of furniture at an
+  unknown position, at the cost of not being a curated first shot. Visitor
+  mode spawns at the footprint's centre, the one point guaranteed to sit
+  inside the placeholder walkable rectangle.
+- **Sun shadow-camera frustum widened** from round 11's `±12` to `±16`, to
+  cover the new model's much larger real footprint (19.1m x 10.9m, roughly
+  double the old hand-built room's scale) with margin for the sun's oblique
+  angle.
+- **New `MODES` lighting table**, written from scratch rather than ported.
+  The round 10/11 numbers were tuned (twice, badly the first time) against
+  this project's *own* hand-authored `materials.ts`. This is a real,
+  unfamiliar model with its own PBR textures and zero tuning history, so
+  every value was picked deliberately modest -- no light contribution pushed
+  near its max, unlike round 11's mistake of stacking three at once. Also
+  worth noting from the inspect report: several materials
+  (`Glowy_Green`, `RGB_Material`, `Magic_Glow`, the `*_glow` set, the various
+  screen materials) carry their own emissive textures, self-lit regardless
+  of scene lighting -- likely load-bearing for a "gamer den" aesthetic that
+  leans on practical/neon lighting. Night mode's scene lights are
+  deliberately dim on purpose, to let those emissive materials carry the
+  room's visual interest instead of fighting them.
+- **`.gitignore`/`public/apartment/README.txt` added**, mirroring
+  `public/vrm/`'s existing pattern exactly: the model file itself is
+  gitignored (large, personal, and see the licensing note below), the setup
+  note is committed.
+
+### Licensing -- flagged, not resolved
+
+The model's filename and material names (`DJ_Dragon_Poster`, `Sims_Screen`,
+`Dorditos`, `squirrelmart_pretzels`, `laura_blanket`, `Red_Letter_Day`) read
+like a fan-made scene tied to the *TwoKinds* webcomic with some brand-parody
+set dressing, downloaded from Sketchfab. The generator tag in the file
+confirms the Sketchfab origin but says nothing about which license that
+specific listing carried -- that lives on the Sketchfab page, not in the
+binary. The user was told this plainly before providing the file (CC0/
+CC-BY/CC-BY-SA are fine to use; a "Standard" Sketchfab license or CC-BY-NC
+would mean personal-use-only and shouldn't sit in a repo that's already on
+public GitHub) and chose to proceed. Not re-litigated here; just recorded so
+a future session doesn't assume this was verified when it wasn't.
+
+### Verification: the real file, through the real loader, for the first time
+
+Both production builds (`tsc --noEmit`, `index.html`, and `sandbox.html` via
+the usual one-off Vite config) came back clean, as always.
+
+Beyond that, this round went further than any prior round's Node harness:
+rather than faking the asset pipeline, it loaded the *actual* 40MB file
+through three.js's real `GLTFLoader`, over a real local HTTP server (Node's
+`fetch`, which `GLTFLoader`'s internal `FileLoader` uses, needs an absolute
+URL -- a bare relative path like the production `/apartment/...` doesn't
+resolve without a page origin, so a throwaway `http.createServer()` served
+`public/` locally for the test). Getting there needed three small,
+environment-only polyfills, none of which touch the app: a `ProgressEvent`
+stub (three's `FileLoader` reports download progress via the browser's
+`ProgressEvent`, which Node lacks), `self = globalThis` (`GLTFLoader`'s
+texture-loading path checks `self.URL`), and the same PMREMGenerator fake
+and canvas-2D-context stub used in round 11's harness, for the same reasons
+(no WebGL, no real canvas in Node). Results:
+
+- The real JSON+binary glTF structure parsed correctly: **445 meshes,
+  ~271,754 triangles, 82 unique materials** -- the material count matches
+  `gltf-transform inspect`'s report exactly.
+- The loaded scene's bounding box (`min [-9.90, -0.16, -3.74]`,
+  `max [9.32, 2.78, 7.15]`) matches the earlier `gltf-transform inspect`
+  numbers to within a few centimetres -- confirms the geometry assembled
+  into the real `THREE.Scene` at the position and scale expected, not just
+  that the file parses in isolation.
+- Both `KHR_texture_transform` and `KHR_materials_transmission` (the file's
+  only two `extensionsUsed`, confirmed by parsing the glb's JSON chunk
+  directly before writing any loader code) resolved without needing any
+  extra decoder setup -- both are natively handled by stock `GLTFLoader`.
+  Also confirmed: no Draco/meshopt compression (`extensionsRequired` is
+  empty), which would have needed `.setDRACOLoader()`/`.setMeshoptDecoder()`
+  configured before loading works at all.
+- The lighting state machine, `describe()`, and the new single-room
+  `floorplan.ts` all ran against the real loaded scene without throwing;
+  `describe()` correctly returns the placeholder room/anchor for a point
+  inside the footprint and `null`/the generic fallback label for a point
+  far outside it.
+- `buildApartment()` resolved in ~530ms against a local server -- not a
+  meaningful production timing (no real network/disk latency modeled), but
+  confirms nothing hangs or infinite-loops on this file.
+
+**What this does *not* verify: any pixel of any texture.** Node has no
+image decoder -- `GLTFLoader` logged 11 "Couldn't load texture" warnings for
+embedded image blobs it has no way to decode outside a browser, which is
+expected and non-fatal (the loader warns and continues; this is purely a
+Node-vs-browser environment gap, not evidence of a problem with the file).
+Whether any material actually looks right, whether the emissive "glow"
+materials read the way the model's creator intended, whether the new
+lighting numbers over- or under-expose this specific model's textures --
+none of that can be checked from here. This is, however, meaningfully
+further than any prior round's verification got: the full scene graph,
+geometry, and material *assignment* (as opposed to material *appearance*)
+is now confirmed correct against the real file, not reasoned about or
+mocked.
+
+### Scope note
+
+This round touched `src/apartment/floorplan.ts` (rewritten),
+`src/apartment/index.ts` (rewritten), deleted `src/apartment/shell.ts`,
+`src/apartment/furniture.ts`, `src/apartment/materials.ts`, edited
+`src/sandbox.ts`, added `.gitignore`/`public/apartment/README.txt`, and
+these docs. No changes to `index.html`/`src/main.ts`/`src/style.css`.
+

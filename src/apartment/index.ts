@@ -1,32 +1,51 @@
 /**
  * Builds the apartment and hands back a small control surface.
  *
- * The big lighting change from the previous version: this scene is lit by an
- * environment map (image-based lighting) as well as by lights. `RoomEnvironment`
- * + `PMREMGenerator` gives every material a pre-convolved view of a bright
- * room to reflect, which is what supplies the soft directionless bounce that
- * real rooms have and that a couple of point lights fundamentally cannot fake.
- * It is also the reason the PBR values in materials.ts are worth setting: a
- * roughness difference between ceramic and fabric is invisible under pure
- * point lighting but obvious under IBL.
+ * Round 12 rewrite: this no longer builds the room procedurally. The user
+ * dropped in a whole prebuilt apartment model --
+ * `public/apartment/twokinds_modern_trio_apartment.glb`, a Sketchfab
+ * download -- to replace the hand-authored shell/furniture/materials system
+ * from rounds 9-11, because that system was producing visibly broken
+ * results (a UV-checker bathtub texture, a floating disconnected towel, a
+ * toilet missing its bowl, a blown-out mirror) that nobody building it
+ * could actually see. See docs/DECISIONS.md's round-12 entry for the full
+ * account, including what `gltf-transform inspect` showed about the file
+ * before any of this was written.
  *
- * That, plus ACES tone mapping and the post chain in ../postfx.ts, is the
- * honest answer to "make it ray traced". Real-time path tracing isn't on the
- * table in a browser, but IBL + ambient occlusion + soft shadows + bloom +
- * a filmic curve covers most of what people are actually reacting to when
- * they call a render "ray traced".
+ * What's unchanged from round 10/11: image-based lighting via
+ * `RoomEnvironment` + `PMREMGenerator` (real PBR materials -- and this
+ * model has plenty, per the inspect report: 82 materials, several with
+ * metallic-roughness + normal maps -- need an environment to reflect or
+ * they read as flat/black), ACES tone mapping, the four-time-of-day state
+ * machine, and the dust-mote particle system.
+ *
+ * What's gone: `floorplan.ts`'s real rooms/walls/doors/anchors, and with
+ * them the shell/furniture/materials modules that built and dressed them.
+ * The new model has no per-room data in it worth reading (generic
+ * `Object_0`, `Object_1`, ... mesh names, not `Kitchen_Counter`), so
+ * `floorplan.ts` now describes one big placeholder room sized to the
+ * model's real bounding box instead of nine real ones. Doors, the ceiling
+ * show/hide toggle, and room-level scene-state description are gone with
+ * it -- there's no reliable way to identify a door or a ceiling plane by
+ * name in this file, and no per-room boundaries to report a room from.
+ * Getting any of that back is follow-up work that needs someone who can
+ * actually see the loaded model to point out where the walls and doors
+ * are -- not something to guess at blind, same lesson as every lighting
+ * decision in this project's history.
  */
 
 import * as THREE from 'three';
+import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
 import {
   CEILING_H, CENTRE, FOOTPRINT, PATCHES, ANCHORS, ROOMS,
   roomAt, anchorNear,
   type NavPatch, type Anchor, type RoomId,
 } from './floorplan';
-import { createMaterials, disposeGeoCache, type MaterialLib } from './materials';
-import { buildShell, updateDoors, type DoorLeaf } from './shell';
-import { buildFurniture, drawScreen, type Furnishings } from './furniture';
+
+/** Where the user dropped the prebuilt apartment -- gitignored, same
+ * pattern as public/vrm/*.vrm. See public/apartment/README.txt. */
+const MODEL_PATH = '/apartment/twokinds_modern_trio_apartment.glb';
 
 export type TimeOfDay = 'dawn' | 'day' | 'dusk' | 'night';
 export const TIMES_OF_DAY: TimeOfDay[] = ['dawn', 'day', 'dusk', 'night'];
@@ -48,10 +67,6 @@ interface LightState {
   sunColor: THREE.Color;
   sunI: number;
   sunPos: THREE.Vector3;
-  /** Multiplier on every lamp in the flat. */
-  lampI: number;
-  /** Brightness of the fake daylight panels inside each window. */
-  windowI: number;
   /** IBL contribution. */
   envI: number;
   /** Bloom strength, read by postfx. */
@@ -64,7 +79,7 @@ function st(s: {
   sky: number; bg: number; fogNear: number; fogFar: number;
   hemiSky: number; hemiGround: number; hemiI: number;
   sunColor: number; sunI: number; sunPos: [number, number, number];
-  lampI: number; windowI: number; envI: number; bloom: number; exposure: number;
+  envI: number; bloom: number; exposure: number;
 }): LightState {
   return {
     sky: new THREE.Color(s.sky),
@@ -77,8 +92,6 @@ function st(s: {
     sunColor: new THREE.Color(s.sunColor),
     sunI: s.sunI,
     sunPos: new THREE.Vector3(...s.sunPos),
-    lampI: s.lampI,
-    windowI: s.windowI,
     envI: s.envI,
     bloom: s.bloom,
     exposure: s.exposure,
@@ -86,48 +99,52 @@ function st(s: {
 }
 
 /**
- * Four times of day. Intensities assume physically-correct punctual lights
- * (the modern three default) -- lamp `userData.base` values in furniture.ts
- * are in that same system, so a bedside lamp at base 1.5 with `lampI` 1.0 is
- * a real 1.5-intensity light, not a legacy-falloff number.
+ * Four times of day, rewritten from scratch for round 12 -- the old MODES
+ * table was tuned (twice, badly the first time -- see round 11) against
+ * this project's *own* hand-authored materials.ts. This is a real,
+ * unfamiliar PBR model with its own baseColor/metallicRoughness/normal/
+ * emissive textures and no history of anyone tuning against it. These
+ * numbers are a deliberately conservative starting guess -- kept every
+ * light contribution modest rather than stacking several near their max
+ * at once, precisely because of what happened last time -- not a verified
+ * result. There is currently zero visual reference for how this specific
+ * model's textures respond to any of this. Expect these to need real
+ * adjustment once someone can actually see it.
+ *
+ * Also worth noting from the inspect report: several materials here
+ * (`Glowy_Green`, `RGB_Material`, `Magic_Glow`, `red_glow`/`orange_glow`/
+ * `purple_glow`/`blue_glow`/`white_glow`, the various screens) carry their
+ * own emissive textures -- self-lit regardless of scene lighting. That's
+ * presumably load-bearing for the room's look (a "gamer den" aesthetic
+ * leans on practical/neon lighting, not just ambient fill), so night mode
+ * here is deliberately dim on the *scene* lights, leaning on those
+ * emissive materials to carry the room's visual interest instead of
+ * fighting them with a bright ambient.
  */
 const MODES: Record<TimeOfDay, LightState> = {
   dawn: st({
-    sky: 0xf0c6b4, bg: 0xe8bfae, fogNear: 14, fogFar: 46,
-    hemiSky: 0xffd8c0, hemiGround: 0x6a5a5e, hemiI: 0.55,
-    sunColor: 0xffb98a, sunI: 1.5, sunPos: [-13, 5.5, 11],
-    lampI: 0.35, windowI: 0.5, envI: 0.55, bloom: 0.5, exposure: 1.0,
+    sky: 0xf0c6b4, bg: 0xe8bfae, fogNear: 16, fogFar: 60,
+    hemiSky: 0xffd8c0, hemiGround: 0x6a5a5e, hemiI: 0.5,
+    sunColor: 0xffb98a, sunI: 1.4, sunPos: [CENTRE.x - 14, 8, CENTRE.z + 10],
+    envI: 0.5, bloom: 0.42, exposure: 1.0,
   }),
   day: st({
-    // Was sunI 3.1 / hemiI 0.95 / envI 1.0 / exposure 1.05 -- roughly 1.7-2x
-    // dawn's already-fine numbers on *three* separate light contributions at
-    // once, then pushed brighter still by exposure on top. ACES compresses
-    // highlights rather than hard-clipping them, but stacking that much
-    // radiance still reads as a blown-out white wash once it's through the
-    // curve -- which is exactly what the user's screenshot showed, and this
-    // is the default mode the scene boots into (see `let live = ...MODES.day`
-    // below), so it's the first thing anyone sees. Brought down to keep day
-    // the brightest time of day (still above dusk's 1.8/0.48/0.45) without
-    // the three components compounding into a wash, and exposure dropped
-    // slightly below the 1.0 baseline the other modes use to leave headroom
-    // for that compounding. Not verified on a screen in this sandbox --
-    // reasoned from the numbers and the ACES curve, not re-screenshotted.
-    sky: 0xbfd9ef, bg: 0xc9e0f2, fogNear: 22, fogFar: 70,
-    hemiSky: 0xf4f9ff, hemiGround: 0xa89880, hemiI: 0.68,
-    sunColor: 0xfff3e0, sunI: 2.0, sunPos: [-10, 14, 9],
-    lampI: 0.0, windowI: 1.0, envI: 0.68, bloom: 0.32, exposure: 0.95,
+    sky: 0xbfd9ef, bg: 0xc9e0f2, fogNear: 24, fogFar: 90,
+    hemiSky: 0xf4f9ff, hemiGround: 0xa89880, hemiI: 0.6,
+    sunColor: 0xfff3e0, sunI: 1.7, sunPos: [CENTRE.x - 12, 15, CENTRE.z + 8],
+    envI: 0.58, bloom: 0.28, exposure: 0.95,
   }),
   dusk: st({
-    sky: 0xe9a479, bg: 0xd9906d, fogNear: 12, fogFar: 40,
-    hemiSky: 0xffc094, hemiGround: 0x5a4650, hemiI: 0.48,
-    sunColor: 0xff9552, sunI: 1.8, sunPos: [-15, 3.2, 6],
-    lampI: 0.75, windowI: 0.42, envI: 0.45, bloom: 0.62, exposure: 1.0,
+    sky: 0xe9a479, bg: 0xd9906d, fogNear: 14, fogFar: 55,
+    hemiSky: 0xffc094, hemiGround: 0x5a4650, hemiI: 0.4,
+    sunColor: 0xff9552, sunI: 1.5, sunPos: [CENTRE.x - 16, 5, CENTRE.z + 4],
+    envI: 0.38, bloom: 0.5, exposure: 1.0,
   }),
   night: st({
-    sky: 0x1d1a30, bg: 0x141222, fogNear: 8, fogFar: 30,
-    hemiSky: 0x3a3a68, hemiGround: 0x14111f, hemiI: 0.22,
-    sunColor: 0x9fb4ff, sunI: 0.22, sunPos: [6, 11, -9],
-    lampI: 1.35, windowI: 0.1, envI: 0.16, bloom: 0.85, exposure: 1.1,
+    sky: 0x1d1a30, bg: 0x141222, fogNear: 9, fogFar: 40,
+    hemiSky: 0x3a3a68, hemiGround: 0x14111f, hemiI: 0.16,
+    sunColor: 0x9fb4ff, sunI: 0.12, sunPos: [CENTRE.x + 8, 10, CENTRE.z - 8],
+    envI: 0.12, bloom: 0.65, exposure: 1.0,
   }),
 };
 
@@ -136,7 +153,7 @@ function cloneState(s: LightState): LightState {
     sky: s.sky.clone(), bg: s.bg.clone(), fogNear: s.fogNear, fogFar: s.fogFar,
     hemiSky: s.hemiSky.clone(), hemiGround: s.hemiGround.clone(), hemiI: s.hemiI,
     sunColor: s.sunColor.clone(), sunI: s.sunI, sunPos: s.sunPos.clone(),
-    lampI: s.lampI, windowI: s.windowI, envI: s.envI, bloom: s.bloom, exposure: s.exposure,
+    envI: s.envI, bloom: s.bloom, exposure: s.exposure,
   };
 }
 
@@ -157,35 +174,53 @@ export interface ApartmentHandle {
   root: THREE.Group;
   patches: NavPatch[];
   anchors: Anchor[];
-  doors: DoorLeaf[];
-  /** Per-frame tick. `subject` is Luna's position, used for auto-doors. */
+  /** Per-frame tick. */
   update(dt: number, elapsed: number, subject: THREE.Vector3 | null): void;
   setTimeOfDay(t: TimeOfDay, instant?: boolean): void
   timeOfDay(): TimeOfDay;
   /** Current bloom strength / exposure for the post chain to follow. */
   bloomStrength(): number;
   exposure(): number;
-  /** Ask a door to open or shut; used by the character and by the visitor. */
-  requestDoor(id: string, open: boolean): void;
-  /** Show/hide every room's ceiling plane -- lets spectator mode fly a clear
-   * overhead view instead of relying on the backface-culling accident that
-   * otherwise hides them from directly above. */
-  setCeilingsVisible(v: boolean): void;
-  ceilingsVisible(): boolean;
   /** Human-readable state, for the persona channel. */
   describe(lunaPos: THREE.Vector3, visitorPos: THREE.Vector3 | null, visitorEmbodied: boolean): SceneState;
   dispose(): void;
 }
 
-export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer): ApartmentHandle {
+/** Frees every geometry/material/texture under a loaded glTF scene. Needed
+ * because this model didn't come from our own materials.ts (which had its
+ * own disposeGeoCache()) -- it's 35 textures and 82 materials we didn't
+ * create, so nothing else will clean them up. */
+function disposeModel(root: THREE.Object3D): void {
+  root.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    mesh.geometry?.dispose();
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const m of mats) {
+      if (!m) continue;
+      for (const key of ['map', 'normalMap', 'roughnessMap', 'metalnessMap', 'emissiveMap', 'aoMap'] as const) {
+        (m as unknown as Record<string, THREE.Texture | undefined>)[key]?.dispose();
+      }
+      m.dispose();
+    }
+  });
+}
+
+export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer): Promise<ApartmentHandle> {
   const root = new THREE.Group();
   root.name = 'apartment';
 
-  const lib: MaterialLib = createMaterials();
-  const shell = buildShell(lib);
-  const furn: Furnishings = buildFurniture(lib, CEILING_H);
-  root.add(shell.root);
-  root.add(furn.root);
+  const loader = new GLTFLoader();
+  const gltf = await loader.loadAsync(MODEL_PATH);
+  const model = gltf.scene;
+  model.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (mesh.isMesh) {
+      mesh.castShadow = true;
+      mesh.receiveShadow = true;
+    }
+  });
+  root.add(model);
   scene.add(root);
 
   // --- image-based lighting ------------------------------------------------
@@ -203,14 +238,17 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
   const sun = new THREE.DirectionalLight(0xffffff, 1);
   sun.castShadow = true;
   sun.shadow.mapSize.set(2048, 2048);
-  // Frustum sized to the flat's footprint, in metres, with headroom.
+  // Frustum sized to the model's real footprint (19.1m x 10.9m -- see
+  // floorplan.ts's FOOTPRINT comment for where those numbers come from),
+  // roughly 2x round 11's old-apartment-sized ±12, with margin for the
+  // sun's oblique angle.
   const cam = sun.shadow.camera;
-  cam.left = -12;
-  cam.right = 12;
-  cam.top = 12;
-  cam.bottom = -12;
+  cam.left = -16;
+  cam.right = 16;
+  cam.top = 16;
+  cam.bottom = -16;
   cam.near = 0.5;
-  cam.far = 46;
+  cam.far = 50;
   sun.shadow.bias = -0.0009;
   sun.shadow.normalBias = 0.022;
   sun.shadow.radius = 3;
@@ -220,22 +258,18 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
   sun.target = sunTarget;
   scene.add(sun);
 
-  // A soft interior bounce light. Without it the side of the room facing away
-  // from the windows goes flat -- the "many dark spaces" complaint about the
-  // previous build was mostly this plus the missing IBL.
-  const bounce = new THREE.DirectionalLight(0xffe9d2, 0.35);
+  // A soft interior bounce light, same role as round 10/11: keeps the side
+  // of the room facing away from the sun from going flat black.
+  const bounce = new THREE.DirectionalLight(0xffe9d2, 0.3);
   bounce.position.set(CENTRE.x + 7, 3.2, CENTRE.z - 6);
   bounce.castShadow = false;
   scene.add(bounce);
 
   // --- ambient motes, fixed --------------------------------------------------
-  // The old version put these in a Points object whose origin was the world
-  // origin while the geometry sat 10+ units away, then span it -- so they
-  // swept out a huge arc and left the flat entirely, which is the "particles
-  // shifted out of map" bug. Here the geometry is generated centred on the
-  // apartment and the object sits at the apartment's centre, so the same slow
-  // spin keeps them inside the rooms. They also drift vertically instead of
-  // only rotating, which reads better anyway.
+  // Unchanged from round 10/11 -- geometry generated centred on the
+  // apartment's real footprint, object positioned at the apartment's
+  // centre, so the slow spin + vertical drift stays inside the building
+  // instead of sweeping out of it.
   const MOTES = 220;
   const halfX = (FOOTPRINT.maxX - FOOTPRINT.minX) / 2;
   const halfZ = (FOOTPRINT.maxZ - FOOTPRINT.minZ) / 2;
@@ -294,20 +328,7 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
     sun.position.copy(live.sunPos);
     bounce.intensity = live.hemiI * 0.35;
     scene.environmentIntensity = live.envI;
-
-    for (const l of furn.lamps) l.intensity = (l.userData.base as number) * live.lampI;
-    for (const m of furn.lampGlow) m.emissiveIntensity = 0.05 + live.lampI * 1.6;
-    for (const p of shell.daylightPanels) {
-      const mat = p.material as THREE.MeshBasicMaterial;
-      mat.opacity = 0.45 * live.windowI;
-      p.visible = live.windowI > 0.02;
-    }
-    for (const gmat of shell.glazing) {
-      gmat.color.copy(live.sky).lerp(new THREE.Color(0xffffff), 0.35);
-    }
     moteMat.opacity = 0.05 + (1 - live.envI) * 0.35;
-    const outside = shell.root.getObjectByName('outside-shell') as THREE.Mesh | undefined;
-    if (outside) (outside.material as THREE.MeshBasicMaterial).color.copy(live.sky);
   }
 
   function setTimeOfDay(t: TimeOfDay, instant = false): void {
@@ -340,50 +361,10 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
     live.sunColor.copy(from.sunColor).lerp(to.sunColor, e);
     live.sunI = lerp(from.sunI, to.sunI, e);
     live.sunPos.copy(from.sunPos).lerp(to.sunPos, e);
-    live.lampI = lerp(from.lampI, to.lampI, e);
-    live.windowI = lerp(from.windowI, to.windowI, e);
     live.envI = lerp(from.envI, to.envI, e);
     live.bloom = lerp(from.bloom, to.bloom, e);
     live.exposure = lerp(from.exposure, to.exposure, e);
     apply();
-  }
-
-  // --- doors ---------------------------------------------------------------
-  const doorById = new Map(shell.doors.map((d) => [d.id, d]));
-  /** Doors opened because someone walked up to them, so they can shut again. */
-  const autoHeld = new Set<string>();
-
-  function requestDoor(id: string, open: boolean): void {
-    const d = doorById.get(id);
-    if (d) d.target = open ? 1 : 0;
-  }
-
-  /** Open any door the subject is close to; shut it once they've moved on. */
-  function proximityDoors(subject: THREE.Vector3 | null): void {
-    for (const d of shell.doors) {
-      if (!subject) {
-        if (autoHeld.has(d.id)) {
-          d.target = 0;
-          autoHeld.delete(d.id);
-        }
-        continue;
-      }
-      const dist = Math.hypot(subject.x - d.x, subject.z - d.z);
-      if (dist < 1.5) {
-        d.target = 1;
-        autoHeld.add(d.id);
-      } else if (dist > 2.3 && autoHeld.has(d.id)) {
-        d.target = 0;
-        autoHeld.delete(d.id);
-      }
-    }
-  }
-
-  // --- ceilings --------------------------------------------------------------
-  let ceilingsOn = true;
-  function setCeilingsVisible(v: boolean): void {
-    ceilingsOn = v;
-    for (const c of shell.ceilings) c.visible = v;
   }
 
   setTimeOfDay('day', true);
@@ -392,19 +373,13 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
     root,
     patches: PATCHES,
     anchors: ANCHORS,
-    doors: shell.doors,
     setTimeOfDay,
     timeOfDay: () => current,
     bloomStrength: () => live.bloom,
     exposure: () => live.exposure,
-    requestDoor,
-    setCeilingsVisible,
-    ceilingsVisible: () => ceilingsOn,
 
-    update(dt, elapsed, subject) {
+    update(dt, elapsed, _subject) {
       stepTransition(dt);
-      proximityDoors(subject);
-      updateDoors(shell.doors, dt);
 
       // motes: slow spin plus a gentle vertical bob
       motes.rotation.y += dt * 0.012;
@@ -415,13 +390,6 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
         arr.setY(i, y);
       }
       arr.needsUpdate = true;
-
-      // screens
-      for (const s of furn.screens) {
-        drawScreen(s.ctx, elapsed, s.hue);
-        s.tex.needsUpdate = true;
-      }
-      for (const f of furn.fans) f.blades.rotation.y += dt * f.speed;
     },
 
     describe(lunaPos, visitorPos, visitorEmbodied) {
@@ -444,8 +412,7 @@ export function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer
       moteTex.dispose();
       moteGeo.dispose();
       moteMat.dispose();
-      lib.dispose();
-      disposeGeoCache();
+      disposeModel(model);
     },
   };
 }

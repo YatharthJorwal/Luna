@@ -22,6 +22,12 @@ public/live2dcubismcore.min.js
 # public/vrm/README.txt (the setup note) but not the model itself.
 public/vrm/*.vrm
 
+# Round 12: the prebuilt apartment model (a Sketchfab download, ~40MB,
+# licensing not fully settled -- see docs/DECISIONS.md's round-12 entry).
+# Same reasoning as public/vrm/*.vrm: yours, not something to commit into
+# this repo. Keep public/apartment/README.txt, not the model itself.
+public/apartment/*.glb
+
 
 # Personal launcher scripts -- hardcode machine-specific absolute paths
 # (your GPT-SoVITS install location, etc.), so these stay local-only, same

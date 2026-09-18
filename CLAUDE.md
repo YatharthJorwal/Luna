@@ -202,13 +202,10 @@ five rooms, `index.ts` ties it together). Two new top-level modules:
   two-simulated-hour run of the real `WanderController` afterward
   reaches all five rooms and all nine named anchors with zero frames
   spent off walkable floor.
-**Still not verified: how any of it looks.** No GPU/browser in this
-sandbox, unchanged from every round before this one. The furniture
-layout is now geometrically self-consistent (checked by script, not
-eyeballed) but not aesthetically judged by anyone with eyes on a
-render — the TV's position in particular trades an ideal sofa sightline
-for actually fitting against a wall, which is worth a second look once
-this is on screen.
+**Round 12 replaced the procedural room entirely** (see below) — the
+furniture-layout/TV-sightline concerns this paragraph used to describe
+no longer apply to anything that exists in the codebase; kept as
+history, not current status.
 
 **Round 11: first real screenshots came back, two bugs fixed.** `MODES.day`
 in `src/apartment/index.ts` was stacking sun/hemisphere/environment
@@ -229,11 +226,66 @@ unrelated, unchanged code; everything else — the real scene graph,
 lighting state machine, ceiling array — genuine): the new day-mode
 numbers land correctly on the real light objects, a 90-frame night→day
 transition lerps to them without `NaN`, and toggling ceilings hides/
-shows exactly 5 meshes (one per room), not just type-checks clean. Full
-account: `docs/DECISIONS.md`'s round-11 entry. Still not verified: how
-any of it looks — no GPU/browser here, same as always.
+shows exactly 5 meshes (one per room), not just type-checks clean.
+**Superseded by round 12 below** — `shell.ts` and the ceiling toggle no
+longer exist.
 
-Full writeup for rounds 6-11 in `docs/DECISIONS.md`.
+**Round 12: the procedural apartment is gone, replaced with a prebuilt
+model.** Round 11's fix didn't fix the real problem — the next
+screenshots showed a UV-checker bathtub texture, a floating disconnected
+towel, a toilet with no bowl, a blown-out mirror. That's hand-authored
+procedural geometry and canvas textures built by someone who can't see
+the result; it doesn't converge by tuning numbers. `src/apartment/
+shell.ts`, `furniture.ts`, and `materials.ts` — the entire procedural
+room — are deleted. `src/apartment/index.ts` now loads a prebuilt
+`.glb` apartment (`public/apartment/twokinds_modern_trio_apartment.glb`,
+a Sketchfab download the user provided) through the same `GLTFLoader`
+already used for the VRM avatar — VRM is a glTF extension, so no new
+dependency. `buildApartment()` is now `async` (loading a file
+inherently is). `floorplan.ts` is reduced to one placeholder room/
+navmesh sized to the model's real measured bounding box (19.1m x 10.9m,
+2.78m ceiling — measured with `gltf-transform inspect`, not guessed),
+since the file has no per-room data worth reading: generic `Object_0`,
+`Object_1`, ... mesh names, not `Kitchen_Counter`. That's a real
+capability loss stated plainly, not hidden — no room-level scene-state,
+no doors, no wall-aware collision inside the footprint — until someone
+who can see the loaded model can point out real room/furniture
+positions. The round-11 ceiling toggle is gone with `shell.ts`. Camera
+spawn points and the sun's shadow-camera frustum were resized for the
+new, much larger real footprint.
+
+Verified further than any prior round managed: rather than faking the
+asset pipeline, this round loaded the *actual* 40MB file through
+three.js's real `GLTFLoader`, over a throwaway local HTTP server (needed
+because `GLTFLoader`'s `FileLoader` uses `fetch`, which requires an
+absolute URL — a relative `/apartment/...` path has no origin to resolve
+against outside a real page). Three small environment-only polyfills
+got it running in Node (a `ProgressEvent` stub, `self = globalThis`, and
+round 11's PMREMGenerator fake/canvas stub, for the same no-WebGL/no-
+real-canvas reasons as before). Results: **445 meshes, ~271,754
+triangles, 82 materials** — matching a direct `gltf-transform inspect`
+of the file exactly — assembled into a real `THREE.Scene` at the right
+position and scale (loaded bounding box matched the inspection to
+within centimetres). Both of the file's two `extensionsUsed`
+(`KHR_texture_transform`, `KHR_materials_transmission`) resolved with
+stock `GLTFLoader`, no extra decoder needed; confirmed no Draco/meshopt
+compression either, which would have needed one. The lighting state
+machine and the new single-room `describe()` both ran against the real
+loaded scene without throwing.
+
+**What's still not verified: any pixel of any texture.** Node has no
+image decoder — `GLTFLoader` logged 11 non-fatal "couldn't load texture"
+warnings for embedded images it has no way to decode outside a browser,
+expected and harmless, not evidence of a file problem. Whether any
+material looks right, whether the model's own emissive "glow" materials
+read the way its creator intended, whether this round's from-scratch
+lighting numbers over- or under-expose it — none of that can be checked
+from here. Also flagged, not resolved: the model's licensing (Sketchfab-
+sourced, webcomic-themed material names, license not independently
+confirmed — the user was told this plainly and chose to proceed; see
+`docs/DECISIONS.md`'s round-12 entry for the exact wording).
+
+Full writeup for rounds 6-12 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

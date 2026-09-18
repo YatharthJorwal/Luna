@@ -8,6 +8,7 @@ import {
   TIMES_OF_DAY,
   ANCHORS,
   CENTRE,
+  CEILING_H,
   type TimeOfDay,
   type ApartmentHandle,
   type NavPatch,
@@ -1123,11 +1124,7 @@ const TMP_AHEAD = new THREE.Vector3();
 const LOOK_BLEND = { value: 0 };
 
 const ROOM_LABELS: Record<string, string> = {
-  living: "the living room",
-  kitchen: "the kitchen",
-  hall: "the hallway",
-  bedroom: "her bedroom",
-  bathroom: "the bathroom",
+  apartment: "the apartment",
 };
 
 function isTypingTarget(el: Element | null): boolean {
@@ -1195,41 +1192,11 @@ function setupSceneControls(
     b.addEventListener("click", () => {
       rig.setMode(m);
       refreshCam();
-      applyCeilingVisibility();
     });
     camBtns.set(m, b);
     camRow.appendChild(b);
   }
   refreshCam();
-
-  // --- ceiling ---------------------------------------------------------------
-  // Only meaningful in spectator mode: visitor mode forces ceilings back on,
-  // since standing in a room under an open sky reads as broken, not useful.
-  // The preference persists across mode switches so re-entering spectator
-  // restores whatever the user last chose.
-  let ceilingHiddenPref = false;
-  const applyCeilingVisibility = (): void => {
-    apartment.setCeilingsVisible(rig.mode() === "visitor" ? true : !ceilingHiddenPref);
-  };
-  const ceilRow = row("ceiling");
-  const ceilBtns = new Map<boolean, HTMLButtonElement>();
-  const refreshCeil = (): void => {
-    for (const [hidden, b] of ceilBtns) b.classList.toggle("active", hidden === ceilingHiddenPref);
-  };
-  for (const [hidden, text] of [[false, "show"], [true, "hide"]] as const) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = text;
-    b.addEventListener("click", () => {
-      ceilingHiddenPref = hidden;
-      refreshCeil();
-      applyCeilingVisibility();
-    });
-    ceilBtns.set(hidden, b);
-    ceilRow.appendChild(b);
-  }
-  refreshCeil();
-  applyCeilingVisibility();
 
   // --- quality -------------------------------------------------------------
   const qRow = row("render");
@@ -1257,18 +1224,6 @@ function setupSceneControls(
     e.preventDefault();
     rig.setMode(rig.mode() === "spectator" ? "visitor" : "spectator");
     refreshCam();
-    applyCeilingVisibility();
-  });
-
-  // H toggles the ceiling preference directly, for flying around without
-  // reaching for the panel. Only visibly changes anything in spectator mode
-  // (see applyCeilingVisibility); harmless to press in visitor mode, it just
-  // updates the preference for next time you switch back.
-  window.addEventListener("keydown", (e) => {
-    if (e.code !== "KeyH" || isTypingTarget(document.activeElement)) return;
-    ceilingHiddenPref = !ceilingHiddenPref;
-    refreshCeil();
-    applyCeilingVisibility();
   });
 
   return { syncCamera: refreshCam };
@@ -1306,7 +1261,7 @@ async function boot(): Promise<void> {
   scene.fog = new THREE.Fog(0xc9e0f2, 22, 70);
 
   const camera = new THREE.PerspectiveCamera(55, window.innerWidth / window.innerHeight, 0.05, 160);
-  const apartment = buildApartment(scene, renderer);
+  const apartment = await buildApartment(scene, renderer);
 
   const postfx = createPostFX(renderer, scene, camera, "high");
 
@@ -1322,6 +1277,11 @@ async function boot(): Promise<void> {
   applyRestPose(vrm);
   // Spawn at a named anchor rather than a bare coordinate, so re-laying out
   // the apartment moves her with it instead of stranding her in a wall.
+  // Round 12: there's no 'sofa' anchor any more (no known furniture
+  // positions in the new model -- see floorplan.ts), so this always falls
+  // through to ANCHORS[0] ('centre') now. Left as a lookup-with-fallback
+  // rather than hardcoding ANCHORS[0] directly so a real 'sofa' anchor
+  // slots back in later without touching this line.
   const sofaAnchor = ANCHORS.find((a) => a.id === "sofa") ?? ANCHORS[0];
   vrm.scene.position.set(sofaAnchor.x, 0, sofaAnchor.z);
   vrm.scene.rotation.y = sofaAnchor.facing;
@@ -1430,12 +1390,18 @@ async function boot(): Promise<void> {
   const wander = new WanderController(apartment.patches, vrm.scene.position);
   character.setWalkableArea(walkable);
 
-  // Spectator starts just inside the hallway looking down the flat, which
-  // shows off the sightline through to the living room. Visitor mode drops
-  // you at the front door -- you arrive like a guest.
-  camera.position.set(CENTRE.x + 0.4, 1.65, CENTRE.z + 3.4);
+  // Round 12: this is now a prebuilt model this session has never seen
+  // rendered, so there's no known-good interior vantage point the way the
+  // old hand-authored floor plan had ("just inside the hallway looking
+  // down the flat"). Spectator starts pulled back and above the whole
+  // footprint instead -- guaranteed not to spawn embedded in a wall or a
+  // piece of furniture we don't know the position of, at the cost of not
+  // being a curated first shot. Visitor mode spawns at the footprint's
+  // centre for the same reason -- not a real "front door", just the one
+  // point guaranteed to fall inside the placeholder walkable rectangle.
+  camera.position.set(CENTRE.x, CEILING_H + 6, CENTRE.z + 12);
   const rig = createCameraRig(camera, renderer.domElement, walkable, {
-    x: 9.4, z: 5.85, yaw: Math.PI / 2,
+    x: CENTRE.x, z: CENTRE.z, yaw: Math.PI,
   });
   const idleGestures = new IdleGestureScheduler();
   const hudControls = setupSceneControls(apartment, postfx, rig);
@@ -1483,7 +1449,7 @@ async function boot(): Promise<void> {
       const sameRoom = s.visitorRoom === s.room;
       parts.push(sameRoom
         ? "You are in the room with her."
-        : `You are in ${ROOM_LABELS[s.visitorRoom ?? "hall"]}.`);
+        : `You are in ${ROOM_LABELS[s.visitorRoom ?? "apartment"]}.`);
     }
     hud.sendSceneState(parts.join(" "));
   }
