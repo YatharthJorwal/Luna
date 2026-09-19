@@ -4202,4 +4202,151 @@ changes needed), `src/camera-modes.ts` (eye height), `src/postfx.ts`
 `package-lock.json` (added `three-mesh-bvh`), and these docs. No changes to
 `index.html`/`src/main.ts`/`src/style.css`.
 
+## Round 14: round 13's own fixes shipped two new, worse bugs -- both found from the field, both fixed with evidence
+
+Round 13 shipped real collision and a fix for Luna's night darkness. Both
+were wrong in ways that only showed up once actually run: a screenshot and
+a plain description came back showing walking into any wall repeatedly
+teleporting to a different spot in the building, Luna doing the same
+("even luna is stuck"), Luna rendering as a solid white glowing silhouette
+at night, and the spectator camera moving far faster than intended. This
+round traced each one to an exact line of code, not a re-guess.
+
+### Bug 1: `WalkableArea.clamp()`'s fallback wasn't a fallback -- it was hit constantly, and it teleported
+
+Round 13's `clamp()`, for the rare case where even the axis-sliding
+attempts were blocked, stepped 75%/50%/25%/10% of the way from the blocked
+point toward `CENTRE` -- the geometric centre of the whole ~19m building --
+reasoning this would rarely run. Two things were wrong with that
+reasoning, both found by re-reading the actual call sites rather than
+re-guessing at the symptom:
+
+1. **`CharacterController.moveClamped()` (Luna's own per-step movement)
+   called `clamp()` unconditionally on every blocked step** -- it never had
+   the axis-decomposed sliding attempt `camera-modes.ts`'s `updateVisitor()`
+   uses first. So for her, `clamp()` wasn't a rare last resort at all; it
+   was the *only* thing standing between her and a wall, hit on
+   essentially every step near one.
+2. Even for `updateVisitor()`, where `clamp()` genuinely is a last resort
+   (tried only after the combined move AND both single-axis moves already
+   failed), that turned out not to be rare in practice: with acceleration/
+   friction smoothing on velocity (`ACCEL`/`FRICTION` lerp in
+   `camera-modes.ts`), even a single held key rarely produces perfectly
+   axis-aligned velocity, so grazing a wall at almost any angle can fail
+   all three attempts.
+
+The result, confirmed by the user's exact description ("walking into a
+wall teleports to a point beside the TV... again and again... other
+points too teleport you to different places, like beside the couch") --
+different starting walls landing at different fixed fractions of the way
+toward one shared centre point produces exactly that pattern: a handful of
+recurring "teleport spots," not a crash and not randomness.
+
+**Fix, in both `WalkableArea.clamp()` (`src/sandbox.ts`) and
+`CharacterController.moveClamped()` (`src/sandbox.ts`):**
+- `clamp()` no longer steps toward `CENTRE` at all. Once the rectangle-only
+  clamp point is confirmed still blocked, it searches a small ring around
+  *that* point instead -- radii from 0.08m to 0.6m in 12 directions per
+  ring -- and returns the first unblocked point found. Since the point
+  being resolved is only ever a few centimetres from wherever the mover
+  already was, the result reads as "stopped at the wall," never a jump.
+  Only in the genuinely-cornered case where nothing in that whole ring
+  search is clear does it fall back to the rectangle-only point, accepting
+  a small chance of clipping over freezing or jumping -- same trade-off
+  round 13 intended, just actually confined to a small area now.
+- `moveClamped()` gained the same axis-decomposed sliding attempt
+  `updateVisitor()` already had (try the full step, then X-only, then
+  Z-only, only reaching `clamp()` if all three fail) -- so she now reaches
+  the fallback about as rarely as the visitor camera does, instead of on
+  every blocked step.
+
+**Verified against the real file, not reasoned about in the abstract:**
+extracted the exact `WalkableArea` class source (not a re-implementation --
+the literal class text, via `sed`, wrapped in a small harness) and ran it
+against the real collision BVH built from the real model. Scanned outward
+from the building's centre until hitting real blocked geometry, then
+called `clamp()` on it: resolved to a point **0.16m away**. Broader check:
+every blocked point on a grid across the whole real footprint (67 blocked
+samples found) resolved to a point **at most 0.56m away** -- nowhere near
+the multi-metre jumps the centre-stepping version could produce. This is
+the same category of finding as round 13's floor-slab collision bug: only
+visible by actually running the real query against the real geometry, not
+by reading the code.
+
+### Bug 2: the fill light's near-field falloff was miscalibrated by roughly an order of magnitude
+
+Round 13's screenshot showed exactly what was reported: Luna as a solid
+white glowing silhouette at night, not merely "a bit bright." The cause is
+straightforward once the actual numbers are run: the fill light
+(`THREE.PointLight`) was positioned at `subject.y + 1.4` (chest height) and
+`0.35m` in front of her root -- close enough to her own body's surface
+(realistically 0.15-0.3m away) that physically-correct `PointLight`
+falloff (`intensity / distance^decay`) amplifies the nominal intensity by
+roughly **8x to 25x** at that range with `decay: 1.8`. Night's `fillI: 11`
+was therefore delivering something like 90-275 effective units of light at
+her skin -- for scale, the brightest any `MODES` entry ever asked of the
+sun directly is `1.7`. This wasn't a subtle miscalibration; it was
+multiple orders of magnitude off, entirely from underestimating how
+punishing point-light falloff gets at close range.
+
+**Fix:** repositioned the light to `subject.y + 2.3` (well above her ~1.6m
+height, versus chest-height-and-in-front before) so the minimum distance
+from light to body is closer to 2m regardless of exact pose, softened
+`decay` from `1.8` to `1.4` (less punishing if the distance ends up off
+again), extended `distance` from `3.2` to `5.5` to still reach her from
+further away, and cut every mode's `fillI` roughly 3-4x on top of the
+repositioning (night `11` -> `3`, dusk `6` -> `1.6`, dawn `4` -> `1.2`) as
+a safety margin rather than relying on the geometry fix alone. Deliberately
+erred toward *under*-lighting this time -- a slightly dim Luna is a far
+less jarring failure mode than a second glowing-ghost screenshot.
+
+**Not independently verified against a render** -- same limitation as
+every lighting number in this project's history. What's different this
+time is the reasoning is grounded in the actual falloff formula and the
+actual reported failure, not a fresh guess; if it's still off, it should
+at least be off by a much smaller margin.
+
+### Bug 3: "many things are still glowing"
+
+Round 13's `fixupMaterials()` only touched one emissive material (`screen`)
+by name, on the reasoning that the other emissive-heavy materials
+(`Sims_Screen`, `Desktop_Screen`, `RGB_Material`, the `*_glow` family) had
+looked fine in that round's footage. The user's report this round --
+"many things are still glowing," without naming specifics -- suggests
+either that reasoning didn't hold up under more use, or that round 13's
+massively-overexposed fill light was bleeding/blooming across nearby
+surfaces and making adjacent objects look like they were glowing too (a
+plausible secondary effect of Bug 2, not necessarily a separate problem).
+Without a fresh screenshot naming specific objects, guessing at more
+individual material names would be repeating the exact mistake this
+project has been trying to stop making.
+
+**Fix: a general safety net instead of more individual guesses.** Added a
+uniform cap in `fixupMaterials()`, applied after the named fixes, to
+*every* material in the model: if a material's peak effective emissive
+brightness (`max(emissive.r, g, b) * emissiveIntensity`) exceeds `0.85`,
+its `emissiveIntensity` is scaled down to bring it under that ceiling.
+This is harmless for anything already under the cap (everything fixed by
+name last round already lands there) and catches whatever else is still
+too hot without needing to know its name -- directly addresses "many
+things," plural and unspecified, rather than requiring another round of
+screenshot-driven whack-a-mole.
+
+### Smaller: spectator "lightspeed"
+
+Flagged as new; turned out to be pre-existing, untouched-by-round-13
+behavior: `camera-modes.ts`'s scroll wheel has always adjusted spectator
+fly speed (`flySpeed *= 0.88` or `1.14` per tick), clamped between `0.35`
+and `24`. Scrolling while looking around is an easy way to ratchet this up
+without meaning to. Whether or not that's what happened, `24` units/s
+crosses this building's real ~19m width in under a second, which reads as
+"lightspeed" regardless of cause -- the ceiling was lowered to `14`.
+
+### Scope note
+
+This round touched `src/apartment/index.ts` (fill light repositioning/
+retuning, general emissive cap), `src/camera-modes.ts` (fly-speed
+ceiling), `src/sandbox.ts` (`WalkableArea.clamp()` rewrite,
+`CharacterController.moveClamped()` axis-sliding), and these docs. No
+changes to `index.html`/`src/main.ts`/`src/style.css`.
 

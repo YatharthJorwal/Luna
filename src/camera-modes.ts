@@ -127,7 +127,15 @@ export function createCameraRig(
   const onWheel = (e: WheelEvent): void => {
     if (mode !== 'spectator') return;
     e.preventDefault();
-    flySpeed = THREE.MathUtils.clamp(flySpeed * (e.deltaY > 0 ? 0.88 : 1.14), 0.35, 24);
+    // Round 13 (feedback): "camera gained lightspeed in spectate mode."
+    // This logic is untouched by round 13's own changes -- flySpeed has
+    // always been scroll-adjustable, and scrolling while looking around is
+    // an easy way to ratchet it toward the old ceiling without meaning to.
+    // Still, 24 units/s crosses this building's real ~19m width in under a
+    // second, which reads as "lightspeed" regardless of how it got there --
+    // lowered the ceiling to something that stays fast without feeling
+    // broken at this building's actual scale.
+    flySpeed = THREE.MathUtils.clamp(flySpeed * (e.deltaY > 0 ? 0.88 : 1.14), 0.35, 14);
   };
   dom.addEventListener('wheel', onWheel, { passive: false });
 

@@ -370,29 +370,42 @@ class WalkableArea {
   }
 
   /** Nearest legal standing position to (x, z). Returns the input
-   * unchanged when it's already on walkable floor. Falls back to the
-   * rectangle-only clamp if every fallback below is also mesh-blocked --
-   * a rare corner case (see camera-modes.ts's updateVisitor: this only
-   * runs after the combined move AND both single-axis moves already
-   * failed), documented rather than hidden: a tiny amount of clipping is
-   * possible in that specific cornered situation rather than freezing the
-   * camera outright. */
+   * unchanged when it's already on walkable floor.
+   *
+   * Round 13 shipped a version that, when even the rectangle-clamped point
+   * was still mesh-blocked, stepped 75%/50%/25%/10% of the way toward the
+   * *building's* centre looking for clear ground -- reasoning it'd rarely
+   * run at all. Wrong on both counts: `CharacterController.moveClamped()`
+   * (Luna's own per-frame movement) calls `clamp()` on every blocked step,
+   * not just as a last resort, and even `updateVisitor()`'s last-resort
+   * path turned out to trigger constantly near any wall, not rarely. The
+   * result -- confirmed from the field, not reasoned -- was exactly
+   * "walking into a wall teleports me to a point beside the TV, over and
+   * over," and Luna doing the same. Fixed by searching a small ring around
+   * the *attempted* point instead of jumping toward the distant centre --
+   * that point is only ever a few centimetres from where whoever's moving
+   * already is, so the result reads as "stopped at the wall," never a
+   * jump across the room. */
   clamp(x: number, z: number): { x: number; z: number } {
-    let best = { x, z, d2: Infinity };
+    let rectX = x;
+    let rectZ = z;
+    let bestD2 = Infinity;
     for (const r of this.rects) {
       const c = WalkableArea.closestPointOn(r, x, z);
-      if (c.d2 === 0) break;
-      if (c.d2 < best.d2) best = c;
+      if (c.d2 === 0) { rectX = c.x; rectZ = c.z; bestD2 = 0; break; }
+      if (c.d2 < bestD2) { rectX = c.x; rectZ = c.z; bestD2 = c.d2; }
     }
-    if (!this.apartment.collidesAt(best.x, best.z)) return { x: best.x, z: best.z };
-    // Step back toward the footprint's centre in shrinking fractions,
-    // looking for the first unblocked point on that line.
-    for (const f of [0.75, 0.5, 0.25, 0.1]) {
-      const tx = THREE.MathUtils.lerp(best.x, CENTRE.x, f);
-      const tz = THREE.MathUtils.lerp(best.z, CENTRE.z, f);
-      if (!this.apartment.collidesAt(tx, tz)) return { x: tx, z: tz };
+    if (!this.apartment.collidesAt(rectX, rectZ)) return { x: rectX, z: rectZ };
+    for (let radius = 0.08; radius <= 0.6; radius += 0.08) {
+      for (let a = 0; a < Math.PI * 2; a += Math.PI / 6) {
+        const tx = rectX + Math.cos(a) * radius;
+        const tz = rectZ + Math.sin(a) * radius;
+        if (this.inRect(tx, tz) && !this.apartment.collidesAt(tx, tz)) return { x: tx, z: tz };
+      }
     }
-    return { x: best.x, z: best.z };
+    // Genuinely cornered (rare) -- hold the rectangle-only point even
+    // though it may still clip slightly, rather than jump or freeze.
+    return { x: rectX, z: rectZ };
   }
 }
 
@@ -1001,7 +1014,15 @@ class CharacterController {
   }
 
   /** Advance her position along `dir` by `step`, then pull her back onto
-   * walkable floor if that took her off it. */
+   * walkable floor if that took her off it. Same axis-decomposed sliding
+   * `camera-modes.ts`'s visitor movement uses -- previously this went
+   * straight to `walkable.clamp()` on every single step, blocked or not,
+   * which (combined with round 13's clamp() bug -- see WalkableArea's
+   * comment) meant she'd get yanked toward the building's centre on
+   * essentially every step near a wall, not just when genuinely cornered.
+   * Trying the full step, then each axis alone, first means she only ever
+   * reaches clamp() in the same rare cornered case the visitor camera
+   * does. */
   private moveClamped(dir: THREE.Vector3, step: number): void {
     const pos = this.vrm.scene.position;
     const nx = pos.x + dir.x * step;
@@ -1011,9 +1032,18 @@ class CharacterController {
       pos.z = nz;
       return;
     }
-    const safe = this.walkable.clamp(nx, nz);
-    pos.x = safe.x;
-    pos.z = safe.z;
+    if (this.walkable.contains(nx, nz)) {
+      pos.x = nx;
+      pos.z = nz;
+    } else if (this.walkable.contains(nx, pos.z)) {
+      pos.x = nx;
+    } else if (this.walkable.contains(pos.x, nz)) {
+      pos.z = nz;
+    } else {
+      const safe = this.walkable.clamp(nx, nz);
+      pos.x = safe.x;
+      pos.z = safe.z;
+    }
   }
 
   private beginWalkStart(): void {

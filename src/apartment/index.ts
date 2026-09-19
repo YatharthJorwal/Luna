@@ -135,7 +135,7 @@ const MODES: Record<TimeOfDay, LightState> = {
     sky: 0xf0c6b4, bg: 0xe8bfae, fogNear: 16, fogFar: 60,
     hemiSky: 0xffd8c0, hemiGround: 0x6a5a5e, hemiI: 0.48,
     sunColor: 0xffb98a, sunI: 1.3, sunPos: [CENTRE.x - 14, 8, CENTRE.z + 10],
-    envI: 0.45, bloom: 0.35, exposure: 1.0, fillI: 4, lightWindowI: 0.8,
+    envI: 0.45, bloom: 0.35, exposure: 1.0, fillI: 1.2, lightWindowI: 0.8,
   }),
   day: st({
     sky: 0xbfd9ef, bg: 0xc9e0f2, fogNear: 24, fogFar: 90,
@@ -147,13 +147,13 @@ const MODES: Record<TimeOfDay, LightState> = {
     sky: 0xe9a479, bg: 0xd9906d, fogNear: 14, fogFar: 55,
     hemiSky: 0xffc094, hemiGround: 0x5a4650, hemiI: 0.38,
     sunColor: 0xff9552, sunI: 1.3, sunPos: [CENTRE.x - 16, 5, CENTRE.z + 4],
-    envI: 0.34, bloom: 0.4, exposure: 1.0, fillI: 6, lightWindowI: 0.6,
+    envI: 0.34, bloom: 0.4, exposure: 1.0, fillI: 1.6, lightWindowI: 0.6,
   }),
   night: st({
     sky: 0x1d1a30, bg: 0x141222, fogNear: 9, fogFar: 40,
     hemiSky: 0x3a3a68, hemiGround: 0x14111f, hemiI: 0.16,
     sunColor: 0x9fb4ff, sunI: 0.12, sunPos: [CENTRE.x + 8, 10, CENTRE.z - 8],
-    envI: 0.1, bloom: 0.5, exposure: 1.0, fillI: 11, lightWindowI: 0.12,
+    envI: 0.1, bloom: 0.5, exposure: 1.0, fillI: 3, lightWindowI: 0.12,
   }),
 };
 
@@ -294,6 +294,23 @@ function fixupMaterials(model: THREE.Object3D): THREE.MeshStandardMaterial | nul
           break;
         default:
           break;
+      }
+      // General safety net, on top of the named fixes above: "many things
+      // are still glowing" came back after the screen-only fix, and the
+      // file has several more materials at or near spec-maximum emissive
+      // (Sims_Screen/Desktop_Screen/RGB_Material/the *_glow family all sit
+      // at (1,1,1)-ish -- see docs/DECISIONS.md's round-13 entry for the
+      // full dump) that weren't touched because nothing in the round-13
+      // footage specifically showed them blown out. Rather than keep
+      // whack-a-moling individual names off partial evidence, cap every
+      // material's *effective* emissive brightness (color x intensity)
+      // uniformly: harmless for anything already under the cap (most of
+      // the fixes above land well under it already), and catches whatever
+      // else is still glowing without needing to know its name.
+      if (std.emissive) {
+        const peak = Math.max(std.emissive.r, std.emissive.g, std.emissive.b) * std.emissiveIntensity;
+        const cap = 0.85;
+        if (peak > cap) std.emissiveIntensity *= cap / peak;
       }
     }
   });
@@ -439,12 +456,25 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
   // shadeColor that defaults to pure black wherever direct+hemisphere light
   // is too low. Keeping the room's own hemi/sun low at night for mood was
   // therefore also making HER nearly invisible, independent of anything
-  // wrong with the room. A short-range point light that follows her,
-  // decoupled from room mood lighting entirely, fixes that without
-  // fighting the room's own look -- same idea as a key/fill light on an
-  // actor being separate from set lighting. `distance` keeps it from
-  // meaningfully bleeding onto nearby walls/furniture.
-  const lunaFill = new THREE.PointLight(0xfff2e0, 0, 3.2, 1.8);
+  // wrong with the room. A point light that follows her, decoupled from
+  // room mood lighting entirely, fixes that without fighting the room's
+  // own look -- same idea as a key/fill light on an actor being separate
+  // from set lighting.
+  //
+  // Round 13 positioned this at subject.y + 1.4 (chest height) and 0.35m
+  // in front -- close enough to her own body surface, at intensity 11,
+  // that PointLight's physically-correct falloff (intensity / distance^
+  // decay) blew her out into a solid white ghost (confirmed from a real
+  // screenshot, not reasoned): at roughly 0.2-0.3m from light to skin and
+  // decay 1.8, the falloff factor alone is a 8-25x amplification on top of
+  // the nominal intensity. Moved well above her head instead (2.3m, versus
+  // her own ~1.6m height) so the minimum light-to-body distance is closer
+  // to 2m regardless of exact pose, `distance` extended to reach her from
+  // there, and `decay` softened (1.8 -> 1.4) so it's less punishing if the
+  // exact distance ends up a bit off again. Intensities cut hard
+  // (night 11 -> 4) on top of that repositioning, not instead of it --
+  // exact numbers are still a guess, just a much better-grounded one.
+  const lunaFill = new THREE.PointLight(0xfff2e0, 0, 5.5, 1.4);
   lunaFill.castShadow = false;
   scene.add(lunaFill);
 
@@ -569,7 +599,7 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
       stepTransition(dt);
 
       if (subject) {
-        lunaFill.position.set(subject.x, subject.y + 1.4, subject.z + 0.35);
+        lunaFill.position.set(subject.x, subject.y + 2.3, subject.z);
       }
 
       // motes: slow spin plus a gentle vertical bob

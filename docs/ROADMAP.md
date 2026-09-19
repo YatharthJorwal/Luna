@@ -553,10 +553,40 @@ awaiting on-machine confirmation · ⬜ not started)
   needs `WebGPURenderer`, not `WebGLRenderer`) with `THREE.SSRPass` named
   as the realistic next step if wanted. Full account, including every
   exact material value the fixes are based on:
-  `docs/DECISIONS.md`'s round-13 entry. Still not verified: how any of it
-  actually looks or feels to walk around in, and whether 54% of the
-  footprint reporting as collision-blocked is actually right or just
-  plausible-sounding.
+  `docs/DECISIONS.md`'s round-13 entry.
+  **Round 14: round 13's own fixes shipped two new, worse bugs, both
+  found from the field.** Walking into any wall repeatedly teleported to
+  one of a handful of fixed spots elsewhere in the building (Luna too —
+  "even luna is stuck"), and she rendered as a solid white glowing
+  silhouette at night. Root causes, both traced to an exact line rather
+  than re-guessed: `WalkableArea.clamp()`'s last-resort fallback stepped
+  toward the building's *centre* in big fractional jumps, reasoning it'd
+  rarely run — but `CharacterController.moveClamped()` (Luna's own
+  movement) called it on *every* blocked step with no sliding attempt
+  first, and velocity smoothing made the visitor camera's supposedly-rare
+  fallback common too. Fixed by searching a small ring (0.08–0.6m) around
+  the blocked point instead of jumping toward the centre, and giving her
+  movement the same axis-sliding the visitor camera already had.
+  Separately, the round-13 fill light was positioned close enough to her
+  own body (~0.2-0.3m) that physically-correct point-light falloff
+  amplified it 8-25x — an order-of-magnitude miscalibration, not a subtle
+  one. Fixed by moving it well above her head instead of at chest height,
+  softening falloff, and cutting intensity 3-4x on top of that. Also
+  added a general emissive-brightness cap (any material's peak emissive
+  above a ceiling gets scaled down) after "many things are still
+  glowing" suggested round 13's single-material fix wasn't broad enough,
+  and lowered the spectator fly-speed ceiling (pre-existing, scroll-wheel
+  adjustable, not touched by round 13, but 24 units/s across a real ~19m
+  building reads as "lightspeed" regardless of how it got there). The
+  clamp fix was verified against the real collision geometry, not just
+  reasoned about: the exact class source, run against the real file's
+  BVH, resolved every one of 67 real blocked test points to within 0.56m
+  — nowhere near the multi-metre jumps possible before. Full account in
+  `docs/DECISIONS.md`'s round-14 entry. Still not verified: how any of
+  this actually looks or feels now — no GPU/browser in this sandbox,
+  same as every round, and the fill-light retune in particular is a
+  best-effort correction to a confirmed-wrong number, not a confirmed-
+  right one.
 - ⬜ **Phase 11 — Work Mode (reversing "observe-and-advise only" for the
   shell).** A real scope change, not a bug fix: the user deliberately
   approved letting Luna actually *do* web-based tasks in the shell when
@@ -619,29 +649,37 @@ Still open:
   20-rectangle navmesh, the round-10 TV placement trade-off — all of it)
   with a prebuilt model loaded wholesale, because the procedural system
   was producing visibly broken results nobody building it could see (see
-  `docs/DECISIONS.md`'s round-12 entry). Round 13 then got the first real
-  usage feedback (video + screenshots) and fixed six real bugs found from
-  that evidence — Luna's MToon lighting, several materials rendering at
-  glTF's spec-default white, an over-wide bloom radius, and (the big one)
-  real wall/furniture collision via `three-mesh-bvh`, replacing the
-  no-collision placeholder rectangle. Full account:
-  `docs/DECISIONS.md`'s round-13 entry. What's still open now: real room
-  boundaries, door positions, and furniture-anchor locations for the model
-  are still unknown (it has no per-room data in it — generic mesh names,
-  not `Kitchen_Counter`) and can only be worked out by someone who can
-  actually see the loaded model point out where the walls and furniture
-  are — round 13's collision system knows about real geometry but still
-  has no concept of "rooms," so `floorplan.ts` is still one placeholder
-  region and sit/cook/read *animation* is still further off than before
-  round 12 (she wanders to generic scattered points, not real furniture).
-  Also still unverified: whether the round-13 lighting/material fixes
-  actually look right (reasoned from exact file data this time, a step up
-  from round 12's blind guess, but still never rendered by this session),
-  whether 54% of the footprint reporting collision-blocked is right or
-  just plausible-sounding, whether the three-height-sample collision
-  approximation produces any awkward stuck-on-furniture moments a full
-  capsule sweep wouldn't, and whether the model's licensing (a Sketchfab
-  download, not independently confirmed as reusable — see
-  `docs/DECISIONS.md`) is actually clear to keep building on. No
-  GPU/browser in the sandbox any of this was built in, same as always.
+  `docs/DECISIONS.md`'s round-12 entry). Round 13 got the first real
+  usage feedback and fixed six real bugs found from that evidence —
+  Luna's MToon lighting, several materials rendering at glTF's
+  spec-default white, an over-wide bloom radius, and real wall/furniture
+  collision via `three-mesh-bvh`. Round 14 then found round 13's own
+  collision and lighting fixes were themselves broken in the field — a
+  collision-fallback bug that teleported anyone (Luna included) to a
+  handful of fixed spots whenever they touched a wall, and a fill light
+  positioned close enough to blow her out into a solid white glow at
+  night — both traced to an exact cause and fixed; full account in
+  `docs/DECISIONS.md`'s round-14 entry. What's still open: real room
+  boundaries, door positions, and furniture-anchor locations for the
+  model are still unknown (it has no per-room data in it — generic mesh
+  names, not `Kitchen_Counter`) and can only be worked out by someone who
+  can actually see the loaded model point out where the walls and
+  furniture are — the collision system knows about real geometry but
+  still has no concept of "rooms," so `floorplan.ts` is still one
+  placeholder region and sit/cook/read *animation* is still further off
+  than before round 12 (she wanders to generic scattered points, not real
+  furniture). Also still unverified: whether round 14's fill-light retune
+  and broader emissive cap actually look right this time (grounded in the
+  confirmed failure mode now, rather than a fresh guess, but still never
+  rendered by this session), whether the collision ring-search fallback
+  feels natural to actually walk into (verified not to teleport, not
+  verified to feel good), whether 54% of the footprint reporting
+  collision-blocked is right or just plausible-sounding, whether the
+  three-height-sample collision approximation produces any awkward
+  stuck-on-furniture moments a full capsule sweep wouldn't, and whether
+  the model's licensing (a Sketchfab download, not independently
+  confirmed as reusable — see `docs/DECISIONS.md`) is actually clear to
+  keep building on. No GPU/browser in the sandbox any of this was built
+  in, same as always.
+
 

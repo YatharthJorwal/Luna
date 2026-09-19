@@ -42,123 +42,107 @@ full detail always in `docs/ROADMAP.md`):
 | 7 | VRM avatar migration (replaced Live2D) | ✅ |
 | 8 | Emotion system + expression control | ✅ |
 | 9 | UI reskin + persistent conversation-log panel | 🔶 backend verified for real, frontend only structurally verified |
-| 10 | Environments (the apartment) | 🔶 — real first-usage bugfixes this round, see below |
+| 10 | Environments (the apartment) | 🔶 — two rounds of real-usage bugfixes now, see below |
 | 11 | Work Mode (shell can act, not just advise) | ⬜ not started, fully scoped/approved |
 
 **Phase 10, specifically — where this session's work sits:** round 12
-swapped the procedural apartment for a prebuilt `.glb` model. This round
-(13) is the first real-usage feedback on that model — a video and
-screenshots came back showing real problems, all diagnosed from the
-actual file/shader source rather than guessed, and fixed. See "What this
-round did" below for the full list.
+swapped the procedural apartment for a prebuilt `.glb`. Round 13 was the
+first real-usage bugfix pass (lighting, materials, added real collision).
+This round (14) found that round 13's own fixes were themselves broken —
+a collision-fallback bug and a badly-miscalibrated light — both now fixed
+and verified against the real file where possible. **Nothing from round
+13 or 14 has been confirmed to actually look/feel right yet** — every
+round so far has found new problems the moment it actually ran.
 
-## What this round did (round 13)
+## What this round did (round 14)
 
-The user sent a 47-second video (`ffmpeg`-extracted frames were actually
-looked at) plus screenshots of the round-12 apartment running for real,
-with a direct list of complaints: white furniture glowing absurdly by
-day, weird/very-dark lighting on Luna at night, no wall or furniture
-collision ("yes we clip"), a "walking in void" patch, a request to lower
-visitor eye height, make the dust particles more "dreamy," and a question
-about literal ray-traced reflections.
+The user ran round 13's build and reported, in one message: walking into
+any wall repeatedly teleports to a fixed spot elsewhere in the building
+("beside the TV... again and again"), other spots teleport elsewhere too
+("like beside the couch"), Luna is stuck the same way, she's "fucking
+ethereal" (a screenshot showed her as a solid white glowing silhouette at
+night), the spectator camera "gained lightspeed," and "many things are
+still glowing."
 
-Because the original `.glb` upload was still sitting in this sandbox from
-earlier in the conversation, this round diagnosed from real evidence —
-the actual glTF JSON (parsed by hand) and the actual
-`@pixiv/three-vrm-materials-mtoon` shader source — rather than reasoning
-from first principles the way rounds 11/12 had to.
+1. **The teleport bug (the serious one).** Traced to
+   `WalkableArea.clamp()`'s last-resort fallback, which stepped toward the
+   building's geometric centre in big fractional jumps when blocked,
+   reasoning this would rarely run. It wasn't rare: `CharacterController.
+   moveClamped()` (Luna's own per-step movement) called `clamp()`
+   unconditionally on *every* blocked step, never trying to slide around
+   an obstacle first the way the visitor camera does. Fixed both: `clamp()`
+   now searches a small ring (0.08–0.6m) around the blocked point instead
+   of jumping toward the centre, and Luna's movement gained the same
+   axis-decomposed sliding attempt the visitor camera already had.
+   **Verified against the real file**: extracted the literal `WalkableArea`
+   class source and ran it against the real collision BVH — 67 real
+   blocked points across the whole footprint all resolved within 0.56m,
+   nowhere near the multi-metre jumps possible before.
+2. **The ethereal glow.** The round-13 fill light was positioned close
+   enough to her own body (chest height, ~0.35m in front — roughly
+   0.2-0.3m from actual skin) that physically-correct point-light falloff
+   amplified its intensity by roughly 8-25x. Night's `fillI: 11` was
+   delivering something like 90-275 effective units at her skin, against
+   a sun that never exceeds 1.7 in this system — an order-of-magnitude
+   miscalibration, not a subtle one. Fixed: repositioned well above her
+   head (2.3m vs 1.4m), softened falloff, extended reach, and cut every
+   mode's intensity 3-4x on top of the repositioning. Deliberately erred
+   toward under-lighting this time.
+3. **"Many things are still glowing."** Round 13 only fixed one named
+   emissive material. Rather than guess at more names without fresh
+   evidence of which ones, added a general safety net: any material whose
+   peak emissive brightness exceeds a ceiling gets scaled down
+   automatically, regardless of name.
+4. **Spectator "lightspeed."** Investigated and found this is pre-existing,
+   scroll-wheel-adjustable behavior, untouched by round 13 — but 24
+   units/s across this building's real ~19m width does read as
+   "lightspeed" regardless of cause, so the ceiling was lowered to 14.
 
-1. **Luna's darkness (the big find).** Her MToon shader has no
-   `envmap_fragment` include at all — confirmed in the installed
-   package's own source, not assumed — so she never benefits from
-   `scene.environment`/IBL, only hemisphere + directional light, and
-   blends toward a `shadeColor` that defaults to pure black wherever that
-   light is too low. Round 12 deliberately kept night hemi/sun dim for
-   the *room's* mood. That was independently starving her of light, with
-   zero relation to anything wrong in the room. Fixed with a dedicated
-   `THREE.PointLight` (`lunaFill` in `apartment/index.ts`) that follows
-   her position every frame, short-range so it doesn't bleed onto nearby
-   walls/furniture — decoupled from room mood lighting entirely.
-2. **White-material glow.** Parsed the file's raw glTF JSON directly:
-   `Porcelain_-_White` (toilet/sink) and `Couch_Beige`/`Couch_BeigeDark`
-   (sofa) have **no `baseColorFactor` at all** — rendering at glTF's
-   spec-default pure white despite their names. `Gold` (door hardware) is
-   fully metallic at 0.15 roughness — near-mirror. Fixed by name in a new
-   `fixupMaterials()` — five materials out of 82, each traced to an exact
-   number in the file.
-3. **Bloom ring artifacts** (the blown-out TV, a lamp's halo in one
-   frame). `postfx.ts`'s bloom radius (0.7, tuned for round 10/11's
-   softer procedural lights) was too wide for this model's small bright
-   props. Narrowed to 0.35, threshold nudged up.
-4. **Real wall/furniture collision** — the single biggest addition. Added
-   `three-mesh-bvh` (an established three.js addon) to build one
-   collision mesh from the whole loaded model at load time;
-   `ApartmentHandle.collidesAt(x,z)` queries it. `camera-modes.ts`'s
-   existing sliding-movement code needed *zero* changes to start using
-   real collision, since it was already written against an interface
-   (`Clampable`) rather than the rectangle implementation directly.
-   **A real bug was found and fixed by actually running this against the
-   real file**: the first height-sample set was catching the floor slab
-   itself as an obstruction, blocking 90% of the whole building; fixed
-   (54% blocked after) once the absurd number prompted checking the
-   geometry.
-5. **Smaller fixes**: eye height 1.62m → 1.5m; dust motes bigger/more
-   numerous/more opaque; confirmed windows already show "nothing
-   outside" (true already, no change needed); explained plainly that
-   literal ray-traced reflections aren't feasible in `WebGLRenderer`
-   (would need `WebGPURenderer`) and named `THREE.SSRPass` as the
-   realistic next step if ever wanted, rather than silently building
-   something else and calling it ray tracing.
-
-**Verification**: both production builds clean. Beyond that, extended
-round 12's real-`GLTFLoader`-over-local-server harness to actually
-exercise the new collision system and material fixups against the real
-file — this is what caught the floor-slab collision bug, and confirmed
-each material correction lands on the real loaded material instance
-(not just compiles). **Still not verified, same as always: how any of it
-actually looks or feels to walk around in** — no GPU/browser in this
-sandbox. Full account with every exact material value:
-`docs/DECISIONS.md`'s round-13 entry.
+**Verification**: both production builds clean. The collision fix was
+tested against the real file's actual BVH (see above) — not just reasoned
+about. The fill-light fix is grounded in the actual falloff formula and
+the actual reported failure, but — like every lighting number in this
+project — not confirmed against a real render.
 
 ## Repo/git housekeeping
 
 This sandbox has no direct push access to the user's GitHub — work
-leaves as a git bundle, applied on the user's machine via `git fetch
-<bundle> main:main-mirror && git merge main-mirror && git push origin
-main` (confirmed correct syntax — note it's `main:main-mirror`, not
-`main-mirror:main-mirror`, since the bundle's ref is always named `main`;
-bundle handed over at a `C:\Users\User\Downloads\<filename>` path). This
-round's bundle touches `src/apartment/index.ts` (material fixups,
-collision, fill light, revised `MODES`), `src/camera-modes.ts` (eye
-height), `src/postfx.ts` (bloom), `src/sandbox.ts` (collision wiring),
-`package.json`/`package-lock.json` (added `three-mesh-bvh`), and these
-docs. It does **not** touch the `.glb` model itself.
+leaves as a git bundle, applied via `git fetch <bundle> main:main-mirror
+&& git merge main-mirror && git push origin main` (confirmed correct
+syntax — note `main:main-mirror`, not `main-mirror:main-mirror`; bundle
+handed over at `C:\Users\User\Downloads\<filename>`). **Important:**
+round 13's bundle added a new dependency (`three-mesh-bvh`) and the user
+hit exactly the expected snag — merging a bundle updates `package.json`/
+`package-lock.json` but doesn't run `npm install` for you. Worth
+reminding on every bundle that changes dependencies: run `npm install`
+after merging, before `npm run sandbox`. This round's bundle does not add
+any new dependencies.
 
 ## Recent issues
 
-None open from round 12 in the "did it load" sense — it did, and got far
-enough to generate real, specific, fixable feedback, which is what this
-round addressed. What's genuinely unknown right now: whether any of
-round 13's fixes actually look/feel right, since none of it has been
-re-run by the user yet as of this writeup.
+Two serious ones from round 13 fixed this round (teleport bug, ethereal
+glow) — see above. Both are verified as *not reproducing the exact
+reported symptom* against real data where that was possible (the
+collision one, concretely; the lighting one only as far as "the math that
+caused it is now very different"). Neither has been re-confirmed by the
+user running it again yet.
 
 ## Outstanding stuff
 
 From `docs/ROADMAP.md`'s "Still open" list, current as of this write-up:
-- **Confirm round 13's fixes actually work** — lighting (Luna visible?
-  white materials toned down without looking wrong? TV not blown out?),
-  collision (does 54%-blocked feel right, any getting-stuck spots?), the
-  smaller stuff (eye height, motes).
+- **Confirm round 14's fixes actually work** — this is the priority.
+  Does collision feel reasonable to walk around in now (not just
+  "doesn't teleport")? Is Luna visible without looking artificially lit?
+  Did the broader emissive cap actually catch what "many things...
+  glowing" referred to?
 - Real room boundaries, door positions, and furniture-anchor locations —
   still unknown, still needs someone who can see the loaded model to
-  identify. Round 13's collision system knows about real geometry but
-  still has no concept of "rooms."
-- Sit/cook/read animation — still further off than pre-round-12, since
-  there are no known real furniture positions to animate toward.
+  identify.
+- Sit/cook/read animation — still blocked on the above.
 - Confirming the model's actual Sketchfab license is one of the
   "fine to use" ones (CC0/CC-BY/CC-BY-SA), given the repo is public.
-- If real-time reflections ever matter enough to be worth the cost:
-  `THREE.SSRPass` is the concrete next step, not attempted this round.
+- If real-time reflections ever matter enough: `THREE.SSRPass` is the
+  concrete next step, not attempted.
 - Task Guide Mode tuning: screenshot interval, nagging aggressiveness.
 - Phase 4: retest on the real machine after the `SYSTEM_PROMPT` fix.
 - Voice reference rights for TTS cloning — on the user to confirm.
@@ -166,15 +150,17 @@ From `docs/ROADMAP.md`'s "Still open" list, current as of this write-up:
 
 ## Future goal
 
-Immediate: get round 13's fixes in front of the user's actual screen.
-Lighting and collision are both "reasoned from real evidence this time,"
-which is a step up from round 12's blind guess, but neither has been
-seen rendered by anyone yet.
+Immediate: get round 14's fixes in front of the user's actual screen.
+Two rounds in a row now have shipped fixes that looked reasonable in code
+and turned out wrong the moment they actually ran — worth being upfront
+that this pattern may continue at least once more before the apartment
+stabilizes, given the complete lack of any way to render or preview
+anything from this sandbox.
 
-Medium-term: once there's real feedback on round 13, work out real room
-boundaries/anchors/doors for the model (needs the user's eyes), then
-pick back up sit/cook/read animation. Separately, get Phase 4 confirmed
-end-to-end on the real machine.
+Medium-term: once collision/lighting are actually confirmed stable, work
+out real room boundaries/anchors/doors for the model (needs the user's
+eyes), then pick back up sit/cook/read animation. Separately, get Phase 4
+confirmed end-to-end on the real machine.
 
 Overarching: a genuinely useful always-on desktop companion — Task Guide
 Mode as the core loop, eventually extending into Work Mode (Phase 11)

@@ -345,7 +345,54 @@ always: how any of it looks or feels to walk around in** — no GPU/browser
 in this sandbox. Full account, every exact material value, in
 `docs/DECISIONS.md`'s round-13 entry.
 
-Full writeup for rounds 6-13 in `docs/DECISIONS.md`.
+**Round 14: round 13's own fixes shipped two new, worse bugs — both found
+from the field.** Walking into any wall repeatedly teleported to one of a
+handful of fixed spots elsewhere in the building, Luna included ("even
+luna is stuck"), and she rendered as a solid white glowing silhouette at
+night. Both traced to an exact cause, not re-guessed:
+
+- **The teleport bug**: `WalkableArea.clamp()`'s last-resort fallback
+  stepped toward the building's *centre* in big fractional jumps
+  (75%/50%/25%/10%), reasoning this would rarely run. Wrong twice over —
+  `CharacterController.moveClamped()` (Luna's own movement) called
+  `clamp()` on *every* blocked step with no sliding attempt first, so for
+  her it wasn't a rare fallback at all; and velocity smoothing
+  (accel/friction lerp) meant the visitor camera's supposedly-rare
+  fallback triggered on almost any wall contact too. Fixed by searching a
+  small ring (0.08–0.6m) around the blocked point instead of jumping
+  toward the centre, and giving her movement the same axis-decomposed
+  sliding attempt the visitor camera already had. **Verified against the
+  real collision geometry**: extracted the exact `WalkableArea` class
+  source (the literal text, not a re-implementation) and ran it against
+  the real file's BVH — every one of 67 real blocked test points across
+  the whole footprint resolved to within 0.56m, nowhere near the
+  multi-metre jumps possible before.
+- **The ethereal glow**: round 13's fill light was positioned at chest
+  height, ~0.35m in front of her — close enough to her own body surface
+  (~0.2-0.3m) that physically-correct point-light falloff
+  (`intensity/distance^decay`) amplified the nominal intensity by roughly
+  8-25x. Night's `fillI: 11` was delivering something like 90-275
+  effective units at her skin, against a sun that never exceeds `1.7` —
+  not a subtle miscalibration, off by orders of magnitude. Fixed by
+  repositioning well above her head (2.3m vs 1.4m), softening falloff
+  (`decay` 1.8 → 1.4), extending reach (`distance` 3.2 → 5.5), and cutting
+  every mode's intensity 3-4x on top of the repositioning — erring toward
+  under-lighting this time, since a dim Luna is a far less jarring failure
+  than a second glowing-ghost screenshot.
+- Also: a general emissive-brightness cap added (any material's peak
+  emissive above a ceiling gets scaled down) after "many things are still
+  glowing" suggested round 13's single-material fix wasn't broad enough —
+  a safety net instead of more individual guesses. And the spectator
+  fly-speed ceiling lowered (24 → 14 units/s) — pre-existing, scroll-wheel
+  adjustable, not touched by round 13, but 24 units/s across this
+  building's real ~19m width reads as "lightspeed" regardless of cause.
+
+**Still not verified: how any of this actually looks or feels now** — no
+GPU/browser in this sandbox, and the fill-light retune in particular is a
+best-effort correction to a *confirmed-wrong* number, not a confirmed-right
+one. Full account in `docs/DECISIONS.md`'s round-14 entry.
+
+Full writeup for rounds 6-14 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map
