@@ -75,7 +75,13 @@ export function createPostFX(
   gtao.updateGtaoMaterial(gtaoParams);
   composer.addPass(gtao);
 
-  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.3, 0.7, 0.92);
+  // Round 13: radius was 0.7, which on this apartment's small bright props
+  // (light fixtures, screens) was producing wide, ringed halos rather than
+  // a tight glow -- classic UnrealBloomPass over-blur on a small very-bright
+  // source. Narrowed to 0.35 and threshold nudged up (0.92 -> 0.96) so only
+  // genuinely blown-out pixels bloom, not merely bright ones. Per-mode
+  // strength (setBloom, below) still does the day/night intensity work.
+  const bloom = new UnrealBloomPass(new THREE.Vector2(w, h), 0.3, 0.35, 0.96);
   composer.addPass(bloom);
 
   const smaa = new SMAAPass();

@@ -522,6 +522,41 @@ awaiting on-machine confirmation · ⬜ not started)
   in Node); full account, including the licensing caveat on the model
   itself (Sketchfab-sourced, webcomic-themed, license not independently
   verified), in `docs/DECISIONS.md`'s round-12 entry.
+  **Round 13: first real usage of the round-12 model, six real bugs found
+  with evidence.** A video + screenshots came back showing: Luna nearly
+  black in every frame, a blown-out TV with bloom ring artifacts, no wall
+  or furniture collision ("we clip"), and a "walking in void" patch. Since
+  the original `.glb` was still in the sandbox, this round diagnosed from
+  the actual file and actual shader source rather than guessing: Luna's
+  MToon shader has no `envmap_fragment` include at all (confirmed in
+  `@pixiv/three-vrm-materials-mtoon`'s own source) and blends toward a
+  black `shadeColor` wherever hemi+sun are too low, so round 12's dim night
+  ambient (chosen for the *room's* mood) was independently starving her of
+  light with no relation to anything wrong in the room. Fixed with a
+  dedicated short-range point light that follows her, decoupled from room
+  mood lighting. Separately, parsing the file's own glTF JSON directly
+  found that `Porcelain_-_White`/`Couch_Beige` (toilet/sofa) have no real
+  `baseColorFactor` at all — rendering at glTF's spec-default pure white —
+  and `Gold` (door hardware) is fully metallic at 0.15 roughness, all
+  fixed by name. Bloom radius (0.7 → 0.35) was too wide for this model's
+  small bright props, causing the ring-artifact halos. Real wall/furniture
+  collision added via `three-mesh-bvh` (an established addon, not
+  hand-rolled) — merges the whole model into one collision mesh at load
+  time; `camera-modes.ts`'s existing sliding-movement code needed zero
+  changes since it was already written against an interface, not a
+  rectangle directly. A real bug (the first collision-height set was
+  catching the floor slab itself, blocking 90% of the building) was found
+  and fixed by actually running the query against the real file rather
+  than reasoning about the numbers. Also: eye height lowered, dust motes
+  made more prominent, and a plain explanation of why literal ray-traced
+  reflections aren't feasible in WebGL (real-time hardware ray tracing
+  needs `WebGPURenderer`, not `WebGLRenderer`) with `THREE.SSRPass` named
+  as the realistic next step if wanted. Full account, including every
+  exact material value the fixes are based on:
+  `docs/DECISIONS.md`'s round-13 entry. Still not verified: how any of it
+  actually looks or feels to walk around in, and whether 54% of the
+  footprint reporting as collision-blocked is actually right or just
+  plausible-sounding.
 - ⬜ **Phase 11 — Work Mode (reversing "observe-and-advise only" for the
   shell).** A real scope change, not a bug fix: the user deliberately
   approved letting Luna actually *do* web-based tasks in the shell when
@@ -584,22 +619,29 @@ Still open:
   20-rectangle navmesh, the round-10 TV placement trade-off — all of it)
   with a prebuilt model loaded wholesale, because the procedural system
   was producing visibly broken results nobody building it could see (see
-  `docs/DECISIONS.md`'s round-12 entry). What's open now is different
-  from what was open before: real room boundaries, door positions, and
-  furniture-anchor locations for the *new* model are unknown (it has no
-  per-room data in it — generic mesh names, not `Kitchen_Counter`) and
-  can only be worked out by someone who can actually see the loaded
-  model point out where the walls and furniture are. Until then:
-  `floorplan.ts` is one placeholder room, there are no doors, and
-  sit/cook/read *animation* is further off than before (she wanders to
-  generic scattered points, not real furniture). Also unverified,
-  further than "how it looks": whether the new model's own PBR textures
-  and emissive "glow" materials read right under this round's from-
-  scratch lighting numbers, and whether the model's licensing (a
-  Sketchfab download, not independently confirmed as reusable — see
+  `docs/DECISIONS.md`'s round-12 entry). Round 13 then got the first real
+  usage feedback (video + screenshots) and fixed six real bugs found from
+  that evidence — Luna's MToon lighting, several materials rendering at
+  glTF's spec-default white, an over-wide bloom radius, and (the big one)
+  real wall/furniture collision via `three-mesh-bvh`, replacing the
+  no-collision placeholder rectangle. Full account:
+  `docs/DECISIONS.md`'s round-13 entry. What's still open now: real room
+  boundaries, door positions, and furniture-anchor locations for the model
+  are still unknown (it has no per-room data in it — generic mesh names,
+  not `Kitchen_Counter`) and can only be worked out by someone who can
+  actually see the loaded model point out where the walls and furniture
+  are — round 13's collision system knows about real geometry but still
+  has no concept of "rooms," so `floorplan.ts` is still one placeholder
+  region and sit/cook/read *animation* is still further off than before
+  round 12 (she wanders to generic scattered points, not real furniture).
+  Also still unverified: whether the round-13 lighting/material fixes
+  actually look right (reasoned from exact file data this time, a step up
+  from round 12's blind guess, but still never rendered by this session),
+  whether 54% of the footprint reporting collision-blocked is right or
+  just plausible-sounding, whether the three-height-sample collision
+  approximation produces any awkward stuck-on-furniture moments a full
+  capsule sweep wouldn't, and whether the model's licensing (a Sketchfab
+  download, not independently confirmed as reusable — see
   `docs/DECISIONS.md`) is actually clear to keep building on. No
-  GPU/browser in the sandbox any of this was built in, same as always —
-  round 12 got further than prior rounds by loading the real file
-  through the real `GLTFLoader` and confirming geometry/materials
-  assemble correctly, but pixel-level appearance is still nobody's
-  verified.
+  GPU/browser in the sandbox any of this was built in, same as always.
+

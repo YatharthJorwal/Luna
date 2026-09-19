@@ -3906,3 +3906,300 @@ This round touched `src/apartment/floorplan.ts` (rewritten),
 `src/sandbox.ts`, added `.gitignore`/`public/apartment/README.txt`, and
 these docs. No changes to `index.html`/`src/main.ts`/`src/style.css`.
 
+## Round 13: first real usage of the round-12 model -- six real bugs, found with evidence not guesses
+
+Round 12 got the prebuilt apartment loading and rendering, verified as far
+as this sandbox can verify anything (structural loading through the real
+`GLTFLoader`, no pixels). This round is the first time it actually ran on
+the user's machine: a 47-second video plus five screenshots came back,
+showing several real problems. Unlike round 11 (reasoned from numbers
+alone) and round 12 (reasoned from an inspect report's summary), this round
+had the actual video to look at (frames pulled with `ffmpeg`) and, since
+the original `.glb` upload was still sitting in this sandbox from the
+conversation that produced it, the actual glTF JSON to parse by hand for
+exact material values -- so most of what follows is diagnosed from evidence,
+not inferred from first principles.
+
+### What the video actually showed
+
+Pulling frames every 2 seconds (`ffmpeg -vf fps=1/2`) and looking at them
+directly:
+- The kitchen, gaming bedroom, and living room all render with real detail
+  and generally reasonable lighting -- textures, furniture, and screens
+  mostly look fine. This mattered: it ruled out "textures aren't loading in
+  the browser" as an explanation for anything else (Node's lack of an image
+  decoder, flagged as a real gap in round 12's verification, turned out not
+  to matter here -- real browsers decode images fine).
+- Luna is a near-total black silhouette in every single frame, day or
+  night, including standing directly in front of a very bright TV.
+- The living-room TV screen is blown out to a solid white glow with visible
+  ring-artifact banding at its edges -- a classic UnrealBloomPass symptom
+  on a very bright small source, not just "the screen is bright."
+- One frame (spectator/dawn) shows a large soft-edged concentric-ring halo
+  around a floor lamp -- the same bloom-ringing symptom, elsewhere.
+- One frame shows Luna's whole body clipped directly into a white sofa's
+  cushions.
+- One frame, deep in a corner near some moving boxes, shows a large flat
+  gray plane with a visible hard seam filling the right half of the frame --
+  consistent with the user's "walking in void" description.
+
+### Root cause 1: Luna's MToon shader doesn't read the room's ambient lighting at all
+
+This is the single most useful thing this round found, because it's not a
+guess -- it's read straight out of `@pixiv/three-vrm-materials-mtoon`'s
+actual shader source
+(`node_modules/@pixiv/three-vrm-materials-mtoon/lib/three-vrm-materials-mtoon.module.js`):
+the fragment shader has `// #include <envmap_fragment>` -- commented out.
+MToon materials (her avatar's shading model) never sample
+`scene.environment` under any circumstances. Every bit of round 12's `envI`
+tuning, and everything in round 11 before it, was scaling a light
+contribution that only ever reached the apartment's own PBR furniture --
+never her.
+
+Worse: the shader's `getDiffuse()` function blends between `diffuseColor`
+and `shadeColor` based on a toon ramp (`getShading()`, a `linearstep` over
+`dotNL + shadingShift`), and `shadeColorFactor` defaults to
+`new THREE.Color(0, 0, 0)` -- pure black -- unless the VRM file itself
+authored something else per-material. Round 12's `MODES.night` set
+`hemiI: 0.16` and `sunI: 0.12` deliberately low, reasoning that the
+apartment's own emissive "glow" materials (RGB strips, screens) should
+carry the room's visual interest instead of a bright ambient wash. That
+reasoning wasn't wrong for the *room* -- but it left the one light source
+that actually reaches MToon (hemisphere + directional, not IBL) too low to
+lift her out of full shade-color territory, especially from behind (the
+camera angle in nearly every frame of the video), where the sun's `dotNL`
+against her back is near zero regardless of hemi/sun intensity.
+
+**Fix:** rather than raise the room's ambient (which would undo the actual,
+correctly-diagnosed "pure-white materials blow out" fix below -- the two
+problems were pulling `hemiI` in opposite directions), added a dedicated
+`THREE.PointLight` (`lunaFill`) that follows her position every frame
+(`update()`'s `subject` parameter, previously accepted and ignored --
+`sandbox.ts`'s call site now always passes `vrm.scene.position`, dropping a
+vestigial "whoever's closest to a door" computation left over from before
+doors existed at all). Short range (`distance: 3.2`, `decay: 1.8`) so it
+doesn't meaningfully brighten nearby walls or furniture -- it's a
+character-fill light, decoupled from room mood lighting entirely, the same
+way a key/fill light on a live-action actor is separate from set lighting.
+Intensity (`fillI` in the `LightState`/`MODES` table) is highest at night
+(11) where ambient is lowest, tapering to 0 at day (where hemi+sun are
+already enough on their own). **Not verified against her actual VRM
+materials' `shadeColorFactor`** -- if her file does define a non-black
+shade color already, the room may have needed less of a fix than assumed;
+either way, the fill light approach is robust to that uncertainty since it
+adds real direct light rather than depending on precisely which shade color
+she blends toward.
+
+### Root cause 2: several "white" materials are the glTF spec-default, not a real color
+
+The exact same `.glb` uploaded earlier this conversation was still in this
+sandbox, so rather than guess at PBR values, they were read directly out of
+the file's own JSON chunk (manual parse: read the GLB header, extract the
+JSON chunk, `JSON.parse` it, inspect `materials[]`). Findings, matched
+against the user's specific complaint ("sofa, toilet, doorhinge"):
+
+- `Porcelain_-_White` (near-certainly the toilet/sink) has `metallicFactor:
+  0` and **no `baseColorFactor` key at all** -- meaning it renders at
+  glTF's spec default of pure `(1,1,1,1)` white, not any color the artist
+  actually chose.
+- `Couch_Beige` and `Couch_BeigeDark` (near-certainly the sofa) are the
+  same story: `metallicFactor: 0`, no `baseColorFactor` override --
+  rendering pure white despite names that say "beige."
+- `Gold` (the likely door-hardware/hinge material) has `roughnessFactor:
+  0.15` and no `metallicFactor` override -- defaulting to glTF's
+  `metallicFactor: 1.0`. A fully metallic surface at 0.15 roughness is
+  close enough to a mirror finish to throw a tight, easily-blown-out
+  specular highlight under any real light, independent of overall scene
+  brightness.
+- Three screen-like materials (`screen`, `Sims_Screen`, `Desktop_Screen`)
+  all share the identical risky profile: `roughnessFactor: 0` (perfect
+  mirror) plus `emissiveFactor: (1,1,1)` (spec-maximum emissive) over a
+  real emissive texture. Only `screen` visibly washed out in the footage;
+  the desk's two monitors (almost certainly `Sims_Screen`/`Desktop_Screen`)
+  looked fine in the same video, so only `screen` was touched -- dimming
+  the two that already looked right on a hunch would have been guessing
+  again, exactly what this round was trying to stop doing.
+- `light_window` is a separate finding, not a complaint: an emissive-only
+  (`emissiveFactor: (1, 0.637, 0.36)`, warm orange, no base texture) plane
+  that's almost certainly the model's own baked "sunlight glow at the
+  window" trick prop. Since emissive materials ignore scene lighting
+  entirely, this would have glowed exactly the same at night as at
+  day -- so its `emissiveIntensity` is now driven by the same day/night
+  state machine as everything else (`lightWindowI` in `MODES`, ~1.0 by day
+  down to ~0.12 at night).
+
+**Fix, in the new `fixupMaterials()` in `src/apartment/index.ts`:** a
+traversal, once at load time, that corrects these specific named materials
+by their exact glTF name -- real off-white/beige colors for the three
+white-by-default ones, raised roughness on `Gold`, reduced
+`emissiveIntensity`+slightly raised roughness on `screen` alone. This is
+deliberately narrow: five named materials out of 82, not a blanket
+brightness/saturation pass, because every one of them traces to a specific
+number pulled from the file, not a vibe. `RGB_Material`/`Glowy_Green`/
+`Magic_Glow`/the `*_glow` family were left untouched -- their emissive
+colors clearly match their names (an orange-glow material's emissive really
+is orange, etc.), so they read as intentional gamer-den accent lighting,
+not an authoring gap.
+
+### Root cause 3: bloom radius was too wide for this model's small bright props
+
+`src/postfx.ts`'s `UnrealBloomPass` was constructed with radius `0.7` --
+fine for the round-10/11 procedural apartment's larger, softer light
+sources, but on this model's small bright points (a screen, a bulb) it
+produces the wide, ring-banded halo visible in two separate frames of the
+video, independent of the material-level fixes above. Narrowed to `0.35`
+and threshold nudged from `0.92` to `0.96`, so only genuinely blown-out
+pixels bloom rather than merely bright ones. `MODES`' per-mode `bloom`
+strength values were also trimmed down somewhat (e.g. night 0.65 -> 0.5)
+now that the worst source-level offenders are corrected rather than fought
+with bloom tuning alone.
+
+### Root cause 4: no collision against the real model at all -- "we clip"
+
+Round 12's placeholder navmesh was one rectangle covering the whole
+building footprint, explicitly documented as not wall-aware. The user
+found this immediately and asked for it directly: "add boundaries for
+walls (yes we clip.), add furniture boundaries and collision so i dont end
+up inside a fridge." This is real, substantial new work, added via
+`three-mesh-bvh` (a well-established, widely-used three.js addon
+specifically for fast collision/raycast queries against complex static
+meshes -- not something to hand-roll against 271k triangles).
+
+**How it works, in `src/apartment/index.ts`:**
+- `buildCollisionGeometry()` walks every mesh in the loaded model once at
+  load time, strips each one down to *only* its position attribute
+  (collision doesn't need UVs/normals/vertex color, and stripping to one
+  common attribute set is what lets 445 differently-authored meshes merge
+  at all -- `mergeGeometries()` refuses to merge geometries with
+  mismatched attribute sets), bakes each mesh's `matrixWorld` directly into
+  the vertex positions via `applyMatrix4`, and merges all of them into one
+  `BufferGeometry` with `mergeGeometries()`
+  (`three/examples/jsm/utils/BufferGeometryUtils.js`). One
+  `computeBoundsTree()` call (the `three-mesh-bvh` prototype extension,
+  installed once at module load) builds a single BVH over the whole merged,
+  already-world-space geometry -- so queries need no per-mesh transform
+  math at all, just a world-space sphere.
+- `collidesAt(x, z)` checks three stacked spheres (radius `0.3`) at ankle/
+  waist/head-ish heights against that one BVH via `intersectsSphere()`, not
+  a full capsule-vs-triangle sweep (the more thorough technique
+  `three-mesh-bvh`'s own examples use for smooth sliding resolution) --
+  cheaper and much simpler to get right blind, at the cost of not handling
+  a very thin obstruction between two sample heights, or perfectly smooth
+  sliding along a curved surface.
+- `ApartmentHandle.collidesAt()` is consulted from two places in
+  `src/sandbox.ts`: `WalkableArea.contains()`/`.clamp()` (now takes the
+  `ApartmentHandle` too, ANDs the existing rectangle check with
+  `!collidesAt(...)`) -- which means **`camera-modes.ts`'s existing
+  axis-decomposed sliding movement in `updateVisitor()` needed zero
+  changes** to start sliding along real walls, since it was already written
+  against the `Clampable` interface, not the rectangle implementation
+  directly. And `WanderController`, so Luna's own random wander targets
+  (and the anchor she's walking to) get rejected and re-picked if they'd
+  land her inside real geometry, rather than only checking the placeholder
+  rectangle.
+
+**A real bug found and fixed before this ever left the sandbox:** the
+first version's height samples were `[0.15, 0.9, 1.55]` (ankle/waist/head).
+Running the actual collision system against the real file (see
+Verification below) showed **89.9% of the entire footprint blocked** --
+obviously wrong; nobody could walk anywhere at that rate. Cause: a sphere
+of radius 0.3 centred at y=0.15 reaches down to y=-0.15, comfortably inside
+the floor slab itself (the model's real bbox min y is -0.08) -- the check
+was flagging the floor as an obstruction almost everywhere, not real
+furniture or walls. Raised the lowest sample to 0.45 (sphere bottom at
+0.15, clear of any floor slab) and re-ran: **54.3% blocked**, which is at
+least plausible for a small multi-room "trio" apartment with real interior
+wall thickness and furniture, rather than obviously broken. This is
+exactly the kind of bug that categorically could not have been caught by
+reasoning about the code -- it only showed up by actually running the real
+collision query against the real geometry and looking at the resulting
+number.
+
+**Not verified: whether 54.3% "feels" right to actually walk around in**,
+or whether the three-height-sample approximation produces any awkward
+getting-stuck-on-furniture-edges moments a full capsule sweep wouldn't.
+Flagged as the single piece of this round most likely to need a follow-up
+tuning pass once someone's actually walked around with it.
+
+### Smaller fixes
+
+- **Eye height**: `camera-modes.ts`'s `EYE_HEIGHT` constant, `1.62` ->
+  `1.5`, per a direct request to bring visitor-mode height down a bit.
+- **Dust motes**: count `220` -> `320`, point size `0.035` -> `0.055`, and
+  the opacity floor raised (`0.05` -> `0.18` base) so they read as a
+  deliberate ambient effect rather than the barely-visible scattering round
+  12 shipped -- per the request for a more noticeably "dreamy" particle
+  effect.
+- **"Windows are 'nothing outside'"**: no code change needed -- confirmed
+  this was already the case. The apartment was never given any exterior
+  geometry or skybox; `scene.background` (the sky color from `MODES`) is
+  everything a window shows through, which is exactly "nothing outside" as
+  requested.
+
+### "Real ray-traced reflections" -- not feasible here, here's what actually exists
+
+Asked for "if you can," which it can't, honestly: this renderer is
+`WebGLRenderer`, not `WebGPURenderer` with a ray-tracing backend, and
+real-time hardware ray/path tracing isn't something a standard WebGL
+context can do at all, regardless of tuning. This isn't new to this round
+-- `postfx.ts`'s own top comment has said as much since round 10.
+
+What's already doing the closest available job: the `Mirror` material
+(`roughnessFactor: 0.223`, left untouched by this round's fixups since it
+wasn't reported as broken) reflects the PMREM-baked `RoomEnvironment` IBL
+already in place -- a real, if approximate and static, environment
+reflection, not a flat color. The realistic next step *up* from that,
+if actually wanted, is `THREE.SSRPass` (screen-space reflections) from
+three.js's own postprocessing examples -- genuinely more accurate for
+nearby reflected geometry, at a real cost (noticeably heavier per-frame
+render cost, and screen-space artifacts at grazing angles or off-screen
+reflections). Not added this round: it's a real feature with real
+trade-offs, not something to bolt on blind without being asked for it
+specifically once the trade-offs are clear.
+
+### Verification: a working collision harness against the real file, for the first time
+
+Both production builds (`tsc --noEmit`, `index.html`, `sandbox.html` via
+the usual one-off Vite config) came back clean.
+
+Beyond that, this round extended round 12's real-`GLTFLoader`-over-local-
+HTTP-server harness (same `ProgressEvent`/`self`/PMREMGenerator-fake/canvas-
+stub polyfills, `three-mesh-bvh` left external and resolved for real since
+it's pure geometry math with no browser dependency) to actually exercise
+everything new:
+- Confirmed each `fixupMaterials()` correction landed on the real,
+  loaded material instances (not just compiled without error): `Porcelain_
+  -_White`'s color read back as `(0.86, 0.84, 0.8)`, `Couch_Beige` as
+  `(0.75, 0.66, 0.53)`, `Gold`'s roughness as `0.38`, `screen`'s
+  `emissiveIntensity` as `0.55` -- exactly the values written in code.
+- Built the real collision BVH from the real 271k-triangle model
+  (`buildApartment()` resolved in ~830ms including this) and ran a 576-
+  point grid query across the whole real footprint -- this is what caught
+  and let me fix the floor-collision bug above. Also spot-checked: the
+  building's exact centre point is walkable (not blocked), and a point far
+  outside the building entirely reports "not blocked" from `collidesAt`
+  alone (correct in isolation -- it's `WalkableArea`'s separate rectangle
+  check that's responsible for "outside the building," not `collidesAt`).
+- A full day/night/transition cycle with the new `fillI`/`lightWindowI`
+  fields interpolating alongside everything else ran without producing
+  `NaN` or throwing.
+
+**Still not verified, the same limitation as every round: how any of this
+actually looks or feels to walk around in.** The harness proves the
+mechanisms are real and produce plausible numbers against the actual file
+-- not that the lighting reads right, that 54% blocked feels natural to
+navigate, or that the fill light makes her look natural rather than
+oddly spotlit. No GPU/browser in this sandbox, unchanged from every round
+before this one.
+
+### Scope note
+
+This round touched `src/apartment/index.ts` (material fixups, collision
+system, fill light, revised `MODES`), `src/apartment/floorplan.ts` (no
+changes needed), `src/camera-modes.ts` (eye height), `src/postfx.ts`
+(bloom radius/threshold), `src/sandbox.ts` (`WalkableArea`/
+`WanderController` collision wiring, `update()` call site), `package.json`/
+`package-lock.json` (added `three-mesh-bvh`), and these docs. No changes to
+`index.html`/`src/main.ts`/`src/style.css`.
+
+

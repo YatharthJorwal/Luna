@@ -30,7 +30,7 @@ export interface Clampable {
   contains(x: number, z: number): boolean;
 }
 
-const EYE_HEIGHT = 1.62;
+const EYE_HEIGHT = 1.5; // was 1.62 -- brought down a bit per request
 const CROUCH_HEIGHT = 1.05;
 const WALK_SPEED = 2.1;
 const RUN_SPEED = 3.6;

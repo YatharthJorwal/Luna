@@ -342,7 +342,13 @@ class ProceduralWalker {
 // so there's no reason to do anything cleverer.
 // ---------------------------------------------------------------------
 class WalkableArea {
-  constructor(private readonly rects: NavPatch[]) {}
+  // Round 13: takes the apartment handle too, so `contains`/`clamp` can
+  // reject points that are inside the placeholder footprint rectangle but
+  // actually inside a real wall or piece of furniture in the loaded model
+  // -- "we clip" was the exact, specific complaint. The rectangle check
+  // still runs first (cheap, and still the right answer for "are you
+  // outside the building entirely"); collidesAt only narrows it further.
+  constructor(private readonly rects: NavPatch[], private readonly apartment: ApartmentHandle) {}
 
   private static closestPointOn(r: NavPatch, x: number, z: number): { x: number; z: number; d2: number } {
     const cx = Math.min(r.maxX, Math.max(r.minX, x));
@@ -352,21 +358,39 @@ class WalkableArea {
     return { x: cx, z: cz, d2: dx * dx + dz * dz };
   }
 
-  contains(x: number, z: number): boolean {
+  private inRect(x: number, z: number): boolean {
     for (const r of this.rects) {
       if (x >= r.minX && x <= r.maxX && z >= r.minZ && z <= r.maxZ) return true;
     }
     return false;
   }
 
+  contains(x: number, z: number): boolean {
+    return this.inRect(x, z) && !this.apartment.collidesAt(x, z);
+  }
+
   /** Nearest legal standing position to (x, z). Returns the input
-   * unchanged when it's already on walkable floor. */
+   * unchanged when it's already on walkable floor. Falls back to the
+   * rectangle-only clamp if every fallback below is also mesh-blocked --
+   * a rare corner case (see camera-modes.ts's updateVisitor: this only
+   * runs after the combined move AND both single-axis moves already
+   * failed), documented rather than hidden: a tiny amount of clipping is
+   * possible in that specific cornered situation rather than freezing the
+   * camera outright. */
   clamp(x: number, z: number): { x: number; z: number } {
     let best = { x, z, d2: Infinity };
     for (const r of this.rects) {
       const c = WalkableArea.closestPointOn(r, x, z);
-      if (c.d2 === 0) return { x, z };
+      if (c.d2 === 0) break;
       if (c.d2 < best.d2) best = c;
+    }
+    if (!this.apartment.collidesAt(best.x, best.z)) return { x: best.x, z: best.z };
+    // Step back toward the footprint's centre in shrinking fractions,
+    // looking for the first unblocked point on that line.
+    for (const f of [0.75, 0.5, 0.25, 0.1]) {
+      const tx = THREE.MathUtils.lerp(best.x, CENTRE.x, f);
+      const tz = THREE.MathUtils.lerp(best.z, CENTRE.z, f);
+      if (!this.apartment.collidesAt(tx, tz)) return { x: tx, z: tz };
     }
     return { x: best.x, z: best.z };
   }
@@ -394,7 +418,11 @@ class WanderController {
   private readonly patches: NavPatch[];
   private readonly adj: number[][];
 
-  constructor(patches: NavPatch[], startAt: THREE.Vector3) {
+  constructor(
+    patches: NavPatch[],
+    startAt: THREE.Vector3,
+    private readonly collidesAt: (x: number, z: number) => boolean,
+  ) {
     if (patches.length === 0) throw new Error("WanderController: no walkable patches");
     this.patches = patches;
     this.adj = patches.map((_, i) =>
@@ -458,16 +486,24 @@ class WanderController {
     return { name: `${a.name}|${b.name}`, room: b.room, minX, maxX, minZ, maxZ };
   }
 
-  private static pointIn(r: NavPatch, margin: number): THREE.Vector3 {
+  /** A random point inside the patch, retried a few times against real
+   * mesh collision (round 13) before giving up and returning the last
+   * attempt anyway -- so a cluttered patch doesn't stall her wandering
+   * entirely, at the small risk of occasionally landing very close to
+   * furniture rather than perfectly clear of it. */
+  private pointIn(r: NavPatch, margin: number): THREE.Vector3 {
     const cx = (r.minX + r.maxX) / 2;
     const cz = (r.minZ + r.maxZ) / 2;
     const halfX = Math.max(0, (r.maxX - r.minX) / 2 - margin);
     const halfZ = Math.max(0, (r.maxZ - r.minZ) / 2 - margin);
-    return new THREE.Vector3(
-      cx + (Math.random() * 2 - 1) * halfX,
-      0,
-      cz + (Math.random() * 2 - 1) * halfZ,
-    );
+    let x = cx;
+    let z = cz;
+    for (let attempt = 0; attempt < 6; attempt++) {
+      x = cx + (Math.random() * 2 - 1) * halfX;
+      z = cz + (Math.random() * 2 - 1) * halfZ;
+      if (!this.collidesAt(x, z)) break;
+    }
+    return new THREE.Vector3(x, 0, z);
   }
 
   /** Breadth-first path between patches, as a list of patch indices. */
@@ -510,10 +546,12 @@ class WanderController {
       const options = ANCHORS.filter((a) => a.id !== this.lastAnchor?.id);
       const a = options[Math.floor(Math.random() * options.length)];
       const pi = this.patchContaining(a.x, a.z);
-      if (pi === null) {
-        // Anchor isn't on the navmesh -- fall back rather than get stuck.
+      if (pi === null || this.collidesAt(a.x, a.z)) {
+        // Anchor isn't on the navmesh, or (round 13) real geometry sits
+        // right on top of it -- fall back rather than get stuck or walk
+        // her into whatever's there.
         destPatch = Math.floor(Math.random() * this.patches.length);
-        destPoint = WanderController.pointIn(this.patches[destPatch], WANDER_MARGIN_M);
+        destPoint = this.pointIn(this.patches[destPatch], WANDER_MARGIN_M);
       } else {
         destPatch = pi;
         destPoint = new THREE.Vector3(a.x, 0, a.z);
@@ -525,21 +563,21 @@ class WanderController {
         .filter(({ p }) => !p.doorway);
       const pick = roomPatches[Math.floor(Math.random() * roomPatches.length)];
       destPatch = pick.i;
-      destPoint = WanderController.pointIn(pick.p, WANDER_MARGIN_M);
+      destPoint = this.pointIn(pick.p, WANDER_MARGIN_M);
     }
 
     const path = this.route(this.here, destPatch);
     if (!path) {
       // Unreachable (shouldn't happen -- the harness checks connectivity) --
       // just wander within the current patch rather than freezing.
-      this.queue.push({ point: WanderController.pointIn(this.patches[this.here], WANDER_MARGIN_M), anchor: null });
+      this.queue.push({ point: this.pointIn(this.patches[this.here], WANDER_MARGIN_M), anchor: null });
       return;
     }
     // One waypoint per doorway crossed: aim at the overlap between each
     // consecutive pair, which is inside both, so no leg leaves its patch.
     for (let k = 0; k < path.length - 1; k++) {
       const via = WanderController.overlap(this.patches[path[k]], this.patches[path[k + 1]]);
-      if (via) this.queue.push({ point: WanderController.pointIn(via, DOORWAY_MARGIN_M), anchor: null });
+      if (via) this.queue.push({ point: this.pointIn(via, DOORWAY_MARGIN_M), anchor: null });
     }
     this.queue.push({ point: destPoint, anchor: destAnchor });
     this.here = destPatch;
@@ -1386,8 +1424,8 @@ async function boot(): Promise<void> {
     if (clip) character.registerIdleBase(clip, true);
   }
 
-  const walkable = new WalkableArea(apartment.patches);
-  const wander = new WanderController(apartment.patches, vrm.scene.position);
+  const walkable = new WalkableArea(apartment.patches, apartment);
+  const wander = new WanderController(apartment.patches, vrm.scene.position, apartment.collidesAt);
   character.setWalkableArea(walkable);
 
   // Round 12: this is now a prebuilt model this session has never seen
@@ -1474,12 +1512,10 @@ async function boot(): Promise<void> {
       target === null && !character.isWalking && !hud.isTurnActive() && !character.isGesturing,
       (name) => character.playGesture(name),
     );
-    // Doors open for whoever is closest to them -- her while she's walking a
-    // route, or you when you're the one in the flat.
-    const doorSubject = rig.mode() === "visitor"
-      ? (rig.visitorPosition() ?? vrm.scene.position)
-      : vrm.scene.position;
-    apartment.update(delta, clock.elapsedTime, doorSubject);
+    // The apartment's personal fill light follows her specifically (see
+    // apartment/index.ts's round-13 comment on why) -- not whichever
+    // camera mode happens to be active, so always her own position here.
+    apartment.update(delta, clock.elapsedTime, vrm.scene.position);
 
     // --- she notices you ---------------------------------------------------
     // Track the camera when it's near her and roughly in front; otherwise

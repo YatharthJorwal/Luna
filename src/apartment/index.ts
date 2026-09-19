@@ -1,47 +1,48 @@
 /**
  * Builds the apartment and hands back a small control surface.
  *
- * Round 12 rewrite: this no longer builds the room procedurally. The user
- * dropped in a whole prebuilt apartment model --
- * `public/apartment/twokinds_modern_trio_apartment.glb`, a Sketchfab
- * download -- to replace the hand-authored shell/furniture/materials system
- * from rounds 9-11, because that system was producing visibly broken
- * results (a UV-checker bathtub texture, a floating disconnected towel, a
- * toilet missing its bowl, a blown-out mirror) that nobody building it
- * could actually see. See docs/DECISIONS.md's round-12 entry for the full
- * account, including what `gltf-transform inspect` showed about the file
- * before any of this was written.
+ * Round 12 replaced the hand-authored procedural room/furniture/materials
+ * system with a single prebuilt model,
+ * `public/apartment/twokinds_modern_trio_apartment.glb`. Round 13 (this
+ * file) is a real-usage bugfix pass on that model, after the user actually
+ * ran it and sent back a video and screenshots. See docs/DECISIONS.md's
+ * round-13 entry for the full account, including the exact glTF material
+ * scalars this round's fixes are based on (pulled directly from the file's
+ * own JSON, not guessed) and the MToon shader source that explains why she
+ * was going nearly black at night.
  *
- * What's unchanged from round 10/11: image-based lighting via
- * `RoomEnvironment` + `PMREMGenerator` (real PBR materials -- and this
- * model has plenty, per the inspect report: 82 materials, several with
- * metallic-roughness + normal maps -- need an environment to reflect or
- * they read as flat/black), ACES tone mapping, the four-time-of-day state
- * machine, and the dust-mote particle system.
- *
- * What's gone: `floorplan.ts`'s real rooms/walls/doors/anchors, and with
- * them the shell/furniture/materials modules that built and dressed them.
- * The new model has no per-room data in it worth reading (generic
- * `Object_0`, `Object_1`, ... mesh names, not `Kitchen_Counter`), so
- * `floorplan.ts` now describes one big placeholder room sized to the
- * model's real bounding box instead of nine real ones. Doors, the ceiling
- * show/hide toggle, and room-level scene-state description are gone with
- * it -- there's no reliable way to identify a door or a ceiling plane by
- * name in this file, and no per-room boundaries to report a room from.
- * Getting any of that back is follow-up work that needs someone who can
- * actually see the loaded model to point out where the walls and doors
- * are -- not something to guess at blind, same lesson as every lighting
- * decision in this project's history.
+ * What round 13 added, on top of round 12's load-a-glb-and-light-it base:
+ * - `fixupMaterials()`: a handful of named, evidenced corrections to
+ *   specific materials in the model (not a blanket adjustment).
+ * - A collision mesh built once from the loaded model via `three-mesh-bvh`,
+ *   and `collidesAt()` on the returned handle, so visitor mode and Luna's
+ *   own wandering can be blocked by real walls and furniture instead of
+ *   only the placeholder footprint rectangle.
+ * - A dedicated short-range point light that follows whoever's asked about
+ *   (`update()`'s `subject` param) to keep her visible independent of the
+ *   room's own mood lighting, since her MToon shader doesn't read
+ *   `scene.environment` at all (confirmed from the shader source -- see
+ *   DECISIONS.md) and was going nearly black wherever hemi+sun were low.
  */
 
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment.js';
+import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
+import { computeBoundsTree, disposeBoundsTree, MeshBVH } from 'three-mesh-bvh';
 import {
   CEILING_H, CENTRE, FOOTPRINT, PATCHES, ANCHORS, ROOMS,
   roomAt, anchorNear,
   type NavPatch, type Anchor, type RoomId,
 } from './floorplan';
+
+// Module-level, same pattern three-mesh-bvh's own docs use: extends
+// THREE.BufferGeometry's prototype once so any geometry can build/hold a
+// bounds tree. The package's own .d.ts augments THREE's types to match
+// (BufferGeometry gains `.boundsTree`/`.computeBoundsTree`/
+// `.disposeBoundsTree`), so this is fully typed, not an `any` hack.
+THREE.BufferGeometry.prototype.computeBoundsTree = computeBoundsTree;
+THREE.BufferGeometry.prototype.disposeBoundsTree = disposeBoundsTree;
 
 /** Where the user dropped the prebuilt apartment -- gitignored, same
  * pattern as public/vrm/*.vrm. See public/apartment/README.txt. */
@@ -67,19 +68,29 @@ interface LightState {
   sunColor: THREE.Color;
   sunI: number;
   sunPos: THREE.Vector3;
-  /** IBL contribution. */
+  /** IBL contribution. Note: this never reaches Luna's MToon materials --
+   * see the fill-light comment below -- only the apartment's own PBR
+   * furniture. */
   envI: number;
   /** Bloom strength, read by postfx. */
   bloom: number;
   /** Exposure, read by the renderer. */
   exposure: number;
+  /** Intensity of Luna's personal fill light (see below). Independent of
+   * the room's own mood lighting on purpose. */
+  fillI: number;
+  /** emissiveIntensity for the model's "light_window" material (a baked
+   * warm-glow-at-the-window trick prop, on by default regardless of scene
+   * lighting since emissive ignores scene lights) -- driven down at night
+   * so windows don't look like daytime after dark. */
+  lightWindowI: number;
 }
 
 function st(s: {
   sky: number; bg: number; fogNear: number; fogFar: number;
   hemiSky: number; hemiGround: number; hemiI: number;
   sunColor: number; sunI: number; sunPos: [number, number, number];
-  envI: number; bloom: number; exposure: number;
+  envI: number; bloom: number; exposure: number; fillI: number; lightWindowI: number;
 }): LightState {
   return {
     sky: new THREE.Color(s.sky),
@@ -95,56 +106,54 @@ function st(s: {
     envI: s.envI,
     bloom: s.bloom,
     exposure: s.exposure,
+    fillI: s.fillI,
+    lightWindowI: s.lightWindowI,
   };
 }
 
 /**
- * Four times of day, rewritten from scratch for round 12 -- the old MODES
- * table was tuned (twice, badly the first time -- see round 11) against
- * this project's *own* hand-authored materials.ts. This is a real,
- * unfamiliar PBR model with its own baseColor/metallicRoughness/normal/
- * emissive textures and no history of anyone tuning against it. These
- * numbers are a deliberately conservative starting guess -- kept every
- * light contribution modest rather than stacking several near their max
- * at once, precisely because of what happened last time -- not a verified
- * result. There is currently zero visual reference for how this specific
- * model's textures respond to any of this. Expect these to need real
- * adjustment once someone can actually see it.
+ * Four times of day, revised for round 13 against real feedback (a video +
+ * screenshots), not just reasoned in the dark like round 12's first pass.
+ * What changed and why, in order of how much it mattered:
  *
- * Also worth noting from the inspect report: several materials here
- * (`Glowy_Green`, `RGB_Material`, `Magic_Glow`, `red_glow`/`orange_glow`/
- * `purple_glow`/`blue_glow`/`white_glow`, the various screens) carry their
- * own emissive textures -- self-lit regardless of scene lighting. That's
- * presumably load-bearing for the room's look (a "gamer den" aesthetic
- * leans on practical/neon lighting, not just ambient fill), so night mode
- * here is deliberately dim on the *scene* lights, leaning on those
- * emissive materials to carry the room's visual interest instead of
- * fighting them with a bright ambient.
+ * 1. Luna's visibility is no longer this table's job at all -- `fillI`
+ *    drives a dedicated light that follows her (see `buildApartment`
+ *    below), decoupled from the room's mood lighting, because her MToon
+ *    shader doesn't read `envI`/IBL and was defaulting to near-black
+ *    wherever hemi+sun were low. Night's hemi/sun stay deliberately dim
+ *    here for the room's own mood -- that's no longer in tension with her
+ *    being visible.
+ * 2. Overall levels trimmed a little further, on top of round 12's already-
+ *    conservative numbers, now that the worst-offending materials
+ *    (pure-white-by-default porcelain/couch, near-mirror gold hardware --
+ *    see fixupMaterials below) are corrected at the source rather than
+ *    fought with lower light alone.
+ * 3. `lightWindowI` added -- see the LightState comment above.
  */
 const MODES: Record<TimeOfDay, LightState> = {
   dawn: st({
     sky: 0xf0c6b4, bg: 0xe8bfae, fogNear: 16, fogFar: 60,
-    hemiSky: 0xffd8c0, hemiGround: 0x6a5a5e, hemiI: 0.5,
-    sunColor: 0xffb98a, sunI: 1.4, sunPos: [CENTRE.x - 14, 8, CENTRE.z + 10],
-    envI: 0.5, bloom: 0.42, exposure: 1.0,
+    hemiSky: 0xffd8c0, hemiGround: 0x6a5a5e, hemiI: 0.48,
+    sunColor: 0xffb98a, sunI: 1.3, sunPos: [CENTRE.x - 14, 8, CENTRE.z + 10],
+    envI: 0.45, bloom: 0.35, exposure: 1.0, fillI: 4, lightWindowI: 0.8,
   }),
   day: st({
     sky: 0xbfd9ef, bg: 0xc9e0f2, fogNear: 24, fogFar: 90,
-    hemiSky: 0xf4f9ff, hemiGround: 0xa89880, hemiI: 0.6,
-    sunColor: 0xfff3e0, sunI: 1.7, sunPos: [CENTRE.x - 12, 15, CENTRE.z + 8],
-    envI: 0.58, bloom: 0.28, exposure: 0.95,
+    hemiSky: 0xf4f9ff, hemiGround: 0xa89880, hemiI: 0.55,
+    sunColor: 0xfff3e0, sunI: 1.5, sunPos: [CENTRE.x - 12, 15, CENTRE.z + 8],
+    envI: 0.5, bloom: 0.24, exposure: 0.92, fillI: 0, lightWindowI: 1.0,
   }),
   dusk: st({
     sky: 0xe9a479, bg: 0xd9906d, fogNear: 14, fogFar: 55,
-    hemiSky: 0xffc094, hemiGround: 0x5a4650, hemiI: 0.4,
-    sunColor: 0xff9552, sunI: 1.5, sunPos: [CENTRE.x - 16, 5, CENTRE.z + 4],
-    envI: 0.38, bloom: 0.5, exposure: 1.0,
+    hemiSky: 0xffc094, hemiGround: 0x5a4650, hemiI: 0.38,
+    sunColor: 0xff9552, sunI: 1.3, sunPos: [CENTRE.x - 16, 5, CENTRE.z + 4],
+    envI: 0.34, bloom: 0.4, exposure: 1.0, fillI: 6, lightWindowI: 0.6,
   }),
   night: st({
     sky: 0x1d1a30, bg: 0x141222, fogNear: 9, fogFar: 40,
     hemiSky: 0x3a3a68, hemiGround: 0x14111f, hemiI: 0.16,
     sunColor: 0x9fb4ff, sunI: 0.12, sunPos: [CENTRE.x + 8, 10, CENTRE.z - 8],
-    envI: 0.12, bloom: 0.65, exposure: 1.0,
+    envI: 0.1, bloom: 0.5, exposure: 1.0, fillI: 11, lightWindowI: 0.12,
   }),
 };
 
@@ -154,6 +163,7 @@ function cloneState(s: LightState): LightState {
     hemiSky: s.hemiSky.clone(), hemiGround: s.hemiGround.clone(), hemiI: s.hemiI,
     sunColor: s.sunColor.clone(), sunI: s.sunI, sunPos: s.sunPos.clone(),
     envI: s.envI, bloom: s.bloom, exposure: s.exposure,
+    fillI: s.fillI, lightWindowI: s.lightWindowI,
   };
 }
 
@@ -174,13 +184,23 @@ export interface ApartmentHandle {
   root: THREE.Group;
   patches: NavPatch[];
   anchors: Anchor[];
-  /** Per-frame tick. */
+  /** Per-frame tick. `subject` positions the personal fill light -- pass
+   * whoever the "camera" currently follows (Luna's own position works for
+   * both modes; see sandbox.ts's call site). */
   update(dt: number, elapsed: number, subject: THREE.Vector3 | null): void;
   setTimeOfDay(t: TimeOfDay, instant?: boolean): void
   timeOfDay(): TimeOfDay;
   /** Current bloom strength / exposure for the post chain to follow. */
   bloomStrength(): number;
   exposure(): number;
+  /** True if a person-sized obstruction at this floor point would
+   * intersect the model's real geometry -- walls, furniture, anything.
+   * Backed by a one-time BVH built from the loaded model (see
+   * `buildCollisionGeometry`); a few stacked sphere checks rather than a
+   * full capsule sweep -- see docs/DECISIONS.md's round-13 entry for why
+   * that's a deliberate, documented simplification rather than an
+   * oversight. */
+  collidesAt(x: number, z: number): boolean;
   /** Human-readable state, for the persona channel. */
   describe(lunaPos: THREE.Vector3, visitorPos: THREE.Vector3 | null, visitorEmbodied: boolean): SceneState;
   dispose(): void;
@@ -206,6 +226,139 @@ function disposeModel(root: THREE.Object3D): void {
   });
 }
 
+/**
+ * A handful of specific, evidenced corrections to named materials in the
+ * loaded model -- not a blanket "make everything darker" pass. Every value
+ * here traces to an exact PBR scalar read directly out of the file's own
+ * glTF JSON (parsed by hand, not guessed -- see docs/DECISIONS.md's
+ * round-13 entry for the full dump), in response to the user's report that
+ * "sofa, toilet, doorhinge" glow absurdly:
+ *
+ * - `Porcelain_-_White` (near-certainly the toilet/sink) and `Couch_Beige`/
+ *   `Couch_BeigeDark` (near-certainly the sofa) all have NO baseColorFactor
+ *   override in the file at all -- meaning they render at glTF's spec
+ *   default of pure (1,1,1,1) white, despite names that say "beige" and
+ *   "porcelain". That's almost certainly an authoring gap (the artist
+ *   never actually set a color, or a legacy diffuse texture didn't survive
+ *   export) rather than a deliberate choice, and pure-1.0-albedo surfaces
+ *   are the single easiest thing to blow out in any physically-based
+ *   renderer -- real porcelain and real beige fabric both sit well under
+ *   1.0. Given real, appropriately-toned colors here instead.
+ * - `Gold` (the likely doorhinge/hardware material) is fully metallic
+ *   (metallicFactor unset -> glTF default 1.0) at roughnessFactor 0.15 --
+ *   close enough to a mirror finish to throw a tight, easily-blown-out
+ *   highlight under any real light. Roughness raised, not despecularized
+ *   -- it should still read as glossy metal, just not a pinpoint hotspot.
+ * - `screen` (roughnessFactor 0, emissiveFactor (1,1,1), matches the
+ *   living-room TV blown out white in the user's video) gets both its
+ *   emissive strength and its mirror-flat roughness pulled back a little.
+ *   `Sims_Screen`/`Desktop_Screen` share the identical scalars but read
+ *   fine in the same footage (different, less uniformly-bright texture
+ *   content), so they're left untouched rather than dimmed on suspicion
+ *   alone.
+ *
+ * Returns the `light_window` material if the model has one, so the caller
+ * can drive its emissiveIntensity by time of day (see the LightState
+ * comment on `lightWindowI`).
+ */
+function fixupMaterials(model: THREE.Object3D): THREE.MeshStandardMaterial | null {
+  let lightWindow: THREE.MeshStandardMaterial | null = null;
+  const seen = new Set<THREE.Material>();
+  model.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const mats = Array.isArray(mesh.material) ? mesh.material : [mesh.material];
+    for (const m of mats) {
+      if (!m || seen.has(m)) continue;
+      seen.add(m);
+      const std = m as THREE.MeshStandardMaterial;
+      switch (m.name) {
+        case 'Porcelain_-_White':
+          std.color.setRGB(0.86, 0.84, 0.8);
+          break;
+        case 'Couch_Beige':
+          std.color.setRGB(0.75, 0.66, 0.53);
+          break;
+        case 'Couch_BeigeDark':
+          std.color.setRGB(0.46, 0.4, 0.32);
+          break;
+        case 'Gold':
+          std.roughness = Math.max(std.roughness, 0.38);
+          break;
+        case 'screen':
+          std.emissiveIntensity = 0.55;
+          std.roughness = Math.max(std.roughness, 0.12);
+          break;
+        case 'light_window':
+          lightWindow = std;
+          break;
+        default:
+          break;
+      }
+    }
+  });
+  return lightWindow;
+}
+
+/**
+ * Builds a one-time collision mesh from the loaded model: every mesh's
+ * geometry, stripped down to just positions (collision doesn't need UVs/
+ * normals/color, and stripping to one common attribute set is what makes
+ * `mergeGeometries` willing to merge 445 differently-authored meshes at
+ * all), baked into world space via each mesh's own `matrixWorld`, then
+ * merged into one BufferGeometry and handed a bounds tree. One BVH query
+ * against one merged mesh, in world space, with no per-mesh transform math
+ * at query time -- much simpler than the alternative (one bounds tree per
+ * source mesh, transforming every query into 445 different local spaces).
+ */
+function buildCollisionGeometry(model: THREE.Object3D): THREE.BufferGeometry {
+  model.updateWorldMatrix(true, true);
+  const parts: THREE.BufferGeometry[] = [];
+  model.traverse((o) => {
+    const mesh = o as THREE.Mesh;
+    if (!mesh.isMesh) return;
+    const pos = mesh.geometry.getAttribute('position');
+    if (!pos || pos.count === 0) return;
+    let g = new THREE.BufferGeometry();
+    g.setAttribute('position', pos.clone());
+    if (mesh.geometry.index) g.setIndex(mesh.geometry.index.clone());
+    g = g.toNonIndexed(); // guarantees every part is indexed the same way (none)
+    g.applyMatrix4(mesh.matrixWorld);
+    parts.push(g);
+  });
+  const merged = parts.length > 0 ? mergeGeometries(parts, false) : null;
+  for (const g of parts) g.dispose();
+  const result = merged ?? new THREE.BufferGeometry();
+  result.computeBoundsTree();
+  return result;
+}
+
+// Three height samples along a standing person (ankle/waist/head) rather
+// than a full capsule-vs-triangle sweep. A real capsule solve (the
+// technique three-mesh-bvh's own examples use) resolves penetration
+// smoothly and handles grazing contact better; this is the cheaper
+// "would a sphere here hit anything" check at a few heights, run through
+// the existing axis-decomposed sliding movement camera-modes.ts already
+// had for the placeholder rectangle. It should catch the reported problems
+// (walking through walls, ending up inside furniture) -- what it won't
+// perfectly handle is a very thin obstruction between two sample heights,
+// or fully smooth sliding along a curved surface. Untested against the
+// real running app (no browser in this sandbox) -- flagged as the piece
+// most likely to need a follow-up pass once someone's actually walked
+// around with it.
+//
+// The lowest sample deliberately starts well above the floor, not at
+// ankle height: a first attempt at 0.15 with this same radius put the
+// sphere's bottom at -0.15, comfortably inside the floor slab itself
+// (real bbox min y is -0.08) -- caught the floor as an "obstruction"
+// everywhere, not just real furniture/walls. Verified with the actual
+// harness below: that version blocked 90% of the whole footprint, which
+// is obviously the floor, not real coverage. 0.45 keeps the sphere's
+// bottom at 0.15, clear of any floor slab, while still catching
+// low furniture (a coffee table, a low shelf).
+const COLLIDE_RADIUS = 0.3;
+const COLLIDE_HEIGHTS = [0.45, 0.95, 1.45];
+
 export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRenderer): Promise<ApartmentHandle> {
   const root = new THREE.Group();
   root.name = 'apartment';
@@ -222,6 +375,20 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
   });
   root.add(model);
   scene.add(root);
+
+  const lightWindowMat = fixupMaterials(model);
+  const collisionGeometry = buildCollisionGeometry(model);
+  const collisionBVH = collisionGeometry.boundsTree as MeshBVH | undefined;
+  const _collideSphere = new THREE.Sphere();
+  function collidesAt(x: number, z: number): boolean {
+    if (!collisionBVH) return false;
+    for (const y of COLLIDE_HEIGHTS) {
+      _collideSphere.center.set(x, y, z);
+      _collideSphere.radius = COLLIDE_RADIUS;
+      if (collisionBVH.intersectsSphere(_collideSphere)) return true;
+    }
+    return false;
+  }
 
   // --- image-based lighting ------------------------------------------------
   const pmrem = new THREE.PMREMGenerator(renderer);
@@ -265,12 +432,27 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
   bounce.castShadow = false;
   scene.add(bounce);
 
+  // --- personal fill light ---------------------------------------------------
+  // Her MToon materials don't read scene.environment at all (no
+  // envmap_fragment include in @pixiv/three-vrm-materials-mtoon's shader --
+  // confirmed straight from the source, not assumed), and blend toward a
+  // shadeColor that defaults to pure black wherever direct+hemisphere light
+  // is too low. Keeping the room's own hemi/sun low at night for mood was
+  // therefore also making HER nearly invisible, independent of anything
+  // wrong with the room. A short-range point light that follows her,
+  // decoupled from room mood lighting entirely, fixes that without
+  // fighting the room's own look -- same idea as a key/fill light on an
+  // actor being separate from set lighting. `distance` keeps it from
+  // meaningfully bleeding onto nearby walls/furniture.
+  const lunaFill = new THREE.PointLight(0xfff2e0, 0, 3.2, 1.8);
+  lunaFill.castShadow = false;
+  scene.add(lunaFill);
+
   // --- ambient motes, fixed --------------------------------------------------
-  // Unchanged from round 10/11 -- geometry generated centred on the
-  // apartment's real footprint, object positioned at the apartment's
-  // centre, so the slow spin + vertical drift stays inside the building
-  // instead of sweeping out of it.
-  const MOTES = 220;
+  // Bigger, more numerous, and a higher opacity floor than round 12 -- the
+  // user asked for a more noticeably "dreamy" effect; round 12's motes were
+  // technically present but too sparse/small to read as intentional.
+  const MOTES = 320;
   const halfX = (FOOTPRINT.maxX - FOOTPRINT.minX) / 2;
   const halfZ = (FOOTPRINT.maxZ - FOOTPRINT.minZ) / 2;
   const motePos = new Float32Array(MOTES * 3);
@@ -296,7 +478,7 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
   }
   const moteTex = new THREE.CanvasTexture(moteCanvas);
   const moteMat = new THREE.PointsMaterial({
-    size: 0.035, map: moteTex, transparent: true, opacity: 0.0,
+    size: 0.055, map: moteTex, transparent: true, opacity: 0.0,
     depthWrite: false, blending: THREE.AdditiveBlending, sizeAttenuation: true,
   });
   const motes = new THREE.Points(moteGeo, moteMat);
@@ -327,8 +509,10 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
     sun.intensity = live.sunI;
     sun.position.copy(live.sunPos);
     bounce.intensity = live.hemiI * 0.35;
+    lunaFill.intensity = live.fillI;
+    if (lightWindowMat) lightWindowMat.emissiveIntensity = live.lightWindowI;
     scene.environmentIntensity = live.envI;
-    moteMat.opacity = 0.05 + (1 - live.envI) * 0.35;
+    moteMat.opacity = 0.18 + (1 - live.envI) * 0.35;
   }
 
   function setTimeOfDay(t: TimeOfDay, instant = false): void {
@@ -364,6 +548,8 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
     live.envI = lerp(from.envI, to.envI, e);
     live.bloom = lerp(from.bloom, to.bloom, e);
     live.exposure = lerp(from.exposure, to.exposure, e);
+    live.fillI = lerp(from.fillI, to.fillI, e);
+    live.lightWindowI = lerp(from.lightWindowI, to.lightWindowI, e);
     apply();
   }
 
@@ -377,9 +563,14 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
     timeOfDay: () => current,
     bloomStrength: () => live.bloom,
     exposure: () => live.exposure,
+    collidesAt,
 
-    update(dt, elapsed, _subject) {
+    update(dt, elapsed, subject) {
       stepTransition(dt);
+
+      if (subject) {
+        lunaFill.position.set(subject.x, subject.y + 1.4, subject.z + 0.35);
+      }
 
       // motes: slow spin plus a gentle vertical bob
       motes.rotation.y += dt * 0.012;
@@ -412,6 +603,8 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
       moteTex.dispose();
       moteGeo.dispose();
       moteMat.dispose();
+      collisionGeometry.disposeBoundsTree();
+      collisionGeometry.dispose();
       disposeModel(model);
     },
   };

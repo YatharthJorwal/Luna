@@ -285,7 +285,67 @@ sourced, webcomic-themed material names, license not independently
 confirmed — the user was told this plainly and chose to proceed; see
 `docs/DECISIONS.md`'s round-12 entry for the exact wording).
 
-Full writeup for rounds 6-12 in `docs/DECISIONS.md`.
+**Round 13: first real usage of the round-12 model — six real bugs, found
+with evidence rather than guessed.** A 47-second video plus screenshots
+came back showing: Luna a near-total black silhouette in every frame, a
+blown-out TV with visible bloom-ring artifacts, a clean clip through a
+sofa, a "walking in void" patch, and — stated directly — "we clip,"
+requesting real wall/furniture collision. Since the original `.glb` was
+still sitting in this sandbox, this round diagnosed from the actual file
+and actual shader source instead of reasoning from first principles:
+
+- **Luna's darkness**: confirmed straight from
+  `@pixiv/three-vrm-materials-mtoon`'s shader source that her MToon
+  materials never sample `scene.environment` (`// #include
+  <envmap_fragment>`, commented out) and blend toward a `shadeColor` that
+  defaults to pure black wherever hemi+sun light is too low. Round 12's
+  deliberately-dim night hemi/sun (chosen for the *room's* mood, to let
+  its own emissive glow materials carry visual interest) was
+  independently starving her of the only light she actually receives, with
+  no relation to anything wrong in the room itself. Fixed with a
+  dedicated, short-range `PointLight` that follows her every frame,
+  decoupled entirely from room mood lighting — a character fill light,
+  not a room light.
+- **"Sofa/toilet/doorhinge glow absurdly"**: parsed the file's own glTF
+  JSON by hand (not gltf-transform's summary — the raw material scalars).
+  `Porcelain_-_White` and `Couch_Beige`/`Couch_BeigeDark` have **no
+  `baseColorFactor` at all** — rendering at glTF's spec-default pure
+  white despite names that say otherwise. `Gold` (door hardware) is fully
+  metallic at 0.15 roughness — near-mirror. Fixed by name, five materials
+  out of 82, each traced to an exact number in the file, not a blanket
+  darkening pass.
+- **Bloom ring artifacts**: `postfx.ts`'s `UnrealBloomPass` radius (0.7)
+  was tuned for round 10/11's softer procedural lights; too wide for this
+  model's small bright props (a screen, a bulb). Narrowed to 0.35,
+  threshold nudged up.
+- **"We clip" / real collision**: added via `three-mesh-bvh` (an
+  established addon, not hand-rolled) — the whole model's geometry merged
+  into one collision mesh at load time, queried by `collidesAt(x,z)`.
+  `camera-modes.ts`'s existing sliding-movement code needed *zero* changes
+  to start sliding along real walls, since it was already written against
+  an interface (`Clampable`), not a rectangle implementation directly — a
+  nice payoff from how round 10-12 structured that file. **A real bug
+  found and fixed by actually running it**: the first height-sample set
+  put a collision sphere's edge inside the floor slab itself, blocking 90%
+  of the entire building; fixed (54% blocked after) purely by noticing the
+  number was absurd and checking the geometry, not by reasoning about the
+  code.
+- **Smaller**: eye height 1.62m → 1.5m; dust motes made bigger/more
+  numerous/more opaque ("dreamy" was explicitly asked for); confirmed
+  windows already show "nothing outside" (no exterior world exists, no
+  change needed); explained plainly why literal ray-traced reflections
+  aren't feasible in `WebGLRenderer` (needs `WebGPURenderer`) and named
+  `THREE.SSRPass` as the realistic next step if ever wanted.
+
+Verification went further than round 12: the actual collision system ran
+against the actual file (not faked), which is what caught the floor-slab
+bug above; each material fixup was confirmed landing on the real loaded
+material instance, not just compiling. **Still not verified, same as
+always: how any of it looks or feels to walk around in** — no GPU/browser
+in this sandbox. Full account, every exact material value, in
+`docs/DECISIONS.md`'s round-13 entry.
+
+Full writeup for rounds 6-13 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map
