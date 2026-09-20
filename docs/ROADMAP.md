@@ -582,11 +582,39 @@ awaiting on-machine confirmation · ⬜ not started)
   reasoned about: the exact class source, run against the real file's
   BVH, resolved every one of 67 real blocked test points to within 0.56m
   — nowhere near the multi-metre jumps possible before. Full account in
-  `docs/DECISIONS.md`'s round-14 entry. Still not verified: how any of
-  this actually looks or feels now — no GPU/browser in this sandbox,
-  same as every round, and the fill-light retune in particular is a
-  best-effort correction to a confirmed-wrong number, not a confirmed-
-  right one.
+  `docs/DECISIONS.md`'s round-14 entry.
+  **Round 15: round 14 confirmed working — pizza, doors, ceiling, and the
+  "stuck" complaint.** First real confirmation that round 14's fixes hold
+  up ("works properly"), followed by four smaller, specific asks: a pizza
+  prop rendering as a solid black disc, Luna "walking into the wall for
+  the last 10 minutes" (a pathfinding gap distinct from round 14's
+  teleport bug), furniture boundaries, and door/ceiling functionality —
+  both removed in round 12 for lack of any way to identify the meshes by
+  name. Investigated each directly against the file: the pizza turned out
+  to be a real UV-mapping bug in the source file itself (the mesh's UVs
+  span nearly the whole texture atlas, sampling mostly the atlas's dark
+  padding instead of the small centred pizza artwork) — fixed with a flat
+  color sampled from the actual artwork's pixels rather than a texture
+  remap with no way to verify the crop. The "stuck" complaint got
+  stuck-detection added to `WanderController` (not real pathfinding, which
+  would need per-room data this model still doesn't have — abandons an
+  unreachable target after 3 seconds of no progress instead of pushing
+  into a wall indefinitely). Doors and the ceiling were both re-
+  investigated by scanning every mesh's actual world-space bounding box
+  for door-panel and ceiling-panel shapes respectively: found 7 real
+  door-shaped meshes at 5 locations (re-added as proximity-based
+  disappear/reappear, not a hinge swing — geometry doesn't say which way
+  a door should swing), and found no ceiling meshes at all — this model
+  is genuinely roofless, an open-top "dollhouse" style scene, not a
+  round-12 gap to close. A real bug was found and fixed the same way
+  every collision issue in this project has been: door "open" checks
+  were being overridden by nearby wall/frame geometry in the static BVH
+  until the priority was flipped so being inside a door's box settles
+  the question outright. Full account in `docs/DECISIONS.md`'s round-15
+  entry. Still not verified: whether the stuck-detection timeout (3s)
+  feels right in practice, or whether hiding both meshes at a paired
+  door location (frame + panel, most likely, but unconfirmed) looks
+  correct — no GPU/browser in this sandbox, same as always.
 - ⬜ **Phase 11 — Work Mode (reversing "observe-and-advise only" for the
   shell).** A real scope change, not a bug fix: the user deliberately
   approved letting Luna actually *do* web-based tasks in the shell when
@@ -650,36 +678,38 @@ Still open:
   with a prebuilt model loaded wholesale, because the procedural system
   was producing visibly broken results nobody building it could see (see
   `docs/DECISIONS.md`'s round-12 entry). Round 13 got the first real
-  usage feedback and fixed six real bugs found from that evidence —
-  Luna's MToon lighting, several materials rendering at glTF's
-  spec-default white, an over-wide bloom radius, and real wall/furniture
-  collision via `three-mesh-bvh`. Round 14 then found round 13's own
-  collision and lighting fixes were themselves broken in the field — a
-  collision-fallback bug that teleported anyone (Luna included) to a
-  handful of fixed spots whenever they touched a wall, and a fill light
-  positioned close enough to blow her out into a solid white glow at
-  night — both traced to an exact cause and fixed; full account in
-  `docs/DECISIONS.md`'s round-14 entry. What's still open: real room
-  boundaries, door positions, and furniture-anchor locations for the
-  model are still unknown (it has no per-room data in it — generic mesh
-  names, not `Kitchen_Counter`) and can only be worked out by someone who
-  can actually see the loaded model point out where the walls and
-  furniture are — the collision system knows about real geometry but
-  still has no concept of "rooms," so `floorplan.ts` is still one
-  placeholder region and sit/cook/read *animation* is still further off
-  than before round 12 (she wanders to generic scattered points, not real
-  furniture). Also still unverified: whether round 14's fill-light retune
-  and broader emissive cap actually look right this time (grounded in the
-  confirmed failure mode now, rather than a fresh guess, but still never
-  rendered by this session), whether the collision ring-search fallback
-  feels natural to actually walk into (verified not to teleport, not
-  verified to feel good), whether 54% of the footprint reporting
-  collision-blocked is right or just plausible-sounding, whether the
-  three-height-sample collision approximation produces any awkward
-  stuck-on-furniture moments a full capsule sweep wouldn't, and whether
-  the model's licensing (a Sketchfab download, not independently
-  confirmed as reusable — see `docs/DECISIONS.md`) is actually clear to
-  keep building on. No GPU/browser in the sandbox any of this was built
-  in, same as always.
+  usage feedback and fixed six real bugs; round 14 found round 13's own
+  fixes were themselves broken (a collision teleport bug, an overexposed
+  fill light) and fixed those too — full account in `docs/DECISIONS.md`'s
+  round-13/14 entries. Round 14 was then confirmed working, and round 15
+  addressed four smaller asks: a real UV-mapping bug in the model
+  rendering a pizza prop as solid black (fixed with a flat color sampled
+  from the actual texture, not a guess), a pathfinding gap causing
+  indefinite wall-sticking (mitigated with stuck-detection, not real
+  pathfinding — see below), doors re-added by finding 7 real door-shaped
+  meshes geometrically (opens by disappearing near someone, not a hinge
+  swing — geometry doesn't say which way to swing), and confirmed this
+  model has no ceiling meshes at all (genuinely roofless, not a gap).
+  Full account in `docs/DECISIONS.md`'s round-15 entry. What's still
+  open: real room boundaries and furniture-anchor locations are still
+  unknown (no per-room data in the file — generic mesh names) and can
+  only be worked out by someone who can see the loaded model point out
+  where things are — round 15's geometric mesh-finding technique (used
+  for doors/ceiling) could plausibly extend to finding furniture anchors
+  too, but hasn't been tried. Real navmesh-graph pathfinding (as opposed
+  to round 15's stuck-detection workaround) is still not implemented and
+  would need that same room/furniture data. Sit/cook/read animation is
+  still further off than before round 12. Also still unverified: whether
+  round 15's stuck-detection timeout (3s) feels right in practice,
+  whether hiding both meshes at a paired door location (frame + panel,
+  presumed) looks correct, whether round 14's fill-light retune and
+  broader emissive cap actually look right, whether the collision
+  ring-search fallback feels natural to walk into, whether 54% of the
+  footprint reporting collision-blocked is right or just
+  plausible-sounding, and whether the model's licensing (a Sketchfab
+  download, not independently confirmed as reusable — see
+  `docs/DECISIONS.md`) is actually clear to keep building on. No
+  GPU/browser in the sandbox any of this was built in, same as always.
+
 
 

@@ -31,9 +31,9 @@ import { RoomEnvironment } from 'three/examples/jsm/environments/RoomEnvironment
 import { mergeGeometries } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import { computeBoundsTree, disposeBoundsTree, MeshBVH } from 'three-mesh-bvh';
 import {
-  CEILING_H, CENTRE, FOOTPRINT, PATCHES, ANCHORS, ROOMS,
+  CEILING_H, CENTRE, FOOTPRINT, PATCHES, ANCHORS, ROOMS, DOORS,
   roomAt, anchorNear,
-  type NavPatch, type Anchor, type RoomId,
+  type NavPatch, type Anchor, type RoomId, type DoorDef,
 } from './floorplan';
 
 // Module-level, same pattern three-mesh-bvh's own docs use: extends
@@ -184,22 +184,25 @@ export interface ApartmentHandle {
   root: THREE.Group;
   patches: NavPatch[];
   anchors: Anchor[];
-  /** Per-frame tick. `subject` positions the personal fill light -- pass
-   * whoever the "camera" currently follows (Luna's own position works for
-   * both modes; see sandbox.ts's call site). */
-  update(dt: number, elapsed: number, subject: THREE.Vector3 | null): void;
+  /** Per-frame tick. `lunaPos` positions her personal fill light (see the
+   * round-13 comment below) and is one of the two positions that can open
+   * a door; `visitorPos` (null when nobody's walking around in visitor
+   * mode) is the other. */
+  update(dt: number, elapsed: number, lunaPos: THREE.Vector3 | null, visitorPos: THREE.Vector3 | null): void;
   setTimeOfDay(t: TimeOfDay, instant?: boolean): void
   timeOfDay(): TimeOfDay;
   /** Current bloom strength / exposure for the post chain to follow. */
   bloomStrength(): number;
   exposure(): number;
   /** True if a person-sized obstruction at this floor point would
-   * intersect the model's real geometry -- walls, furniture, anything.
-   * Backed by a one-time BVH built from the loaded model (see
-   * `buildCollisionGeometry`); a few stacked sphere checks rather than a
-   * full capsule sweep -- see docs/DECISIONS.md's round-13 entry for why
-   * that's a deliberate, documented simplification rather than an
-   * oversight. */
+   * intersect the model's real geometry -- walls, furniture, anything --
+   * or a currently-closed door. Backed by a one-time BVH built from the
+   * loaded model (see `buildCollisionGeometry`, which excludes the door
+   * meshes -- those are checked separately below since they need to
+   * start letting people through once open) plus a small per-door box
+   * check; a few stacked sphere checks rather than a full capsule sweep
+   * -- see docs/DECISIONS.md's round-13 entry for why that's a
+   * deliberate, documented simplification rather than an oversight. */
   collidesAt(x: number, z: number): boolean;
   /** Human-readable state, for the persona channel. */
   describe(lunaPos: THREE.Vector3, visitorPos: THREE.Vector3 | null, visitorEmbodied: boolean): SceneState;
@@ -292,6 +295,28 @@ function fixupMaterials(model: THREE.Object3D): THREE.MeshStandardMaterial | nul
         case 'light_window':
           lightWindow = std;
           break;
+        case 'pizza_pizza':
+          // Not a lighting/tuning issue -- a real UV-mapping bug in the
+          // source file. Measured directly (round 15): this mesh's UVs
+          // span nearly the entire 2048x2048 texture atlas (U 0.013-0.927,
+          // V 0.013-0.987), but the actual pizza artwork only occupies a
+          // small centred region of that atlas -- the rest is dark brown
+          // padding. Most of the mesh surface samples that padding, not
+          // the pizza, which is why it rendered as a near-black disc.
+          // Remapping the UVs to the artwork's actual sub-rectangle would
+          // be the fuller fix, but with no way to visually confirm the
+          // crop lands right, that risks a *different*-looking wrong
+          // result. Safer: drop the broken texture and use a flat color
+          // sampled directly from the real artwork's pixels (ImageMagick
+          // mean of the texture's centre region) -- loses the pepperoni/
+          // herb detail, but guarantees it isn't a black disc.
+          std.map = null;
+          std.emissiveMap = null;
+          std.color.setRGB(0.84, 0.41, 0.05);
+          std.emissive.setRGB(0.12, 0.06, 0.01);
+          std.emissiveIntensity = 1;
+          std.needsUpdate = true;
+          break;
         default:
           break;
       }
@@ -327,13 +352,18 @@ function fixupMaterials(model: THREE.Object3D): THREE.MeshStandardMaterial | nul
  * against one merged mesh, in world space, with no per-mesh transform math
  * at query time -- much simpler than the alternative (one bounds tree per
  * source mesh, transforming every query into 445 different local spaces).
+ *
+ * `excludeNames` leaves specific meshes out of this static mesh entirely --
+ * used for the door panels (round 15), which need their own dynamic
+ * open/closed collision check instead (see `collidesAt`) since unlike
+ * everything else here, whether they block movement changes at runtime.
  */
-function buildCollisionGeometry(model: THREE.Object3D): THREE.BufferGeometry {
+function buildCollisionGeometry(model: THREE.Object3D, excludeNames: Set<string>): THREE.BufferGeometry {
   model.updateWorldMatrix(true, true);
   const parts: THREE.BufferGeometry[] = [];
   model.traverse((o) => {
     const mesh = o as THREE.Mesh;
-    if (!mesh.isMesh) return;
+    if (!mesh.isMesh || excludeNames.has(o.name)) return;
     const pos = mesh.geometry.getAttribute('position');
     if (!pos || pos.count === 0) return;
     let g = new THREE.BufferGeometry();
@@ -394,15 +424,53 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
   scene.add(root);
 
   const lightWindowMat = fixupMaterials(model);
-  const collisionGeometry = buildCollisionGeometry(model);
+
+  // --- doors -----------------------------------------------------------
+  // See floorplan.ts's DOORS/DoorDef comment for how these were found and
+  // exactly what "opening" means here (visibility toggle, not a hinge
+  // swing -- geometry alone doesn't say which edge hinges or which way it
+  // swings). Collected here so update() can toggle visibility and
+  // collidesAt() can toggle whether they block movement.
+  const doorMeshes = new Map<string, THREE.Object3D[]>();
+  const doorMeshNames = new Set<string>();
+  for (const d of DOORS) {
+    doorMeshes.set(d.id, []);
+    for (const n of d.meshNames) doorMeshNames.add(n);
+  }
+  model.traverse((o) => {
+    for (const d of DOORS) {
+      if (d.meshNames.includes(o.name)) doorMeshes.get(d.id)!.push(o);
+    }
+  });
+  const doorOpen = new Map<string, boolean>(DOORS.map((d) => [d.id, false]));
+  const DOOR_OPEN_RADIUS = 1.3;
+  function nearDoor(d: DoorDef, x: number, z: number): boolean {
+    return (x - d.x) ** 2 + (z - d.z) ** 2 < DOOR_OPEN_RADIUS * DOOR_OPEN_RADIUS;
+  }
+
+  const collisionGeometry = buildCollisionGeometry(model, doorMeshNames);
   const collisionBVH = collisionGeometry.boundsTree as MeshBVH | undefined;
   const _collideSphere = new THREE.Sphere();
   function collidesAt(x: number, z: number): boolean {
-    if (!collisionBVH) return false;
-    for (const y of COLLIDE_HEIGHTS) {
-      _collideSphere.center.set(x, y, z);
-      _collideSphere.radius = COLLIDE_RADIUS;
-      if (collisionBVH.intersectsSphere(_collideSphere)) return true;
+    // Doors take priority over the static BVH, not just skip-when-open:
+    // even with the panel mesh excluded from the BVH, the flanking wall/
+    // frame geometry can still be close enough to a door's exact centre
+    // to trip the sphere check (confirmed by actually running this --
+    // standing at a door's centre with it "open" still read as blocked
+    // until this was fixed). Being inside a door's box now settles the
+    // question outright: open means always passable there regardless of
+    // what the BVH says nearby, closed means always blocked without even
+    // needing the BVH (the panel's already excluded from it anyway).
+    for (const d of DOORS) {
+      const inBox = Math.abs(x - d.x) <= d.halfW + COLLIDE_RADIUS && Math.abs(z - d.z) <= d.halfD + COLLIDE_RADIUS;
+      if (inBox) return !doorOpen.get(d.id);
+    }
+    if (collisionBVH) {
+      for (const y of COLLIDE_HEIGHTS) {
+        _collideSphere.center.set(x, y, z);
+        _collideSphere.radius = COLLIDE_RADIUS;
+        if (collisionBVH.intersectsSphere(_collideSphere)) return true;
+      }
     }
     return false;
   }
@@ -595,11 +663,19 @@ export async function buildApartment(scene: THREE.Scene, renderer: THREE.WebGLRe
     exposure: () => live.exposure,
     collidesAt,
 
-    update(dt, elapsed, subject) {
+    update(dt, elapsed, lunaPos, visitorPos) {
       stepTransition(dt);
 
-      if (subject) {
-        lunaFill.position.set(subject.x, subject.y + 2.3, subject.z);
+      if (lunaPos) {
+        lunaFill.position.set(lunaPos.x, lunaPos.y + 2.3, lunaPos.z);
+      }
+
+      for (const d of DOORS) {
+        const near = (lunaPos !== null && nearDoor(d, lunaPos.x, lunaPos.z))
+          || (visitorPos !== null && nearDoor(d, visitorPos.x, visitorPos.z));
+        if (near === doorOpen.get(d.id)) continue;
+        doorOpen.set(d.id, near);
+        for (const o of doorMeshes.get(d.id) ?? []) o.visible = !near;
       }
 
       // motes: slow spin plus a gentle vertical bob

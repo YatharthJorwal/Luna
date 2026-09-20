@@ -392,7 +392,65 @@ GPU/browser in this sandbox, and the fill-light retune in particular is a
 best-effort correction to a *confirmed-wrong* number, not a confirmed-right
 one. Full account in `docs/DECISIONS.md`'s round-14 entry.
 
-Full writeup for rounds 6-14 in `docs/DECISIONS.md`.
+**Round 15: round 14 confirmed working ("works properly"), four smaller
+asks followed.** A pizza prop rendering as a solid black disc, Luna
+"walking into the wall for the last 10 minutes" (a pathfinding gap, not
+another collision bug), furniture boundaries, and door/ceiling
+functionality — both removed in round 12 for lack of any way to identify
+the meshes by name.
+
+- **Pizza**: a real bug in the source file, not a rendering/lighting
+  issue — the mesh's UVs span nearly the entire 2048x2048 texture atlas
+  (measured from the accessor data directly), but the actual pizza
+  artwork only occupies a small centred region of it; most of the
+  surface samples the atlas's dark padding instead. Extracted the real
+  PNG from the file's binary chunk and looked at it to confirm. Fixed
+  with a flat color sampled from the artwork's actual pixels
+  (ImageMagick mean of the texture's centre region), not a UV remap with
+  no way to verify the crop lands right.
+- **"Stuck" walking into walls**: round 13 made wander *target selection*
+  collision-aware; nothing checked whether the straight-line *route* to
+  an otherwise-valid target actually clears what's in between. Added
+  stuck-detection to `WanderController` — no real pathfinding (would need
+  per-room data this model doesn't have), just: if she hasn't moved 5cm
+  in 3 seconds while walking toward a target, abandon it and the rest of
+  the queued path for a fresh one, rather than push into a wall forever.
+- **Furniture boundaries**: already covered by round 13's collision BVH
+  (built from every mesh, furniture included) — read as the same gap as
+  the pathfinding item, not a separate missing feature.
+- **Doors**: found geometrically this time — scanned every mesh's real
+  world-space bounding box (computed by hand from the glTF node
+  hierarchy's transforms) for door-panel shapes. Found 7 matching meshes
+  at 5 locations. Re-added as proximity-based disappear/reappear (opens
+  within 1.3m of Luna or the visitor), deliberately not a hinge swing —
+  geometry doesn't say which edge hinges or which way it opens, and a
+  wrong guess would look worse than not animating it. Door meshes are now
+  excluded from the static collision BVH (`buildCollisionGeometry` takes
+  an exclusion set) and checked separately, since unlike everything else
+  in it, whether they block movement changes at runtime. **A real bug
+  found by running it**: the first version let the static BVH override
+  an open door (nearby wall/frame geometry was still close enough to trip
+  the collision sphere even with the panel excluded) — fixed by checking
+  door boxes first, so being inside one settles collision outright.
+- **Ceiling**: searched the same way as doors and found *nothing* —
+  broadened to "anything with its bounding box top above 2.4m" turned up
+  only full floor-to-ceiling wall segments, no separate horizontal cap
+  anywhere. This model is genuinely roofless (an open-top "dollhouse"
+  scene) — not a round-12 gap to close, a real property of the file,
+  confirmed by searching it rather than assumed.
+
+Verified against the real file: all three geometric findings (pizza UV
+range, 7 door meshes, zero ceiling meshes) came from directly computing
+real per-node world-space bounding boxes, not `gltf-transform`'s summary
+view. The door system was confirmed end-to-end against the real loaded
+model and real collision BVH — a door reports blocked before anyone
+approaches, unblocked while someone's there, blocked again after they
+leave. **Not verified: how the 3-second stuck timeout feels in practice,
+or whether hiding both meshes at a paired door location looks right** —
+no GPU/browser in this sandbox. Full account in `docs/DECISIONS.md`'s
+round-15 entry.
+
+Full writeup for rounds 6-15 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
 ## Docs map

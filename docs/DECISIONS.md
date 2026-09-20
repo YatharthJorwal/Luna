@@ -4350,3 +4350,165 @@ ceiling), `src/sandbox.ts` (`WalkableArea.clamp()` rewrite,
 `CharacterController.moveClamped()` axis-sliding), and these docs. No
 changes to `index.html`/`src/main.ts`/`src/style.css`.
 
+## Round 15: round 14 confirmed working -- pizza, doors, ceiling, and the "stuck" complaint
+
+First round-14 confirmation from the user: "works properly." Four smaller,
+more specific asks followed: a pizza prop rendering as a solid black disc,
+Luna "walking into the wall for the last 10 minutes" (a pathfinding
+complaint distinct from round 14's teleport bug), real furniture
+boundaries, and door/ceiling functionality -- both removed in round 12
+because the model's generic mesh names (`Object_0`, `Object_1`, ...) gave
+no way to identify them. This round investigated each one directly against
+the file rather than guessing, since the original upload was still in this
+sandbox.
+
+### The pizza: a real UV-mapping bug in the source file
+
+Traced to the `pizza_pizza` material and, past that, to the mesh's actual
+UV coordinates -- read directly out of the accessor data, not inferred.
+The mesh's UVs span nearly the *entire* 2048x2048 texture atlas (measured:
+U 0.013-0.927, V 0.013-0.987). Extracting the actual PNG from the file's
+binary chunk (`pizza_pizza_baseColor.png`, confirmed valid, 2048x2048) and
+looking at it showed why that's a problem: the real pizza artwork
+(pepperoni, herbs, a warm orange base) occupies only a small centred
+region of that atlas -- most of the image is dark brown padding. A mesh
+whose UVs span almost the full 0-1 range samples mostly that padding, not
+the artwork, which is exactly a near-black disc.
+
+This is a real bug in the source file itself (a UV/atlas-packing mismatch
+from however the original scene was authored), not anything introduced by
+loading it here. The precise fix would be remapping this mesh's UVs into
+the artwork's actual sub-rectangle -- but with no way to visually confirm
+the crop lands on the right spot, that risks trading one wrong-looking
+result for a different one. Instead, `fixupMaterials()` drops the broken
+texture (`map`/`emissiveMap` cleared) and sets a flat color sampled
+directly from the real artwork's pixels: cropped the texture's centre
+region and took ImageMagick's mean color (`srgb(84%, 41%, 5%)`, a warm
+cheese/pepperoni orange) rather than guessing at a plausible pizza color.
+Loses the pepperoni/herb detail; guarantees it isn't a black disc.
+
+### "She's been walking into the wall for the last 10 minutes": no pathfinding, now with a way out
+
+Round 14 fixed the *teleport*, but not the underlying gap: `WanderController`
+plans a straight-line point and walks toward it with wall-sliding
+(`moveClamped`), not real pathfinding. Round 13 made *target selection*
+collision-aware (won't pick a point that's inside geometry), but nothing
+checks whether the straight-line route *to* an otherwise-valid target
+actually clears whatever's between here and there. A target on the far
+side of a wall from an unlucky anchor/spawn position leaves her pushed up
+against that wall, making zero progress, indefinitely -- exactly the
+reported symptom.
+
+Building real navmesh-graph pathfinding would be the complete fix, but
+needs real per-room polygon data this model still doesn't have (see the
+round-12/13 entries on why `floorplan.ts` is one placeholder region).
+Instead, added stuck-detection to `WanderController.getTarget()`: track
+her position across calls, and if she hasn't moved more than 5cm in 3
+seconds while actively walking toward a target, abandon that target *and*
+the rest of the queued path (which was planned against it, so it's
+suspect too) and let the next `plan()` call pick something fresh. This
+doesn't make her route around obstacles -- it makes the failure mode
+"occasionally picks a new target after a few seconds of being blocked"
+instead of "stuck indefinitely," which is what was actually reported.
+
+### Furniture boundaries: already covered, not a new gap
+
+Round 13's collision BVH is built from every mesh in the loaded model,
+furniture included -- there isn't a separate "furniture boundary" system
+to add on top of it. Read the request as most likely the same underlying
+gap as the pathfinding item above (getting stuck *because of* furniture in
+the path, not being able to walk *through* furniture, which collision
+already prevents) rather than a distinct missing feature.
+
+### Doors: found geometrically, opened by disappearing rather than swinging
+
+The file has no per-object names to identify doors by, so they were found
+the same way the ceiling search worked in principle: scanning every
+mesh's real world-space bounding box (computed from the glTF node
+hierarchy's transforms and each primitive's accessor min/max, walked and
+multiplied by hand) for the shape of a door panel -- roughly 0.6-1.2m
+wide, 1.7-2.3m tall, thin the other way, bottom near the floor. That
+search found **7 matching meshes at 5 distinct locations** (two locations
+matched two nearby meshes each, most likely a frame+panel pair -- no way
+to tell which is which from geometry alone, so both are toggled
+together).
+
+What "opening" means here, deliberately: the door mesh(es) at a location
+become invisible and stop blocking movement when either Luna or the
+visitor comes within 1.3m, and reappear/re-block once nobody's near.
+**Not a hinge swing** -- geometry alone doesn't say which vertical edge
+hinges or which direction it opens, and animating a guess wrong would
+look worse than a clean disappear/reappear.
+
+Implementation: `floorplan.ts` gained a `DOORS` export (5 `DoorDef`
+entries, each with its mesh name(s) and a footprint box).
+`buildCollisionGeometry()` now takes an exclusion set and leaves door
+meshes out of the static BVH entirely, since unlike everything else in
+it, whether a door blocks movement changes at runtime.
+`ApartmentHandle.update()` gained a second position parameter
+(`visitorPos`, alongside the existing `lunaPos`) so doors can react to
+whichever camera mode is actually walking around -- `sandbox.ts`'s call
+site now passes `rig.visitorPosition()` when in visitor mode, `null`
+otherwise.
+
+**A real bug found by actually running it, same pattern as every
+collision fix this project has needed**: the first version checked the
+static BVH before the door-open override, so even with the door panel
+excluded from the BVH, the flanking wall/frame geometry immediately next
+to a door's centre was close enough to still trip the collision sphere --
+doors that were confirmed "open" (mesh hidden) still blocked movement.
+Fixed by checking door boxes *first*: being inside an open door's box now
+settles the question outright (always passable there, regardless of what
+the BVH reports nearby) rather than merely skipping the door's own
+check and falling through to a BVH query that could still say blocked.
+
+### Ceiling show/hide: there's no ceiling to show or hide
+
+Searched for it the same way doors were found -- scanning every mesh's
+bounding box for the shape of a ceiling panel (thin in Y, large
+horizontal area, positioned near the building's real max height of
+~2.6-2.78m). The search found exactly **one** match, a `LightMetal`
+mesh roughly 7.8m x 3.6m at y~2.05-2.08m -- almost certainly a duct or
+ceiling grid over one specific area, not a general room ceiling. Broadening
+the search to anything with its bounding box top above 2.4m regardless of
+thickness turned up only full floor-to-ceiling wall segments (`Wall_material`,
+spanning y 0.00-2.77m) -- no separate horizontal cap at all.
+
+This model is genuinely roofless: an open-top "dollhouse" interior,
+common for Sketchfab room showcases meant to be viewed from directly
+above (matching round 12's original guess about the file's likely
+intended viewing angle). There's no ceiling geometry anywhere in it to
+build a show/hide toggle around -- not a gap to fix, a real property of
+the source file. Confirmed by actually searching the file's geometry, not
+assumed.
+
+### Verification
+
+Both production builds clean. All three geometric findings (pizza UV
+range, door candidates, ceiling absence) came from directly walking the
+glTF node hierarchy and computing real world-space bounding boxes by hand
+(matrix composition from each node's translation/rotation/scale, applied
+to each primitive's accessor min/max) -- not `gltf-transform`'s summary
+view, which doesn't expose per-node world transforms. The door system was
+then verified against the real loaded model, real collision BVH included:
+found all 7 named door meshes in the actual loaded scene, confirmed all 5
+doors start closed, and confirmed a door at its exact centre reports
+blocked before anyone approaches, unblocked while someone's standing
+there, and blocked again once they leave -- this exact sequence is what
+caught the BVH-priority bug described above.
+
+**Not verified: how the stuck-detection timeout feels in practice** (3
+seconds is a guess at a reasonable "clearly not making progress" window,
+not tuned against real play), **or whether hiding both meshes at a
+paired door location (rather than only the actual swinging panel) looks
+right** -- no way to tell which of a pair is the frame without seeing it.
+Same limitation as every round: no GPU/browser in this sandbox to check
+any of this against a render.
+
+### Scope note
+
+This round touched `src/apartment/floorplan.ts` (`DOORS`/`DoorDef`
+added), `src/apartment/index.ts` (pizza fixup, door system, collision
+exclusion + priority fix, `update()` signature), `src/sandbox.ts`
+(`WanderController` stuck-detection, `update()` call site), and these
+docs. No changes to `index.html`/`src/main.ts`/`src/style.css`.

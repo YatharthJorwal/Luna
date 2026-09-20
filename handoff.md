@@ -42,105 +42,102 @@ full detail always in `docs/ROADMAP.md`):
 | 7 | VRM avatar migration (replaced Live2D) | ✅ |
 | 8 | Emotion system + expression control | ✅ |
 | 9 | UI reskin + persistent conversation-log panel | 🔶 backend verified for real, frontend only structurally verified |
-| 10 | Environments (the apartment) | 🔶 — two rounds of real-usage bugfixes now, see below |
+| 10 | Environments (the apartment) | 🔶 — round 14's fixes confirmed working; round 15 was smaller-scope polish, see below |
 | 11 | Work Mode (shell can act, not just advise) | ⬜ not started, fully scoped/approved |
 
-**Phase 10, specifically — where this session's work sits:** round 12
-swapped the procedural apartment for a prebuilt `.glb`. Round 13 was the
-first real-usage bugfix pass (lighting, materials, added real collision).
-This round (14) found that round 13's own fixes were themselves broken —
-a collision-fallback bug and a badly-miscalibrated light — both now fixed
-and verified against the real file where possible. **Nothing from round
-13 or 14 has been confirmed to actually look/feel right yet** — every
-round so far has found new problems the moment it actually ran.
+**Phase 10, specifically — where this session's work sits:** round 14's
+collision-teleport and fill-light fixes were confirmed working by the
+user ("works properly") — the first real confirmation this whole
+apartment effort has gotten since round 12's model swap. Round 15 (this
+one) was four smaller, specific asks: a broken pizza texture, a
+pathfinding gap, and re-investigating doors/ceiling geometrically now
+that there's real experience finding things in this file's anonymous
+mesh names.
 
-## What this round did (round 14)
+## What this round did (round 15)
 
-The user ran round 13's build and reported, in one message: walking into
-any wall repeatedly teleports to a fixed spot elsewhere in the building
-("beside the TV... again and again"), other spots teleport elsewhere too
-("like beside the couch"), Luna is stuck the same way, she's "fucking
-ethereal" (a screenshot showed her as a solid white glowing silhouette at
-night), the spectator camera "gained lightspeed," and "many things are
-still glowing."
+1. **Pizza rendering as a solid black disc**: a real bug in the source
+   file. The mesh's UVs (read directly from the accessor data) span
+   nearly the entire 2048x2048 texture atlas, but the actual pizza
+   artwork occupies only a small centred region — most of the surface
+   samples the atlas's dark padding. Extracted the real PNG from the
+   file's binary chunk to confirm this visually. Fixed by dropping the
+   broken texture and using a flat color sampled from the artwork's
+   actual pixels (ImageMagick mean of the texture's centre region:
+   warm orange, `~(0.84, 0.41, 0.05)`), rather than attempting a UV
+   remap with no way to verify the crop lands right.
+2. **"Walking into the wall for the last 10 minutes"**: a real
+   pathfinding gap, distinct from round 14's teleport bug. Round 13 made
+   wander *target selection* collision-aware but never checked whether
+   the straight-line *route* to a target actually clears what's between
+   here and there. Added stuck-detection to `WanderController`: if she
+   hasn't moved 5cm in 3 seconds while walking toward a target, abandon
+   it (and the rest of the queued path) for a fresh one. Not real
+   pathfinding — that needs per-room data this model doesn't have — but
+   turns "stuck indefinitely" into "picks something else after a few
+   seconds."
+3. **Furniture boundaries**: already covered by round 13's collision
+   system (built from every mesh, furniture included). Read as the same
+   underlying gap as #2, not a separate missing feature.
+4. **Doors**: re-investigated geometrically. Scanned every mesh's real
+   world-space bounding box (computed by hand from the glTF node
+   hierarchy) for door-panel shapes and found 7 matching meshes at 5
+   locations. Re-added as proximity-based disappear/reappear (opens
+   within 1.3m of Luna or the visitor) — deliberately not a hinge swing,
+   since geometry alone doesn't say which edge hinges or which way it
+   opens. Door meshes are now excluded from the static collision BVH and
+   checked separately, since their collision state changes at runtime.
+   **A real bug found by running it**: nearby wall/frame geometry in the
+   static BVH was still blocking an "open" door until door-box checks
+   were moved to run *before* the BVH query rather than after.
+5. **Ceiling show/hide**: searched the same way as doors and found
+   *nothing* — this model has no ceiling meshes at all, confirmed by
+   broadening the search and finding only full floor-to-ceiling walls,
+   no horizontal caps anywhere. It's a genuinely roofless "dollhouse"
+   scene. Not a gap to close — there's nothing to toggle.
 
-1. **The teleport bug (the serious one).** Traced to
-   `WalkableArea.clamp()`'s last-resort fallback, which stepped toward the
-   building's geometric centre in big fractional jumps when blocked,
-   reasoning this would rarely run. It wasn't rare: `CharacterController.
-   moveClamped()` (Luna's own per-step movement) called `clamp()`
-   unconditionally on *every* blocked step, never trying to slide around
-   an obstacle first the way the visitor camera does. Fixed both: `clamp()`
-   now searches a small ring (0.08–0.6m) around the blocked point instead
-   of jumping toward the centre, and Luna's movement gained the same
-   axis-decomposed sliding attempt the visitor camera already had.
-   **Verified against the real file**: extracted the literal `WalkableArea`
-   class source and ran it against the real collision BVH — 67 real
-   blocked points across the whole footprint all resolved within 0.56m,
-   nowhere near the multi-metre jumps possible before.
-2. **The ethereal glow.** The round-13 fill light was positioned close
-   enough to her own body (chest height, ~0.35m in front — roughly
-   0.2-0.3m from actual skin) that physically-correct point-light falloff
-   amplified its intensity by roughly 8-25x. Night's `fillI: 11` was
-   delivering something like 90-275 effective units at her skin, against
-   a sun that never exceeds 1.7 in this system — an order-of-magnitude
-   miscalibration, not a subtle one. Fixed: repositioned well above her
-   head (2.3m vs 1.4m), softened falloff, extended reach, and cut every
-   mode's intensity 3-4x on top of the repositioning. Deliberately erred
-   toward under-lighting this time.
-3. **"Many things are still glowing."** Round 13 only fixed one named
-   emissive material. Rather than guess at more names without fresh
-   evidence of which ones, added a general safety net: any material whose
-   peak emissive brightness exceeds a ceiling gets scaled down
-   automatically, regardless of name.
-4. **Spectator "lightspeed."** Investigated and found this is pre-existing,
-   scroll-wheel-adjustable behavior, untouched by round 13 — but 24
-   units/s across this building's real ~19m width does read as
-   "lightspeed" regardless of cause, so the ceiling was lowered to 14.
-
-**Verification**: both production builds clean. The collision fix was
-tested against the real file's actual BVH (see above) — not just reasoned
-about. The fill-light fix is grounded in the actual falloff formula and
-the actual reported failure, but — like every lighting number in this
-project — not confirmed against a real render.
+**Verification**: both production builds clean. All geometric findings
+(pizza UV range, 7 door meshes, zero ceiling meshes) came from directly
+computing real per-node world-space bounding boxes against the actual
+file, not a summary tool's output. The door system was confirmed
+end-to-end against the real loaded model and collision BVH: blocked
+before anyone approaches, unblocked while someone's there, blocked again
+after they leave.
 
 ## Repo/git housekeeping
 
 This sandbox has no direct push access to the user's GitHub — work
 leaves as a git bundle, applied via `git fetch <bundle> main:main-mirror
-&& git merge main-mirror && git push origin main` (confirmed correct
-syntax — note `main:main-mirror`, not `main-mirror:main-mirror`; bundle
-handed over at `C:\Users\User\Downloads\<filename>`). **Important:**
-round 13's bundle added a new dependency (`three-mesh-bvh`) and the user
-hit exactly the expected snag — merging a bundle updates `package.json`/
-`package-lock.json` but doesn't run `npm install` for you. Worth
-reminding on every bundle that changes dependencies: run `npm install`
-after merging, before `npm run sandbox`. This round's bundle does not add
-any new dependencies.
+&& git merge main-mirror && git push origin main` (confirmed syntax —
+`main:main-mirror`, not `main-mirror:main-mirror`; bundle handed over at
+`C:\Users\User\Downloads\<filename>`). **This round's bundle adds no new
+dependencies** — no `npm install` needed after merging, unlike round 13's
+bundle (which added `three-mesh-bvh` and briefly confused the user when
+`npm run sandbox` failed to resolve it — worth a heads-up on any future
+round that does add one).
 
 ## Recent issues
 
-Two serious ones from round 13 fixed this round (teleport bug, ethereal
-glow) — see above. Both are verified as *not reproducing the exact
-reported symptom* against real data where that was possible (the
-collision one, concretely; the lighting one only as far as "the math that
-caused it is now very different"). Neither has been re-confirmed by the
-user running it again yet.
+None open from round 14 — confirmed working. This round's fixes
+(pizza, doors, stuck-detection) are new and unconfirmed as of this
+writeup.
 
 ## Outstanding stuff
 
 From `docs/ROADMAP.md`'s "Still open" list, current as of this write-up:
-- **Confirm round 14's fixes actually work** — this is the priority.
-  Does collision feel reasonable to walk around in now (not just
-  "doesn't teleport")? Is Luna visible without looking artificially lit?
-  Did the broader emissive cap actually catch what "many things...
-  glowing" referred to?
-- Real room boundaries, door positions, and furniture-anchor locations —
-  still unknown, still needs someone who can see the loaded model to
-  identify.
-- Sit/cook/read animation — still blocked on the above.
-- Confirming the model's actual Sketchfab license is one of the
-  "fine to use" ones (CC0/CC-BY/CC-BY-SA), given the repo is public.
+- **Confirm round 15's fixes** — does the pizza look right now (flat
+  color, no more black disc)? Do doors actually open/close sensibly when
+  walked up to? Does the stuck-detection timeout (3s) feel reasonable,
+  or does she visibly "give up" too fast/slow?
+- Real room boundaries and furniture-anchor locations are still unknown.
+  Round 15's geometric mesh-finding approach (used for doors/ceiling)
+  could plausibly extend to finding furniture anchors too — untried.
+- Real navmesh-graph pathfinding (vs. round 15's stuck-detection
+  workaround) still needs that same room/furniture data to be worth
+  building.
+- Sit/cook/read animation — still further off than pre-round-12.
+- Confirming the model's Sketchfab license is one of the "fine to use"
+  ones (CC0/CC-BY/CC-BY-SA), given the repo is public.
 - If real-time reflections ever matter enough: `THREE.SSRPass` is the
   concrete next step, not attempted.
 - Task Guide Mode tuning: screenshot interval, nagging aggressiveness.
@@ -150,17 +147,14 @@ From `docs/ROADMAP.md`'s "Still open" list, current as of this write-up:
 
 ## Future goal
 
-Immediate: get round 14's fixes in front of the user's actual screen.
-Two rounds in a row now have shipped fixes that looked reasonable in code
-and turned out wrong the moment they actually ran — worth being upfront
-that this pattern may continue at least once more before the apartment
-stabilizes, given the complete lack of any way to render or preview
-anything from this sandbox.
+Immediate: get round 15's fixes in front of the user's actual screen —
+pizza, doors, and whether the stuck-detection timeout feels right.
 
-Medium-term: once collision/lighting are actually confirmed stable, work
-out real room boundaries/anchors/doors for the model (needs the user's
-eyes), then pick back up sit/cook/read animation. Separately, get Phase 4
-confirmed end-to-end on the real machine.
+Medium-term: if round 15's geometric mesh-finding approach for doors
+proves reliable in practice, consider extending it to find real
+furniture positions too, which would finally unblock sit/cook/read
+animation and more accurate room-level scene-state. Separately, get
+Phase 4 confirmed end-to-end on the real machine.
 
 Overarching: a genuinely useful always-on desktop companion — Task Guide
 Mode as the core loop, eventually extending into Work Mode (Phase 11)

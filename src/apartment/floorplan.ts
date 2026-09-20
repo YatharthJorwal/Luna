@@ -130,3 +130,40 @@ export function anchorNear(x: number, z: number, maxDist = 1.2): Anchor | null {
   }
   return best;
 }
+
+export interface DoorDef {
+  id: string;
+  /** Exact node names of this door's mesh(es) in the loaded model. The
+   * file has no useful names to go on (generic Object_N), so these were
+   * found geometrically instead: scanning every mesh's real world-space
+   * bounding box for the shape of a door panel (roughly 0.6-1.2m wide,
+   * 1.7-2.3m tall, thin the other way, bottom near the floor). Some doors
+   * matched two nearby meshes (frame + panel, most likely) -- both are
+   * included and toggled together, since there's no way to tell which is
+   * which from geometry alone. See docs/DECISIONS.md's round-15 entry for
+   * the exact search and its numbers.
+   *
+   * What this buys: a door "opens" by disappearing (and stops blocking
+   * movement) when someone's close enough, and reappears (blocking again)
+   * once they're not -- not a hinge swing. Real geometry doesn't say which
+   * vertical edge is the hinge or which way it should swing, and guessing
+   * wrong would look worse than not animating it at all.
+   */
+  meshNames: string[];
+  x: number;
+  z: number;
+  /** Half-extents of the door's footprint, for the closed-door collision
+   * box (separate from and excluded out of the main collision BVH -- see
+   * buildCollisionGeometry). */
+  halfW: number;
+  halfD: number;
+}
+
+export const DOORS: DoorDef[] = [
+  { id: 'door-1', meshNames: ['Object_291'], x: -0.79, z: 6.55, halfW: 0.5, halfD: 0.12 },
+  { id: 'door-2', meshNames: ['Object_302'], x: 1.08, z: 1.2, halfW: 0.12, halfD: 0.52 },
+  { id: 'door-3', meshNames: ['Object_309', 'Object_311'], x: 1.47, z: 3.29, halfW: 0.5, halfD: 0.12 },
+  { id: 'door-4', meshNames: ['Object_320'], x: 5.99, z: 1.57, halfW: 0.48, halfD: 0.12 },
+  { id: 'door-5', meshNames: ['Object_339', 'Object_341'], x: -3.22, z: 5.63, halfW: 0.12, halfD: 0.42 },
+];
+

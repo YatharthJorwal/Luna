@@ -415,6 +415,23 @@ const IDLE_MAX_S = 6;
 const ANCHOR_CHANCE = 0.72;
 const WANDER_MARGIN_M = 0.28;
 const DOORWAY_MARGIN_M = 0.1;
+/** Round 15: there's no real pathfinding here -- a leg is a straight-line
+ * point, walked toward directly with wall-sliding (see moveClamped), not
+ * routed around obstacles. That's fine when the target is actually
+ * reachable in a straight-ish line, but this model's collision (round 13)
+ * means a target on the other side of a wall from an unlucky spawn/anchor
+ * pick can leave her pushed up against that wall making no progress at
+ * all -- reported directly ("she's been walking into the wall for the
+ * last 10 minutes"). Rather than build real navmesh-graph pathfinding
+ * against a model with no per-room data (the honest way to actually fix
+ * this -- see docs/DECISIONS.md), detect "not actually getting anywhere"
+ * and abandon the leg for a fresh one instead of pushing into a wall
+ * forever. A real fix's job is done once it makes the failure mode
+ * "occasionally picks a new target after a few seconds" instead of
+ * "stuck indefinitely" -- not to make her path around obstacles well.
+ */
+const STUCK_MOVE_EPSILON_M = 0.05;
+const STUCK_TIMEOUT_S = 3;
 
 interface Leg {
   point: THREE.Vector3;
@@ -430,6 +447,9 @@ class WanderController {
   private here = 0;
   private readonly patches: NavPatch[];
   private readonly adj: number[][];
+  // Round 15 stuck-detection state -- see STUCK_TIMEOUT_S's comment above.
+  private stuckTimer = 0;
+  private stuckCheckPos: THREE.Vector3 | null = null;
 
   constructor(
     patches: NavPatch[],
@@ -450,6 +470,8 @@ class WanderController {
       if (flatDistance(currentPos, this.active.point) < ARRIVE_RADIUS_M) {
         const reached = this.active;
         this.active = null;
+        this.stuckTimer = 0;
+        this.stuckCheckPos = null;
         const next = this.queue.shift();
         if (next) {
           this.active = next;
@@ -460,6 +482,33 @@ class WanderController {
           : IDLE_MIN_S + Math.random() * (IDLE_MAX_S - IDLE_MIN_S);
         this.idleUntil = this.elapsed + dwell;
         this.lastAnchor = reached.anchor;
+      } else if (!paused) {
+        // Not there yet -- but is she actually getting closer, or pushed
+        // up against something with nowhere to slide? (see STUCK_TIMEOUT_S)
+        if (!this.stuckCheckPos) {
+          this.stuckCheckPos = currentPos.clone();
+        } else if (flatDistance(currentPos, this.stuckCheckPos) < STUCK_MOVE_EPSILON_M) {
+          this.stuckTimer += delta;
+          if (this.stuckTimer > STUCK_TIMEOUT_S) {
+            // Give up on this leg and the rest of the queued path -- it
+            // was planned against a target that's turned out unreachable
+            // in a straight line, so the remaining waypoints are suspect
+            // too. A fresh plan() picks a new, independently-reachable
+            // (collision-checked) destination. Force idleUntil down to
+            // "now" too, or she'd stand frozen until whatever dwell timer
+            // was left over from the *previous* arrival happened to
+            // expire, rather than replanning immediately.
+            this.active = null;
+            this.queue.length = 0;
+            this.stuckTimer = 0;
+            this.stuckCheckPos = null;
+            this.idleUntil = this.elapsed;
+          }
+        } else {
+          this.stuckCheckPos.copy(currentPos);
+          this.stuckTimer = 0;
+        }
+        if (this.active) return this.active.point;
       } else {
         return this.active.point;
       }
@@ -1543,9 +1592,14 @@ async function boot(): Promise<void> {
       (name) => character.playGesture(name),
     );
     // The apartment's personal fill light follows her specifically (see
-    // apartment/index.ts's round-13 comment on why) -- not whichever
-    // camera mode happens to be active, so always her own position here.
-    apartment.update(delta, clock.elapsedTime, vrm.scene.position);
+    // apartment/index.ts's round-13 comment on why); doors (round 15)
+    // open for either her or whoever's walking around in visitor mode.
+    apartment.update(
+      delta,
+      clock.elapsedTime,
+      vrm.scene.position,
+      rig.mode() === "visitor" ? rig.visitorPosition() : null,
+    );
 
     // --- she notices you ---------------------------------------------------
     // Track the camera when it's near her and roughly in front; otherwise
