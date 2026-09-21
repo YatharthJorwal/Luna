@@ -199,7 +199,19 @@ fn spawn_backend_processes(children: Arc<Mutex<Vec<(String, Child)>>>) {
             // real console (spawn_logged() below) -- found on the user's
             // actual machine, not predicted in advance.
             .env("PYTHONIOENCODING", "utf-8")
-            .env("PYTHONUTF8", "1");
+            .env("PYTHONUTF8", "1")
+            // Without this, Python fully buffers stdout/stderr once
+            // they're not attached to a real terminal (exactly what
+            // spawn_logged()'s file redirection below does) -- meaning
+            // every print() call, including the diagnostic ones tts.py
+            // relies on for "check the log to see what actually
+            // happened," can sit unwritten for a long time instead of
+            // showing up when it actually occurred. Found by a real
+            // debugging session where gpt_sovits.log clearly showed a
+            // completed request but the corresponding print in the log
+            // that should have accompanied it never appeared -- not
+            // theoretical.
+            .env("PYTHONUNBUFFERED", "1");
         spawn_logged("GPT-SoVITS", &mut cmd, &logs_dir.join("gpt_sovits.log"), &children);
     } else {
         eprintln!(
@@ -236,7 +248,15 @@ fn spawn_backend_processes(children: Arc<Mutex<Vec<(String, Child)>>>) {
         }
 
         let mut cmd = Command::new(&python);
-        cmd.arg("app.py").current_dir("../orchestrator");
+        cmd.arg("app.py")
+            .current_dir("../orchestrator")
+            // Same reasoning as GPT-SoVITS's spawn above -- app.py's own
+            // print() calls (including ones with flush=True already, but
+            // no reason to depend on every call site remembering that)
+            // need this to reliably show up in orchestrator.log in real
+            // time rather than whenever Python's internal buffer happens
+            // to fill.
+            .env("PYTHONUNBUFFERED", "1");
         spawn_logged(
             "orchestrator",
             &mut cmd,

@@ -529,6 +529,26 @@ Still applies from Phase 1 -- unchanged:
   that points at the graceful-shutdown handshake's Rust half not actually
   working -- see `docs/DECISIONS.md`, that half was never verified in the
   sandbox this was built in.
+- **No voice, or `gpt_sovits.log` shows `only one usage of each socket
+  address... normally permitted` on port 9880:** same root cause as the
+  8765 case above, but sneakier -- a leftover GPT-SoVITS process from a
+  previous session is still holding port 9880, so the fresh instance this
+  launch tries to start fails to bind and exits, while the orchestrator
+  (which only checks "is *something* listening on 9880," not "is it the
+  process I just started") proceeds anyway. Whether you actually hear
+  anything depends on whether that leftover process is still healthy --
+  it might serve requests fine, or it might be stuck/half-dead. Either
+  way: `netstat -ano | findstr :9880`, find the PID, `taskkill /PID <pid>
+  /F`, then fully quit and relaunch Luna so a clean instance starts and
+  actually binds. Worth checking `logs/orchestrator.log` for the
+  `[luna] gpt_sovits response:` line afterward to confirm requests are
+  reaching the fresh process -- if that line is oddly slow to show up
+  even on a healthy connection, make sure you're on a build with
+  `PYTHONUNBUFFERED=1` set on both spawned processes (see
+  `docs/DECISIONS.md`); without it, Python can buffer `print()` output
+  for a long time once it's redirected to a log file instead of a real
+  terminal, which made a real, already-successful request look silent in
+  the log during actual debugging.
 
 ## Running the tests
 

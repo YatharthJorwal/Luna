@@ -4787,3 +4787,49 @@ state-machine and parsing tests, `tools/test_tools.py`'s dispatch-level
 tests for the new `set_active_task` tool) -- 25 new tests, 90 total passing
 in this sandbox. The user's real-machine retest is the next open item, same
 as Round 1's was.
+
+## PYTHONUNBUFFERED=1 on both spawned processes -- the logs weren't lying, they were just late
+
+Found during real user debugging of a "can't hear her voice" report: the
+user's `logs/orchestrator.log` showed a WebSocket connecting and nothing
+else -- no sign of a TTS request ever happening -- while their
+`logs/gpt_sovits.log`, from the same time window, clearly showed a
+completed `POST /tts` returning `200 OK` with real synthesized audio.
+`tts.py`'s `_synthesize_gpt_sovits()` always `print()`s a
+`[luna] gpt_sovits response: ...` line immediately after getting that
+response, unconditionally, so it should have been in `orchestrator.log`
+too. It wasn't a logic bug -- the print statement itself doesn't have
+`flush=True`, and Python switches stdout/stderr from line-buffered to
+fully block-buffered the moment they're not attached to a real terminal,
+which is exactly what `spawn_logged()`'s file redirection in `lib.rs`
+does for both the orchestrator and GPT-SoVITS. So the print was sitting
+in an in-memory buffer, not lost, just not written to disk yet -- which
+made a real, already-successful request look like it never happened, at
+exactly the moment someone was trying to use the log to debug why they
+couldn't hear anything.
+
+Fixed at the spawn level (`lib.rs`'s `.env("PYTHONUNBUFFERED", "1")` on
+both the GPT-SoVITS and orchestrator `Command`s) rather than chasing down
+every `print()` call site and adding `flush=True` individually -- some
+already had it (`app.py`'s stale-orchestrator-takeover line, its
+audio-bytes-received line), most didn't, and a global env var means no
+future print call can silently reintroduce this. Also separately turned
+up, but deliberately **not fixed this round**: `wait_for_port()` only
+checks "is *something* listening on 9880," not "is it the process I just
+spawned" -- so a leftover GPT-SoVITS instance from a previous session
+that never cleanly exited can satisfy the check and let the orchestrator
+proceed talking to a stale process, while the fresh one this launch tried
+to start fails to bind and silently exits. This was the actual root cause
+of the user's specific session (confirmed via `gpt_sovits.log`'s
+`WinError 10048`/`only one usage of each socket address` line). Worth
+fixing properly -- e.g. having `spawn_logged` hand back the `Child` so
+`wait_for_port`'s caller can confirm it's still alive (`try_wait()`)
+before concluding "ready," not just that the port answers -- but that
+touches process-lifecycle code in a file already full of "found on the
+user's real machine, not predicted" comments, and isn't safe to change
+blind without a real Windows machine to verify against. Documented as a
+known gap in `README.md`'s troubleshooting section instead (the new port
+9880 entry) so it's at least diagnosable next time, rather than attempted
+as an untested fix in the same sandbox that already can't build/run the
+Rust side at all (no `cargo`/Rust toolchain here -- this round's `lib.rs`
+change was reviewed by hand, not compiled).
