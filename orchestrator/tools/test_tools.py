@@ -142,3 +142,45 @@ async def test_dispatch_ignores_hallucinated_arguments(monkeypatch):
     monkeypatch.setattr(vision, "read_clipboard", lambda: "clipboard text")
     result = await tools.dispatch_tool_call("read_clipboard", {"region": "full"})
     assert result == "clipboard text"
+
+
+# ---------------------------------------------------------------------------
+# tools.dispatch_tool_call -- set_active_task (Phase 4 Round 2)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_set_active_task_starts_tracking():
+    import task_guide  # local import: avoid module-load-order surprises
+
+    task_guide.clear_active_task()
+    result = await tools.dispatch_tool_call(
+        "set_active_task", {"active": True, "description": "writing the game loop"}
+    )
+    assert "writing the game loop" in result
+    assert task_guide.get_state().active is True
+    task_guide.clear_active_task()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_set_active_task_stops_tracking():
+    import task_guide
+
+    task_guide.set_active_task(True, "something")
+    result = await tools.dispatch_tool_call("set_active_task", {"active": False})
+    assert "stopped" in result.lower()
+    assert task_guide.get_state().active is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_set_active_task_missing_active_defaults_false():
+    import task_guide
+
+    task_guide.set_active_task(True, "something")
+    # A model omitting the (schema-required) "active" argument shouldn't
+    # crash the turn -- same "absorb a malformed call gracefully"
+    # philosophy as the hallucinated-arguments test above, just for a
+    # tool that now actually takes real arguments.
+    result = await tools.dispatch_tool_call("set_active_task", {})
+    assert task_guide.get_state().active is False
+    task_guide.clear_active_task()

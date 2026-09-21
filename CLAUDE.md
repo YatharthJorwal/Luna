@@ -473,6 +473,34 @@ public -- full account, including two lower-priority Rust findings, in
 `docs/DECISIONS.md`'s freeze-checkpoint entry. `handoff.md` regenerated to
 reflect the freeze and point at Tauri shell work next.
 
+**Post-freeze session: three "ask, don't assume" items resolved, Phase 4
+finished, Phase 9 confirmed.** Session started by asking the user the
+questions `handoff.md`'s own "Ask the user, don't assume" section flagged,
+per its own instruction -- all three came back resolved in the docs' favor
+of being stale, not in favor of remaining work: round 15's sandbox bundle
+was confirmed merged and tested on the user's machine, Phase 4's
+vision-tools retest was confirmed working, and Phase 9's frontend (pastel
+reskin + log panel) was confirmed looking/working right. The freeze
+checkpoint's flagged `config.yaml`-tracked-in-git issue is also already
+resolved on the user's end (now gitignored, with `config.example.yaml` as
+the template) -- confirmed against the actual git history, not just taken
+on faith. `docs/ROADMAP.md` updated to ✅ for both Phase 4 and Phase 9
+accordingly. Then built Phase 4's remaining piece: the scheduled-capture/
+off-task-chide loop (Task Guide Mode's other, larger half) -- new
+`orchestrator/task_guide.py` (single-active-task state machine + a
+VLM-based on/off-task comparison call), a third tool (`set_active_task`)
+the model calls to start/update/stop tracking, a `task_guide` config
+section, and `app.py`'s per-driver-connection background loop that runs
+the actual periodic check and speaks an in-character chide when it finds
+drift. Full reasoning in `docs/DECISIONS.md`'s "Phase 4 Round 2" entry.
+25 new tests (state machine, parsing, tool dispatch), 90 total passing in
+this sandbox -- same "no real display/Ollama server here" limit as every
+other Phase 4 piece, so this is **not yet verified on the user's real
+machine.** One action needed on the user's end: the local (gitignored)
+`config.yaml` needs a new `task_guide:` section added (copy from
+`config.example.yaml`) or the orchestrator will fail to start with a
+`KeyError` — this is a breaking config change, not optional.
+
 ## Docs map
 
 - `handoff.md` — snapshot for orienting a **new session at its start only**:

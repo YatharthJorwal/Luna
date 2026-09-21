@@ -52,12 +52,14 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 import llm
 import stt
+import task_guide
 import tools
 from chunking import extract_ready_chunks, flush
 from config import CONFIG
 from memory import consolidation, forget, recall, store
 from memory.db import MemoryUnavailableError
 from persona import SYSTEM_PROMPT, apply_persona_pass, extract_emotion_tag
+from tools import vision
 from tts import synthesize
 
 app = FastAPI()
@@ -152,6 +154,17 @@ EMOTION_STT_UNREACHABLE = "sad"
 MAX_TOOL_ROUNDS = 3
 TOOL_STUCK_LINE = "...tch, I got stuck trying to do that. Ask me again?"
 
+# Phase 4 Round 2 -- how often ws_endpoint's task-guide background loop
+# wakes up to check whether a screen check or an idle-clear is actually
+# due (see _task_guide_loop). This is just a cheap dict read most of the
+# time (task_guide.due_for_check/is_idle), not the interval between real
+# screen checks themselves -- that's CONFIG.task_guide.capture_interval_
+# seconds, checked against task_guide's own last_check_at timestamp each
+# time this fires. Short enough that the real interval (90s by default)
+# isn't meaningfully delayed by polling granularity, long enough not to
+# spin the event loop for no reason while no task is even active.
+TASK_GUIDE_POLL_SECONDS = 15
+
 
 async def _send_speak(websocket: WebSocket, text: str) -> None:
     audio_bytes = await synthesize(text)
@@ -217,6 +230,11 @@ async def _run_turn(
     spoken_parts below for what that does and doesn't include, and why
     it's tracked separately from reply_parts/history."""
     history.append({"role": "user", "content": user_text})
+    # Phase 4 Round 2: any real user turn counts as "they're still here,"
+    # regardless of whether it's about the tracked task at all -- resets
+    # Task Guide Mode's idle clock (see task_guide.is_idle/_task_guide_loop
+    # below). A no-op if nothing's actually being tracked.
+    task_guide.mark_interaction()
 
     # Phase 3: forget first, then recall -- so a fact just removed this
     # turn can't immediately resurface in the same turn's recall block.
@@ -379,6 +397,93 @@ async def _run_turn(
     await websocket.send_json({"type": "turn_end", "emotion": detected_emotion})
 
 
+# Phase 4 Round 2 -- how the drift observation from task_guide.check_task_
+# progress() gets turned into an actual in-character line. Framed as an
+# ephemeral one-off user-role message spliced onto the end of `history`
+# for this call only (never written into `history` itself) -- same
+# "ephemeral system context, not a real turn" treatment as recall.py's
+# memory block and _scene_state above, just user-role here since it's
+# instructing her to react to something specific rather than describing
+# ambient world state.
+def _drift_prompt(task_description: str, observation: str) -> str:
+    return (
+        f"You are currently tracking this task for the user: "
+        f"{task_description!r}. You just glanced at their screen on "
+        f"your own, without them saying anything, and it looks like "
+        f"they have drifted off it: {observation!r}. React to this "
+        "right now, in character, in one short spoken line -- call it "
+        "out and steer them back to the step. Do not mention that you "
+        "were checking, do not mention a timer or a tool or that this "
+        "was automatic, just react like you noticed it yourself. End "
+        "with your usual [emotion] tag on its own line, same as always."
+    )
+
+
+async def _run_task_guide_check(
+    websocket: WebSocket, history: list[dict[str, str]], task_description: str
+) -> None:
+    """The scheduled half of Task Guide Mode actually doing its job: grab
+    a screenshot, ask the VLM whether it still matches the tracked step
+    (task_guide.check_task_progress), and if it clearly doesn't, have her
+    react in character over the same speak pipeline _run_turn uses for a
+    real reply -- just triggered by _task_guide_loop's timer instead of
+    the user typing something.
+
+    Always calls task_guide.mark_checked() up front (whether or not this
+    ends up chiding) so due_for_check() measures from "last time we
+    actually looked," not "last time we found drift" -- an on-task
+    result still counts as a completed check.
+
+    Deliberately narrow about what's worth logging vs. silently skipping:
+    a failed capture, an unreachable LLM, or an unparseable VLM response
+    all just mean "try again next interval" -- none of these should ever
+    surface to the user as more than, at most, a missed check. Not
+    wrapped in a broader try/except beyond that: an unexpected exception
+    here should still show up in the orchestrator's own terminal rather
+    than vanish, same as any other real bug would.
+    """
+    task_guide.mark_checked()
+    try:
+        image_b64 = await asyncio.to_thread(vision.capture_screen)
+    except vision.ToolUnavailableError as exc:
+        print(f"[luna] task guide: capture failed, skipping this check: {exc}", file=sys.stderr)
+        return
+
+    result = await task_guide.check_task_progress(task_description, image_b64)
+    if result is None:
+        print("[luna] task guide: check result didn't parse, skipping this check", file=sys.stderr)
+        return
+    if result["on_task"]:
+        return
+
+    prompt = _drift_prompt(task_description, result["note"] or "something unrelated is on screen")
+    try:
+        buffer = ""
+        async for delta in llm.stream_reply(history + [{"role": "user", "content": prompt}]):
+            buffer += delta
+    except llm.LLMUnreachableError as exc:
+        print(f"[luna] task guide: LLM unreachable for chide, skipping: {exc}", file=sys.stderr)
+        return
+
+    buffer, detected_emotion = extract_emotion_tag(buffer)
+    reply_parts = flush(buffer)
+    if not reply_parts:
+        return
+
+    for chunk in reply_parts:
+        await _send_speak(websocket, apply_persona_pass(chunk))
+
+    # Recorded as her own assistant turn, same as a normal reply, so a
+    # later real turn sees she already commented on the drift and Phase
+    # 9's transcript-log panel shows it happened. Deliberately no
+    # matching "user" turn precedes it -- nobody said anything -- which
+    # is a legitimate shape for an unprompted comment, not a bug.
+    history.append({"role": "assistant", "content": " ".join(reply_parts)})
+    _trim_history(history)
+    await _log_transcript_turn_safely("", " ".join(apply_persona_pass(p) for p in reply_parts))
+    await websocket.send_json({"type": "turn_end", "emotion": detected_emotion})
+
+
 @app.post("/shutdown")
 async def shutdown_endpoint() -> dict:
     """Requested by src-tauri/src/lib.rs's tray-Quit handler as a graceful
@@ -450,6 +555,47 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     # socket until a turn finished -- a "stop" message would just sit
     # unread in the transport buffer until it was too late to matter.
     current_turn_task: asyncio.Task | None = None
+
+    # Phase 4 Round 2 -- Task Guide Mode's scheduled-capture loop, one
+    # per *driver* connection only (an observer window never starts
+    # turns at all, so it has no business triggering screen checks or
+    # speaking chides either -- see the driver/observer comment above).
+    # Nested here (rather than a module-level function taking extra
+    # arguments) specifically so it can read `current_turn_task` by
+    # closure and skip a check while a real turn is already mid-reply --
+    # Python's late-binding closures see the *current* value of an
+    # enclosing-scope variable at call time, not a snapshot from when the
+    # closure was created, which is exactly the "is a turn running right
+    # now" read this needs on every wake.
+    async def _task_guide_loop() -> None:
+        while True:
+            await asyncio.sleep(TASK_GUIDE_POLL_SECONDS)
+            state = task_guide.get_state()
+            if not state.active:
+                continue
+            if task_guide.is_idle(state, CONFIG.task_guide.idle_timeout_seconds):
+                # Stepped away -- drop the task silently, no chide.
+                # Per ARCHITECTURE.md: "the task stays active until ...
+                # an idle timeout is hit." Nobody's there to hear a nudge.
+                task_guide.clear_active_task()
+                continue
+            if not task_guide.due_for_check(state, CONFIG.task_guide.capture_interval_seconds):
+                continue
+            if current_turn_task is not None and not current_turn_task.done():
+                # A real turn is already in flight -- skip this wake
+                # rather than run a screen check and a chide concurrently
+                # with it (both would call _send_speak on the same
+                # websocket and mutate the same `history` list). Just
+                # skipped, not deferred: due_for_check() will be true
+                # again next poll if the turn's still running then, and
+                # mark_checked() is only called once a check actually
+                # runs, so nothing here silently resets the interval.
+                continue
+            await _run_task_guide_check(websocket, history, state.description)
+
+    task_guide_task: asyncio.Task | None = (
+        asyncio.create_task(_task_guide_loop()) if is_driver else None
+    )
 
     try:
         while True:
@@ -627,6 +773,20 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             current_turn_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await current_turn_task
+        # Phase 4 Round 2 -- same reasoning as current_turn_task above,
+        # for the task-guide background loop: it's an infinite loop by
+        # design (see _task_guide_loop), so it never finishes on its own
+        # and always needs an explicit cancel on the way out. None for an
+        # observer connection (never started one in the first place).
+        # Deliberately does NOT clear task_guide's own module-level
+        # TaskState here -- that's independent of any one connection's
+        # lifetime, same as _scene_state; a driver reconnecting (e.g. app
+        # restart) should still see whatever task was being tracked, not
+        # have it silently wiped just because the old socket closed.
+        if task_guide_task is not None and not task_guide_task.done():
+            task_guide_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task_guide_task
         # Phase 3: distill this session into durable memory (facts +
         # one episode summary) once it's actually over. In `finally`, not
         # just the `except WebSocketDisconnect` branch, so it also runs on

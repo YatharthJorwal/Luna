@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable
 
+import task_guide
 from tools import vision
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -46,6 +47,45 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             "parameters": {"type": "object", "properties": {}, "required": []},
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_active_task",
+            "description": (
+                "Start, update, or stop tracking a task the user is "
+                "currently working on, so their screen can be checked "
+                "periodically and they can be nudged back if they drift. "
+                "Call this with active=true and a short, concrete "
+                "description of the current step (e.g. 'writing the game "
+                "loop in main.py for the Flappy Bird clone', not just "
+                "'Flappy Bird game') whenever the user states a task or "
+                "you infer one and they confirm it, and call it again "
+                "with an updated description whenever the current step "
+                "changes. Call it with active=false once the task is "
+                "finished, the user says to drop or pause it, or they "
+                "ask you to stop watching. Do not call this for small "
+                "one-off questions that are not really an ongoing task."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "active": {
+                        "type": "boolean",
+                        "description": "true to start or update tracking, false to stop.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": (
+                            "Short, concrete description of the current "
+                            "step. Required when active is true; ignored "
+                            "when active is false."
+                        ),
+                    },
+                },
+                "required": ["active"],
+            },
+        },
+    },
 ]
 
 
@@ -61,15 +101,22 @@ async def _read_clipboard_tool(**_ignored: Any) -> str:
     return await asyncio.to_thread(vision.read_clipboard)
 
 
+async def _set_active_task_tool(active: bool = False, description: str = "", **_ignored: Any) -> str:
+    # Plain in-memory dict update (task_guide.py) -- no blocking I/O, so
+    # unlike read_clipboard above this doesn't need asyncio.to_thread.
+    return task_guide.set_active_task(bool(active), str(description or ""))
+
+
 # name -> async callable, every one of which always returns a plain
 # string result and never raises anything but vision.ToolUnavailableError
 # (dispatch_tool_call below turns even that into a safe string instead of
-# propagating). **kwargs on both handlers absorb any arguments the model
-# passes even though neither tool takes any today -- a local 9B model
+# propagating). **kwargs on every handler absorbs any argument the model
+# passes even though most tools take none today -- a local 9B model
 # occasionally hallucinating a parameter shouldn't be a crash.
 _HANDLERS: dict[str, Callable[..., Awaitable[str]]] = {
     "capture_screen": _capture_screen_tool,
     "read_clipboard": _read_clipboard_tool,
+    "set_active_task": _set_active_task_tool,
 }
 
 

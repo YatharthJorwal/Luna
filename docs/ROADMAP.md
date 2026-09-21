@@ -167,7 +167,7 @@ awaiting on-machine confirmation · ⬜ not started)
   conversations rather than the synthetic transcripts tested here — both
   parsers are deliberately forgiving specifically because this was a
   real open question, not an assumption.
-- 🔶 **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
+- ✅ **Phase 4 — Vision tools + Task Guide Mode.** `capture_screen` +
   `read_clipboard` + OCR fallback, tool-calling loop live. Built: a
   `stream_reply_with_tools()` loop, the two tools, a hard 3-round cap, and
   Ollama's tool-calling behavior confirmed for real against a live
@@ -178,10 +178,34 @@ awaiting on-machine confirmation · ⬜ not started)
   Pillow/hardware/model-capability issue as first suspected. Fixed, with
   a regression test guarding the old phrase can't silently come back. See
   `docs/DECISIONS.md`'s "Phase 4 Round 1" and "Tool-calling wasn't
-  firing" entries for the full step-by-step. **Retest on the user's real
-  machine (the actual app, not an isolated call) still pending** — that's
-  the only thing keeping this at 🔶 instead of ✅. The scheduled-capture/
-  off-task-chide loop (Task Guide Mode's other half) isn't built yet.
+  firing" entries for the full step-by-step. **Retested on the user's
+  real machine post-fix: confirmed working.**
+  **Round 2 — the scheduled-capture/off-task-chide loop, Task Guide
+  Mode's other, larger half, is now built too.** New `task_guide.py`
+  holds the single-active-task state machine (a third tool,
+  `set_active_task`, lets the model itself start/update/stop tracking a
+  concrete step — see `tools/__init__.py`) and `check_task_progress()`,
+  a VLM call comparing a screenshot against the tracked step via the
+  same forgiving-JSON-parse pattern `forget.py` already uses.
+  `app.py`'s `ws_endpoint` runs a per-driver-connection background loop
+  (`_task_guide_loop`, polling every 15s, real screen checks gated by
+  `config.yaml`'s `task_guide.capture_interval_seconds`) that calls
+  `_run_task_guide_check` when a check is due: capture, compare, and if
+  drifted, generate and speak an in-character chide through the same
+  persona/chunking pipeline `_run_turn` uses for a real reply, recorded
+  into `history` as her own unprompted turn. An idle timeout
+  (`task_guide.idle_timeout_seconds`, default 30 minutes, reset by any
+  real user turn) silently drops a tracked task rather than nagging
+  someone who has stepped away — no chide, since nobody's there to hear
+  it. Mutual exclusion against a real turn in flight is a simple skip
+  (never run a screen check and a live reply concurrently on the same
+  socket/history). Full test coverage of the state machine and parsing
+  (`test_task_guide.py`, plus dispatch-level tests in
+  `tools/test_tools.py`) — same "no display/no real Ollama in this
+  sandbox" limit as everything else vision-related: the loop's timing,
+  the VLM's actual on/off-task judgment quality, and whether a chide
+  reads as natural rather than naggy are all **not yet verified on the
+  user's real machine.**
 - ⬜ **Phase 5 — Camera + game-assist polish.** Gated camera tool, light
   game-context awareness (e.g. active-window detection), expression/emotion
   mapping refined.
@@ -262,7 +286,7 @@ awaiting on-machine confirmation · ⬜ not started)
   Still open, not blocking: whether qwen3.5:9b reliably produces a
   recognizable tag across real conversations rather than the synthetic
   cases tested here.
-- 🔶 **Phase 9 — UI overhaul.** Two independent pieces landed together:
+- ✅ **Phase 9 — UI overhaul.** Two independent pieces landed together:
   a pastel reskin (pure `style.css` color-variable swap, no layout
   change) and a persistent conversation-log panel — scoped bigger than
   originally planned here ("no protocol or backend changes") because the
@@ -273,10 +297,10 @@ awaiting on-machine confirmation · ⬜ not started)
   new `get_log`/`clear_log` WebSocket messages, and a display-only
   `session.user_name` config field. Backend verified for real (5 new
   pytest cases plus two ad hoc end-to-end WebSocket runs through the
-  genuine `app.py`); frontend only structurally verified (`tsc`/
-  `vite build` clean, markup confirmed in the built output) — same
-  "no GPU/browser in this sandbox" limit as everything else. Full
-  reasoning: `docs/DECISIONS.md`'s "Phase 9: pastel reskin + persistent
+  genuine `app.py`). **Confirmed on the user's real machine:** the
+  pastel reskin and conversation-log panel render and work correctly —
+  closes the "frontend only structurally verified" gap noted above.
+  Full reasoning: `docs/DECISIONS.md`'s "Phase 9: pastel reskin + persistent
   conversation-log panel" entry.
 - 🔶 **Phase 10 — Environments.** Two of the three requested (VR explicitly
   scoped out by the user themselves as currently unachievable): (1) desktop

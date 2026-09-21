@@ -71,12 +71,26 @@ class MemoryConfig:
 
 
 @dataclass(frozen=True)
+class TaskGuideConfig:
+    # Phase 4 Round 2 -- how often (while a task is actively tracked,
+    # see task_guide.py) the scheduled loop captures the screen and
+    # compares it against the tracked step. ARCHITECTURE.md's Task Guide
+    # Mode section suggests starting conservative (60-120s).
+    capture_interval_seconds: int
+    # If no real user turn happens for this long while a task is
+    # tracked, the task is silently dropped (no chide) rather than kept
+    # active forever nagging someone who has stepped away.
+    idle_timeout_seconds: int
+
+
+@dataclass(frozen=True)
 class Config:
     llm: LLMConfig
     tts: TTSConfig
     stt: STTConfig
     session: SessionConfig
     memory: MemoryConfig
+    task_guide: TaskGuideConfig
 
 
 def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
@@ -118,6 +132,7 @@ def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
         stt=STTConfig(**raw["stt"]),
         session=SessionConfig(**raw["session"]),
         memory=MemoryConfig(**raw_memory),
+        task_guide=TaskGuideConfig(**raw["task_guide"]),
     )
 
 

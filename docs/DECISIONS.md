@@ -4676,3 +4676,114 @@ unverifiable change over a flagged note. `handoff.md` was regenerated
 separately to reflect the freeze and the pivot to Tauri shell phases, per
 its own "snapshot, not a live document" convention.
 
+
+## Phase 4 Round 2: the scheduled-capture/off-task-chide loop -- Task Guide Mode's other half is built
+
+Everything Round 1 shipped was the *tools* (`capture_screen`, `read_clipboard`)
+and the tool-calling loop itself -- confirmed working on the user's real
+machine, per the top of this Phase 4 log. What was still missing was the
+actual flagship behavior `docs/ARCHITECTURE.md`'s "Task Guide Mode" section
+describes: noticing when the user drifts off a task *without being asked*,
+on a timer, not just answering when asked to look.
+
+**Why a third tool (`set_active_task`) instead of a tag mechanism.** Phase 8
+already established one precedent for "the model marks something about its
+own turn" -- the trailing `[emotion]` tag. Task state could have followed
+that shape (`[task: description]` / `[task: none]` at the end of every
+reply). Went with a tool call instead, for a few concrete reasons: (1) it's
+the same shape the two existing Phase 4 tools already use, so there's one
+mental model for "things the model can actually *do*, not just say," not two
+different mechanisms; (2) an emotion tag is *always* present (every reply
+gets exactly one), but a task should usually stay unset -- most turns aren't
+about starting or changing a task, and a tool call is naturally optional in
+a way a mandatory trailing tag isn't; (3) a tool call carries real
+structured arguments (`active: bool`, `description: str`) without needing a
+bespoke mini-grammar the way a single bracketed tag would for two fields.
+
+**Single active task, module-level state, same pattern as `_driver`/
+`_scene_state`.** This is a single-user, single-driver-connection app (see
+`app.py`'s driver/observer comment) -- there's never a real case for more
+than one "what's currently being tracked" slot. `task_guide.py` keeps this
+as plain module-level state (a frozen `TaskState` dataclass, swapped via
+`dataclasses.replace`), not per-connection, for the same reason
+`_scene_state` isn't per-connection either: it's world state, not
+conversation state, and outlives any one socket. Deliberately does NOT get
+cleared when the driver connection closes (see `app.py`'s teardown comment)
+-- a driver reconnecting (app restart, crash recovery) should still see
+whatever task was being tracked, not have it silently wiped just because the
+old socket happened to close. The real limitation this creates: a *new*
+driver connection gets a fresh `history` (per the existing driver/observer
+design, unchanged here), so if a check fires against the new connection
+before the user says anything, the drift-chide prompt references a task the
+current `history` never actually mentions being stated. Judged acceptable --
+same class of gap as `_scene_state` surviving reconnects already had, not a
+new problem this feature introduced, and the alternative (task state tied to
+connection lifetime) would mean losing task tracking on every disconnect,
+which is worse for the common case (a window losing focus/reconnecting
+mid-task) to fix a rare one (reconnecting mid-chide-prompt window).
+
+**On/off-task judgment: one VLM call, forgiving JSON parse, conservative
+default.** `check_task_progress()` reuses `llm.describe_image()` (the same
+entry point `vision.describe_screen()` uses) with a comparison-specific
+prompt instead of a plain description prompt, and parses the same forgiving
+way `forget.py`'s `_parse_remove_indices` already does -- extract JSON,
+tolerate markdown fences/stray text around it, treat anything that doesn't
+parse into the expected shape as "no signal," never a guessed default. The
+prompt explicitly biases toward `on_task: true` on anything ambiguous (blank
+screen, unreadable capture, plausible-but-not-certain match) -- a false
+"still on task" just means one missed chide and a retry next interval; a
+false "drifted" means an unearned scold, which is a much worse failure mode
+for a companion that's supposed to feel like it's actually paying attention,
+not randomly nagging.
+
+**Loop lives in `app.py`, not `task_guide.py`.** Same split as
+`vision.py`/`app.py` already have: `vision.py`/`task_guide.py` hold pure,
+stubbable logic (a screenshot function, a comparison function, a state
+machine); `app.py` holds the orchestration that needs the websocket,
+`history`, and the TTS-speak pipeline. `_task_guide_loop` is a *nested*
+function inside `ws_endpoint` specifically so it can read `current_turn_task`
+by closure (Python's late-binding closures see the current value of an
+enclosing-scope variable at call time, not a snapshot) -- this is what lets
+it skip a screen-check-and-chide cleanly whenever a real turn is already
+mid-reply, without threading extra shared state through. Started only for
+the driver connection (an observer never starts turns, so it has no
+business triggering an unprompted one either), cancelled in the same
+`finally` teardown block `current_turn_task` already used, same pattern.
+
+**Idle timeout drops the task silently, no chide.** Per
+`docs/ARCHITECTURE.md`'s own spec ("the task stays active until ... an idle
+timeout is hit"), tracked via `last_interaction_at`, bumped by any real user
+turn (`task_guide.mark_interaction()`, called from `_run_turn`) regardless
+of whether that turn was even about the tracked task. 30 minutes default.
+Deliberately no spoken line when this fires -- if the user's been gone that
+long, there's nobody there to hear it, and a chide waiting to ambush them
+the moment they come back would read as worse, not better, than just letting
+the tracking quietly lapse.
+
+**Chide generation reuses `_run_turn`'s pipeline, but isn't `_run_turn`
+itself.** A drift check needed to speak through the same persona/chunking/
+`_send_speak` machinery a real reply uses (so it sounds like her, gets the
+`[emotion]` tag treatment, shows up in the Phase 9 transcript log) without
+looking like the user said something they didn't. `_run_task_guide_check`
+splices a one-off `user`-role instruction ("you just glanced at their screen
+on your own... react to this now") onto the end of `history` for that one
+call only -- same "ephemeral context, never written into `history` itself"
+treatment `recall.py`'s memory block and `_scene_state`'s injection already
+use -- and only the *resulting assistant reply* gets appended to `history`,
+with no matching user turn before it. That's a deliberately visible
+asymmetry (an assistant message with nothing preceding it), not a bug --
+it's the honest shape of "she said something unprompted."
+
+**What this doesn't cover yet, flagged the same way every other Phase 4
+piece was:** genuinely untested against a real Ollama server end-to-end --
+whether the comparison prompt actually gets qwen3.5:9b to produce the
+requested JSON reliably, whether a 90-second default interval feels right in
+practice (too naggy vs. too slow to catch real drift), and whether the
+chide actually reads as natural in-character noticing rather than
+mechanical "checking in" even with the SYSTEM_PROMPT instruction not to
+mention that it's automatic. Full test coverage exists for everything that
+*doesn't* need a real display/server (`orchestrator/test_task_guide.py`'s
+state-machine and parsing tests, `tools/test_tools.py`'s dispatch-level
+tests for the new `set_active_task` tool) -- 25 new tests, 90 total passing
+in this sandbox. The user's real-machine retest is the next open item, same
+as Round 1's was.

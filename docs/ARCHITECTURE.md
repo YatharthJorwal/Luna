@@ -117,6 +117,10 @@ This is the actual core loop of the app, not a side feature:
    interval (start conservative — e.g. every 60–120s, or on foreground-window
    change — tune in Phase 4/6) instead of on every turn. Each capture is
    checked against "what should be on screen for the current step."
+   **Built in Phase 4 Round 2** — `app.py`'s `_task_guide_loop`/
+   `_run_task_guide_check` plus `task_guide.py`'s state machine and
+   comparison call; see `docs/DECISIONS.md`'s "Phase 4 Round 2" entry for
+   the shape of it and what's still unverified against a real server.
 4. If a capture shows the user has drifted to something unrelated (different
    app, different site), she calls it out in character — a chide, not a
    lecture — and steers back to the step. This is one of the most natural

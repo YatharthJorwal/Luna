@@ -128,3 +128,17 @@ memory:
     # at creation time; see memory/db.py's dimension-mismatch check for
     # what happens if this and the model ever disagree.
     dimension: 768
+
+task_guide:
+  # Phase 4 Round 2 -- Task Guide Mode's scheduled screen-check loop
+  # (task_guide.py). While a task is being tracked (the set_active_task
+  # tool), how often, in seconds, the orchestrator captures the screen
+  # and compares it against the current step. docs/ARCHITECTURE.md
+  # suggests starting conservative (60-120s) -- 90 is the midpoint; tune
+  # down if drift goes unnoticed too long, up if it feels naggy.
+  capture_interval_seconds: 90
+  # If no real user turn happens for this many seconds while a task is
+  # tracked, the task is silently dropped (no chide, no message) rather
+  # than kept active forever nagging someone who has stepped away.
+  # 1800 = 30 minutes.
+  idle_timeout_seconds: 1800
