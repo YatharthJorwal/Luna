@@ -6,10 +6,14 @@
 - Desktop-pet shell: transparent, click-through-able, always-on-top, draggable,
   system tray, low idle resource footprint (must coexist with a running game).
 - Live2D character rendering with idle motion, lip-sync, and a small set of
-  emotion-driven expressions.
-- Text input box → she replies **by voice only** (TTS + Live2D lip-sync). No
-  chat bubble transcript required as the primary UX, though logging internally
-  is fine.
+  emotion-driven expressions. **Superseded by Phase 7**: shipped as a VRM
+  avatar (`three` + `@pixiv/three-vrm`) instead — the feature itself (idle
+  motion, lip-sync, expressions) is unchanged and shipped, just not on
+  Live2D. Left here as the original Phase 0 spec, not a description of the
+  current renderer — see Phase 7's entry and `docs/DECISIONS.md`.
+- Text input box → she replies **by voice only** (TTS + lip-sync, Live2D or
+  VRM depending on era — see the note above). No chat bubble transcript
+  required as the primary UX, though logging internally is fine.
 - Local LLM "brain" with tool-calling.
 - Tsundere personality layer that doesn't degrade the model's actual
   reasoning/coding ability.
@@ -35,9 +39,11 @@
   support. One character, done well.
 - No auto-playing games or taking control of input devices — she can *see* and
   *advise*, not act on the user's behalf.
-- Live2D model asset itself is **not something Claude generates** — needs to
-  be sourced (free sample for prototyping, purchased, or commissioned) and
-  licensed properly by the user.
+- ~~Live2D model asset itself is **not something Claude generates** — needs
+  to be sourced (free sample for prototyping, purchased, or commissioned)
+  and licensed properly by the user.~~ Moot as of Phase 7 — see the note
+  above; the equivalent for the current VRM pipeline is `public/vrm/luna.vrm`
+  (gitignored, user-provided, sourced from VRoid Studio per README.md).
 
 ## Phases
 

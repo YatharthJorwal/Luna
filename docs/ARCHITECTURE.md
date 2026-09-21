@@ -148,9 +148,15 @@ This is the actual core loop of the app, not a side feature:
     main.ts           desktop shell entry point
     sandbox.ts        Phase 10 full-body sandbox entry point (dev-only,
                         `npm run sandbox` -- see README.md)
-    apartment/        the sandbox's apartment scene: floor plan, materials,
-                        walls/doors, furniture, all as data-driven modules
-                        (see docs/DECISIONS.md's Phase 10 round 10 entry)
+    apartment/        the sandbox's apartment: floorplan.ts (placeholder
+                        room/navmesh/door data -- see docs/DECISIONS.md's
+                        round-12/13/15 entries for why it's a single
+                        placeholder region, not real per-room data) and
+                        index.ts (loads a prebuilt .glb apartment model,
+                        lighting/collision/doors built around it). Round 12
+                        replaced the original round-9/10 hand-authored
+                        walls/materials/furniture system entirely -- see
+                        docs/DECISIONS.md's round-12 entry for why.
     camera-modes.ts   sandbox spectator (free-fly) + first-person visitor
     postfx.ts         sandbox render pipeline (IBL, tone mapping, GTAO/
                         bloom/SMAA)

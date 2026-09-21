@@ -4512,3 +4512,167 @@ added), `src/apartment/index.ts` (pizza fixup, door system, collision
 exclusion + priority fix, `update()` signature), `src/sandbox.ts`
 (`WanderController` stuck-detection, `update()` call site), and these
 docs. No changes to `index.html`/`src/main.ts`/`src/style.css`.
+
+## Freeze checkpoint: sandbox apartment work paused, project-wide audit before the pivot to Tauri shell phases
+
+Fifteen rounds into the apartment (Phase 10), the user called a deliberate
+stop: "we've done enough in sandbox... next goal is to freeze the sandbox
+development and pursue tauri shell phases which havent been done." Before
+handing off, this checkpoint audited the whole project (not just the
+sandbox/apartment work this session owned) for stale docs and real bugs,
+since a freeze is exactly the moment small inconsistencies stop getting
+caught by the next round's own work and start misleading whoever picks
+this up next.
+
+### What was checked
+
+- `npx tsc --noEmit` across the whole `src/` tree (one `tsconfig.json`
+  covers `main.ts` and everything the sandbox touches) -- clean.
+- Every Python file in `orchestrator/` (including `memory/` and `tools/`)
+  compiled with `py_compile` -- clean. Not a full runtime/import check
+  (the real ML dependencies -- torch, faster-whisper, etc. -- aren't
+  installed in this sandbox), just syntax-level, same limitation as
+  every round's Python verification in this project.
+- `src-tauri/src/lib.rs`/`main.rs` read manually, line by line -- still no
+  Rust toolchain in this sandbox (confirmed again: neither `cargo` nor
+  `rustc` resolve), so this is a careful read, not a compile. The file's
+  own header comment already tracks which blocks have been through a real
+  `cargo build` on the user's machine (the global-shortcut block, fixed
+  once) versus which haven't (`spawn_backend_processes` and everything it
+  calls, `graceful_shutdown_then_kill`, `request_orchestrator_shutdown`) --
+  that self-tracking is accurate and worth preserving as-is when Tauri
+  work resumes, not something this audit needed to redo.
+- `main.ts`'s own imports, confirmed independent of everything the sandbox
+  session touched (`apartment/`, `camera-modes.ts`, `postfx.ts`,
+  `sandbox.ts`) -- no cross-contamination risk from any of the last five
+  rounds' apartment work.
+- Grepped the whole `src/`, `src-tauri/src/`, `orchestrator/` tree for
+  `TODO`/`FIXME`/`XXX`/`HACK` markers -- none found, consistent with this
+  project's habit of writing real `docs/DECISIONS.md` entries instead of
+  inline TODOs.
+- `package.json` vs. actual imports, `Cargo.toml` vs. actual `use`
+  statements -- checked for drift in both directions (declared-but-unused,
+  used-but-undeclared).
+- `orchestrator/config.yaml` read against `docs/MODELS.md`/`docs/ROADMAP.md`
+  for consistency -- matches (Qwen3.5-9B, GPT-SoVITS, faster-whisper on
+  CPU, nomic-embed-text, all as documented).
+
+### Real findings, fixed
+
+- **`docs/ROADMAP.md`'s top-level "Scope" section still described Live2D**
+  as in-scope (`"Live2D character rendering..."`, `"...TTS + Live2D
+  lip-sync"`, `"Live2D model asset itself is not something Claude
+  generates"`) with zero mention that Phase 7 replaced the entire Live2D/
+  `pixi-live2d5` stack with a VRM avatar. Everywhere else in the same
+  document (the Phase 7 entry itself, the "Decisions" appendix near the
+  bottom) already correctly marks this as superseded -- only the original
+  top-of-file spec was never touched during that migration. Fixed by
+  annotating both mentions in place (following the doc's own established
+  "~~struck-through~~, superseded by Phase N" convention used elsewhere in
+  the same file) rather than silently rewriting the original spec's
+  history.
+- **`docs/ARCHITECTURE.md`'s directory-layout description of `apartment/`**
+  described it as "floor plan, materials, walls/doors, furniture, all as
+  data-driven modules" -- accurate for round 10's hand-authored system,
+  completely wrong since round 12 deleted `shell.ts`/`furniture.ts`/
+  `materials.ts` entirely and replaced them with a loaded `.glb`. Fixed to
+  describe what's actually there now: `floorplan.ts` (placeholder data)
+  and `index.ts` (the GLB loader plus lighting/collision/doors), with a
+  pointer to the round-12 entry for why.
+- **`CLAUDE.md`'s docs-map entry for `DECISIONS.md`** used round 9's
+  apartment-scaling decision as its example of "why non-obvious things are
+  the way they are" -- still a real, findable entry, but describing a
+  system round 12 replaced, so citing it as an example of *current*
+  reasoning was misleading. Swapped for the round-12 entry (why the
+  apartment loads a prebuilt model instead of building one procedurally),
+  which is both current and a better example of the pattern anyway.
+
+### A real finding, flagged rather than fixed: `orchestrator/config.yaml` is tracked in git with a real personal path in it
+
+`orchestrator/config.yaml` is committed to this repository (not
+gitignored) and its `tts.gpt_sovits.ref_audio_path` field contains a real,
+specific Windows path
+(`C:\Users\User\Downloads\character_files_main_sample.wav`) along with the
+matching `prompt_text` transcript -- not a placeholder. This sits
+oddly next to `.gitignore`'s own comment, which explicitly groups this
+exact value with the two files that *are* gitignored for being
+machine-specific: *"Personal launcher scripts -- hardcode machine-specific
+absolute paths... so these stay local-only, same as config.yaml's real
+ref_audio_path/prompt_text values."* The policy that value should be
+personal/local-only is stated; the mechanism that would actually enforce
+it (gitignoring the file, or templating it with a placeholder and keeping
+the real value in an untracked override) was never applied to
+`config.yaml` itself, unlike `launcher.local.txt` and `start-luna.bat`
+right next to it in the same `.gitignore` block.
+
+Two things make this worth surfacing rather than filing away as trivial:
+this repository is on public GitHub (confirmed multiple times already
+this session, most recently as the reason the apartment model's own
+licensing got flagged rather than assumed), and the reference file's name
+(`character_files_main_sample.wav`) reads like it could plausibly be
+extracted from copyrighted character audio rather than an original
+recording -- `docs/ROADMAP.md`'s "Decisions" appendix already carries an
+open item, unresolved since Phase 2.5, that rights to this exact sample
+are "on the user to confirm -- not something this doc can verify." That
+open question and this file being in public git history are two separate
+facts about the same file that hadn't been connected before.
+
+**Not fixed by this audit, deliberately** -- unlike the doc-staleness
+items above, this isn't a stale description to correct; it's the user's
+own file with the user's own reference data in it, and the right fix
+(gitignore it and provide a `config.yaml.example` with placeholders the
+way `launcher.local.txt.example` already works, versus editing history to
+remove it from past commits, versus deciding it's fine as-is) is a call
+only the user can make, not something to act on unilaterally mid-audit.
+Flagged plainly in the same-day chat reply instead.
+
+### Checked and found to be fine, worth recording so it isn't re-litigated
+
+- `src-tauri/Cargo.toml` declares `serde`/`serde_json` as dependencies;
+  neither is actually used anywhere in `src-tauri/src/*.rs` (`use serde`
+  appears nowhere). Not a compile error -- Cargo doesn't fail on unused
+  declared dependencies -- just unnecessary. Left alone rather than
+  removed: the removal itself is trivial, but verifying it doesn't
+  regress anything needs a real `cargo build` this sandbox can't run, and
+  the cost of leaving two small unused crate declarations in place is
+  close to zero. Worth a quick `cargo build` check next time Tauri work
+  resumes, not urgent on its own.
+- `src-tauri/capabilities/default.json` only grants `"core:default"` --
+  no explicit `global-shortcut:*` permission, even though
+  `tauri-plugin-global-shortcut` is in use. Not a current bug: the plugin
+  is driven entirely from Rust (`app.global_shortcut().register(...)` in
+  `setup()`), never invoked from the frontend via `invoke()`, and Tauri's
+  permission/ACL system gates frontend-initiated IPC calls, not a plugin's
+  own backend-side Rust API. `toggle_click_through` (the one
+  `#[tauri::command]` that *is* frontend-invokable) is likewise unused
+  from `main.ts` today (confirmed: no `invoke(` call appears anywhere in
+  `src/`) -- so nothing is broken right now. Flagged because the pivot to
+  Tauri Phase 5/6/9(frontend)/11 will likely add real frontend-to-Rust
+  `invoke()` calls, and that's exactly when a missing capability entry
+  would first surface, as a runtime permission error rather than a
+  compile error -- worth checking `capabilities/default.json` against
+  whatever new commands actually get added then, not before.
+- `README.md`'s "Run it" section (`npm run tauri dev` auto-starting
+  GPT-SoVITS + the orchestrator via `launcher.local.txt`) matches
+  `spawn_backend_processes()`'s actual behavior in `lib.rs` exactly --
+  correctly updated when that feature was built, not stale.
+- `docs/MODELS.md` already self-flags its own possible staleness ("this
+  space moves in weeks, not months... worth another pass before Phase
+  4/5's vision work actually starts") -- an honest, already-present
+  caveat, not a hidden gap this audit needed to add.
+- No secrets, API keys, or other committed personal paths found beyond
+  the `config.yaml` item above -- checked `orchestrator/` broadly for
+  `api_key`/`password`/`secret`/`token` patterns and for any other
+  `C:\Users\` occurrences outside of documentation examples and this
+  session's own bundle-handoff instructions (both of which use generic
+  placeholders, not real values).
+
+### Scope note
+
+This audit touched `docs/ROADMAP.md`, `docs/ARCHITECTURE.md`, `CLAUDE.md`,
+and this entry -- documentation only, no source changes, since everything
+found in actual code (the two Rust items above) was judged not worth an
+unverifiable change over a flagged note. `handoff.md` was regenerated
+separately to reflect the freeze and the pivot to Tauri shell phases, per
+its own "snapshot, not a live document" convention.
+

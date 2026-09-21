@@ -453,6 +453,26 @@ round-15 entry.
 Full writeup for rounds 6-15 in `docs/DECISIONS.md`.
 Full phase-by-phase status: `docs/ROADMAP.md`.
 
+**Freeze checkpoint (after round 15): sandbox/apartment work paused by
+explicit user decision** -- "we've done enough in sandbox... next goal is
+to freeze the sandbox development and pursue tauri shell phases which
+havent been done." Before the handoff, a project-wide audit (not just the
+sandbox work this session owned) checked for stale docs and real bugs:
+`tsc --noEmit` clean across all of `src/`, every `orchestrator/` Python
+file compile-clean, `src-tauri/`'s Rust read manually (still no toolchain
+in this sandbox). Found and fixed three real doc-staleness issues (this
+file's own `DECISIONS.md` example citation, `docs/ROADMAP.md`'s top-level
+Scope section still describing Live2D, `docs/ARCHITECTURE.md`'s
+directory-layout description of `apartment/` describing the deleted
+round-10 system instead of the current GLB-loading one) and flagged one
+real, unresolved issue that isn't this audit's call to fix:
+`orchestrator/config.yaml` is tracked in git (not gitignored, unlike
+`launcher.local.txt`/`start-luna.bat` right next to it) with a real
+personal file path and voice-reference transcript in it, on a repo that's
+public -- full account, including two lower-priority Rust findings, in
+`docs/DECISIONS.md`'s freeze-checkpoint entry. `handoff.md` regenerated to
+reflect the freeze and point at Tauri shell work next.
+
 ## Docs map
 
 - `handoff.md` — snapshot for orienting a **new session at its start only**:
@@ -470,8 +490,8 @@ Full phase-by-phase status: `docs/ROADMAP.md`.
   decisions still needing input.
 - `docs/DECISIONS.md` — why non-obvious things in the code are the way they
   are, especially fixes forced by reality during implementation (e.g. why
-  the apartment scene scales itself down to meet the character instead of
-  scaling her up — Phase 10 round 9's entry). Read this before assuming
+  the apartment now loads a single prebuilt model instead of building the
+  room procedurally — Phase 10 round 12's entry). Read this before assuming
   something looks like a mistake.
 - `README.md` — human setup/run instructions, not agent context.
 
