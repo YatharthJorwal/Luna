@@ -43,5 +43,5 @@ src-tauri/gen/
 # Phase 3 memory DB -- the user's own facts/episodes, created on first use,
 # not source and not something to ship/share between machines.
 orchestrator/data/
- 
+orchestrator/config.yaml
  

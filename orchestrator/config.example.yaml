@@ -57,7 +57,7 @@ tts:
     # 'C:\Users\you\ref.wav' -- double quotes treat backslashes as escape
     # codes and will fail to parse (see config.py's load_config() for the
     # full explanation if you hit this).
-    ref_audio_path: 'C:\Users\User\Downloads\character_files_main_sample.wav'
+    ref_audio_path: /path/to/your/character_sample.wav
     prompt_text: "This is a sample voice for you to just get started with because it sounds kind of cute, but just make sure this doesn't have long silences."
     prompt_lang: "en"
     text_lang: "en"
