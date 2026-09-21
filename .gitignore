@@ -44,4 +44,4 @@ src-tauri/gen/
 # not source and not something to ship/share between machines.
 orchestrator/data/
 orchestrator/config.yaml
- 
+launcher.local.txt
