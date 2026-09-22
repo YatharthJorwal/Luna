@@ -4888,3 +4888,50 @@ user, that there was no way to confirm the loop was actually alive and
 firing on schedule without waiting for a real chide to happen. Cheap
 addition, same "make the log tell the truth about what's happening in
 real time" spirit as the `PYTHONUNBUFFERED` fix right above this entry.
+
+## set_active_task never actually fired -- strengthened the prompt, not confirmed fixed
+
+First real test of Phase 4 Round 2 against the real machine: the user said
+"I will be working on this poster for a bit, keep an eye on me" -- exactly
+the trigger case `SYSTEM_PROMPT` describes -- and `llm.py`'s own
+diagnostic line (`[luna] tool-calling: offered [...], replied directly
+(saw_content=True, 'tool_calls' key ever present=False)`) showed the model
+never emitted a `tool_calls` field at all, across all three turns in that
+session. It just replied in character, engaging with "the poster"
+conversationally, without ever calling `set_active_task`. Downstream
+effect, not a separate bug: since no task was ever tracked, the scheduled
+loop's new per-check log line (see the entry right above this one) never
+printed either -- there was nothing to check.
+
+Most likely cause, unconfirmed without a real retest: prompt salience, not
+a wiring bug. The tool-use instruction was one paragraph inside a large,
+heavily personality-focused `SYSTEM_PROMPT` (a dozen paragraphs of
+character/tone direction before it), competing against a strong, explicit
+"speak only in short spoken sentences, get to the point immediately"
+instruction that dominates the prompt's overall shape. A 9B general-purpose
+model reaching for "reply in character" as the default completion pattern,
+rather than treating tool-use as an equally-available action every turn,
+is a known and common failure mode for implicit/conversational tool
+triggers (as opposed to a direct imperative like "look at my screen,"
+which Phase 4 Round 1 confirmed working) -- this wasn't verified against
+the model directly, just the most plausible explanation given what changed
+nothing else about the wiring (the tool was genuinely offered every turn,
+per the diagnostic line's own tool list).
+
+Fixed by rewriting the paragraph in `persona.py`: explicit "these are real
+capabilities, not decoration" framing, and -- most importantly -- a
+concrete trigger example matching the user's own phrasing almost verbatim
+("I'm going to work on X" / "keep an eye on me while I do Y" -> call the
+tool right then, don't just reply in character). **Not yet confirmed
+working** -- this needs a real retest with the updated prompt before
+trusting it. If the model still doesn't call the tool reliably after this
+change, the next things worth trying, roughly in order of how invasive
+they are: moving the tool-use paragraph earlier in the prompt (higher
+positional salience); lowering `llm.temperature` specifically for this
+scenario (unlikely to be the core issue, but cheap to rule out); or, if
+prompt-only fixes prove insufficient, reconsidering whether a 9B model can
+reliably do implicit tool-triggering at all versus needing something more
+structured (e.g. a lighter-weight classifier step, or accepting that only
+explicit asks like "track this" will reliably work and adjusting the
+persona's own behavior/expectations to match rather than fighting the
+model).

@@ -383,12 +383,31 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   let logPanelOpen = false;
   let logUserName = "You";
 
+  // Suggested by the user: show a timestamp per logged turn. `turn.ts` is
+  // SQLite's `datetime('now')` -- UTC, space-separated, no timezone
+  // marker (see memory/db.py's schema) -- so it needs an explicit "this
+  // is UTC" hint (the 'Z' below) before handing it to Date, or the
+  // browser would otherwise interpret it as already-local time and shift
+  // it wrong. Falls back to the raw string if it somehow doesn't parse
+  // (a malformed row shouldn't hide the rest of that turn), and is only
+  // computed once here rather than re-parsed by anything downstream.
+  function formatLogTimestamp(ts: string): string {
+    const parsed = new Date(`${ts.replace(" ", "T")}Z`);
+    if (Number.isNaN(parsed.getTime())) return ts;
+    return parsed.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
+  }
+
   function renderLog(turns: LogMessage["turns"]): void {
     logPanelBody.querySelectorAll(".log-turn").forEach((el) => el.remove());
     logEmptyMessage.hidden = turns.length > 0;
     for (const turn of turns) {
       const row = document.createElement("div");
       row.className = "log-turn";
+
+      const timeLine = document.createElement("div");
+      timeLine.className = "log-turn-time";
+      timeLine.textContent = formatLogTimestamp(turn.ts);
+      row.appendChild(timeLine);
 
       const userLine = document.createElement("div");
       userLine.className = "log-turn-user";

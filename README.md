@@ -549,6 +549,18 @@ Still applies from Phase 1 -- unchanged:
   for a long time once it's redirected to a log file instead of a real
   terminal, which made a real, already-successful request look silent in
   the log during actual debugging.
+- **`Failed to unregister class Chrome_WidgetWin_0. Error = ####` printed
+  to the console on quit:** a known, widely-reported WebView2/Chromium
+  quirk on Windows, not specific to this project -- shows up across
+  Tauri, Wails, and other WebView2-based apps. Every Tauri/Wails
+  maintainer who's looked at it has said the same thing: window classes
+  registered by a process are freed by Windows when the process exits
+  regardless of whether this particular unregister call succeeds, so
+  it's safe to ignore. Confirmed on the user's real machine that it
+  doesn't indicate a failed shutdown -- `netstat` right after showed both
+  GPT-SoVITS's and the orchestrator's ports cleanly freed (see
+  `graceful_shutdown_then_kill`'s own doc comment in `lib.rs`, now
+  actually verified working rather than just written).
 
 ## Running the tests
 

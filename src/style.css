@@ -501,6 +501,13 @@ body {
   margin-right: 4px;
 }
 
+.log-turn-time {
+  font-size: 10.5px;
+  color: var(--ink);
+  opacity: 0.55;
+  margin-bottom: 1px;
+}
+
 .log-turn-user,
 .log-turn-assistant {
   color: var(--ink);
