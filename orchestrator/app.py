@@ -453,6 +453,16 @@ async def _run_task_guide_check(
     if result is None:
         print("[luna] task guide: check result didn't parse, skipping this check", file=sys.stderr)
         return
+    # Logged unconditionally (not just on drift) so the loop's actual
+    # cadence is visible in orchestrator.log without needing to wait for
+    # a real chide -- useful for confirming it's alive at all during
+    # testing, or for tuning capture_interval_seconds against how often
+    # checks are really landing.
+    print(
+        f"[luna] task guide: checked '{task_description}' -> "
+        f"on_task={result['on_task']} ({result['note'] or 'no note'})",
+        file=sys.stderr,
+    )
     if result["on_task"]:
         return
 

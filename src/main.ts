@@ -354,6 +354,21 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   let orchestratorDone = true;
   let audioIdle = true;
   let turnActive = false;
+  // Set true the instant the user clicks "stop," cleared the instant a
+  // new turn actually starts (submitText/onClip below). Exists because
+  // GPT-SoVITS synthesis can legitimately take tens of seconds per
+  // chunk (confirmed on the user's own machine) -- if a chunk was
+  // already mid-synthesis server-side when stop was clicked, there's a
+  // real window where it can still land as a `speak` message after the
+  // click handler already reset turnActive to false. Without this
+  // guard, that straggler's queue.push() would fire onActive() and flip
+  // the stop button back on for a reply the user already dismissed, for
+  // no reason they could see -- exactly the "stop button won't go away"
+  // symptom reported during real debugging. onTurnEnd is deliberately
+  // NOT gated on this -- it only sets orchestratorDone (already true
+  // from the manual override) and refreshes the log panel, both
+  // harmless no-ops if it arrives late.
+  let turnStopped = false;
   // Full-body sandbox round: true whenever this window is the "observer"
   // (the sandbox got there first) -- see ws-client.ts's top-of-file
   // comment. Distinct from turnActive: this is about *which window* may
@@ -463,6 +478,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     client.sendUserText(text);
     input.value = "";
     orchestratorDone = false;
+    turnStopped = false;
     recomputeTurnActive();
   }
 
@@ -622,7 +638,14 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const client = new WsClient({
     surface: "shell",
     onStateChange: setState,
-    onSpeak: (msg: SpeakMessage) => queue.push(msg),
+    onSpeak: (msg: SpeakMessage) => {
+      // A chunk from the turn we already stopped, arriving late (see
+      // turnStopped's own comment above) -- drop it silently rather
+      // than let it revive the stop button for a reply that's already
+      // dismissed. Cleared the moment a real new turn starts.
+      if (turnStopped) return;
+      queue.push(msg);
+    },
     onTranscript: (msg: TranscriptMessage) => showTranscript(msg.text),
     onTurnEnd: (emotion) => {
       orchestratorDone = true;
@@ -702,7 +725,10 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       // than left for turn_end/onIdle to report back -- this is a manual
       // override of both signals at once, not something that should wait
       // on either arriving on its own; the button disappearing should
-      // feel instant, same as the audio actually stopping.
+      // feel instant, same as the audio actually stopping. turnStopped
+      // additionally suppresses any straggler chunk this same turn sends
+      // afterward (see its own comment above).
+      turnStopped = true;
       queue.stopAll();
       client.sendStop();
       orchestratorDone = true;
@@ -737,6 +763,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       const audioB64 = await blobToBase64(blob);
       client.sendUserAudio(audioB64);
       orchestratorDone = false;
+      turnStopped = false;
       recomputeTurnActive();
     },
     onError: (err) => {

@@ -4833,3 +4833,58 @@ known gap in `README.md`'s troubleshooting section instead (the new port
 as an untested fix in the same sandbox that already can't build/run the
 Rust side at all (no `cargo`/Rust toolchain here -- this round's `lib.rs`
 change was reviewed by hand, not compiled).
+
+## Stop button could get stuck showing "stop" after being clicked -- a straggler chunk race
+
+Reported during the same real-debugging session as the log-buffering fix
+above. `src/main.ts`'s action button morphs between send/stop based on a
+combined `turnActive` signal (`!orchestratorDone || !audioIdle`), and the
+stop click handler already set both flags directly and synchronously on
+click -- so in isolation, clicking stop should always flip the button back
+immediately, no async gap. That part checked out fine on inspection (no
+`throw` risk found in `queue.stopAll()`, `lipsync.ts`'s `stop()`, or
+`ws-client.ts`'s `sendStop()` -- the last of those already guards on
+`readyState !== OPEN`).
+
+The real gap: nothing stopped a **new** `speak` message from reviving the
+button afterward. `app.py`'s per-chunk loop calls `await _send_speak(...)`
+sequentially inside the same task `current_turn_task.cancel()` targets, so
+cancellation *should* interrupt cleanly at whatever await point it's
+sitting on -- but GPT-SoVITS synthesis measured **30+ seconds for a single
+chunk** on the user's own machine (`gpt_sovits.log`, same session). If a
+chunk's synthesis was already in flight when stop was clicked, and for any
+reason (network-level cleanup lag, a synthesis call that doesn't fully
+respect cancellation, or simply a chunk that had already fully returned
+right as the cancel raced in) it still lands as a `speak` message
+afterward, the client's `queue.push(msg)` sees an idle queue (`stopAll()`
+already cleared `pending`/`playing`) and fires `onActive()` -- which flips
+`audioIdle` false and `turnActive` back true, resurrecting the stop button
+for a reply the user already dismissed. Not confirmed as *the* exact cause
+of this specific report (the backend was in a generally broken state that
+session -- stale process on port 9880, possibly a stale orchestrator too --
+so there's a real chance this was fallout from that rather than a clean
+reproduction), but it's a real, always-possible race regardless, worth
+closing defensively either way.
+
+Fixed client-side with a `turnStopped` flag (`src/main.ts`): set `true` the
+instant stop is clicked, cleared the instant a new turn actually starts
+(`submitText()`/the mic's `onClip`), and checked in `onSpeak` to drop any
+chunk that arrives while it's set rather than pushing it onto the queue.
+Deliberately *not* applied to `onTurnEnd` -- that handler's only effects on
+a late arrival are re-setting `orchestratorDone` (already true from the
+manual override) and refreshing the log panel if open, both harmless
+no-ops. Chose a client-side fix over trying to make server-side
+cancellation airtight because the client is the one place that can
+guarantee "nothing reactivates this button after the user said stop,"
+regardless of whatever timing quirk let a straggler through on any given
+run -- a belt-and-suspenders fix, not a replacement for the server actually
+cancelling promptly.
+
+Also touched in the same pass: `_run_task_guide_check` (Phase 4 Round 2)
+now logs every screen check's outcome unconditionally
+(`[luna] task guide: checked '<description>' -> on_task=<bool> (<note>)`),
+not just failures -- found, while writing testing instructions for the
+user, that there was no way to confirm the loop was actually alive and
+firing on schedule without waiting for a real chide to happen. Cheap
+addition, same "make the log tell the truth about what's happening in
+real time" spirit as the `PYTHONUNBUFFERED` fix right above this entry.
