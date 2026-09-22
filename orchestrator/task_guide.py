@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import json
 import re
+import sys
 import time
 from dataclasses import dataclass, replace
 
@@ -193,4 +194,141 @@ def _parse_check_result(raw_output: str) -> dict | None:
         if not isinstance(note, str):
             note = ""
         return {"on_task": on_task, "note": note.strip()}
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Programmatic start/stop detection -- bypasses Ollama's native tool-calling
+# ---------------------------------------------------------------------------
+#
+# Originally, starting/stopping task tracking was left entirely to the
+# model's own tool-calling (set_active_task, see tools/__init__.py) --
+# the same mechanism capture_screen/read_clipboard already use. Real
+# testing showed this doesn't work reliably for *this* tool specifically:
+# even on an exact, explicit trigger phrase ("I'm going to work on X,
+# keep an eye on me"), qwen3.5:9b never emitted a tool_calls field at
+# all across every test turn (confirmed via llm.py's own diagnostic
+# logging). Initially suspected as an Ollama-side bug affecting Qwen
+# 3.5's tool-calling format specifically (a real, documented bug --
+# github.com/ollama/ollama#14493 and related issues -- fixed upstream as
+# of Ollama v0.17.6), but the user confirmed running a *newer* Ollama
+# (0.34.2) and *also* saw the same 9B model fail to call a tool in a
+# completely different agent framework on a direct, explicit command
+# ("open a browser"). That combination -- fixed-Ollama-version plus
+# cross-framework failure on an explicit ask -- points at a genuine
+# capability ceiling for this model size on agentic tool-use, not
+# something more prompting can fix.
+#
+# So: don't fight it. `set_active_task` (the tool) is left in place as a
+# redundant path in case the model does call it sometimes, but the
+# *reliable* path is this module's own narrow classification call --
+# structurally identical to forget.py's maybe_forget() and
+# consolidation.py's session distillation, both of which already work
+# fine with this same model, because neither depends on Ollama's
+# tool-calling machinery at all: just a system prompt asking for a
+# small JSON object, and a forgiving parse. Unlike forget.py, there's no
+# cheap keyword pre-filter here -- task-starting phrasing is too varied
+# for a narrow regex to catch reliably (unlike the word "forget"), and
+# given Task Guide Mode is the product's flagship behavior, one extra
+# short classification call per turn is a reasonable reliability trade,
+# not a wasteful one.
+
+_TASK_DETECT_SYSTEM_PROMPT = """\
+You detect whether a message means the user is starting, continuing, or \
+stopping a task they want their AI companion to keep an eye on -- \
+distinct from just chatting, asking a question, or mentioning something \
+in passing. Respond with ONLY a JSON object, no markdown fences, no \
+commentary before or after it, in exactly one of these three shapes:
+
+{"action": "start", "description": "short concrete description of the task or step"}
+{"action": "stop"}
+{"action": "none"}
+
+Use "start" when the message states or clearly implies a task the user \
+is about to do or is currently doing -- e.g. "I'm going to debug this \
+function", "working on a poster for a bit", "keep an eye on me while I \
+do X". "description" should be a short, concrete phrase, not a full \
+sentence. Use "stop" only when the message says the task is finished, \
+asks to stop being watched, or clearly drops/abandons it -- e.g. "I'm \
+done", "stop watching me", "never mind that". A message about doing \
+something else for a bit (checking a video, taking a break) is NOT a \
+stop -- that is a normal distraction, not the task ending, so use \
+"none" for it. Use "none" for everything else, including ordinary \
+conversation and questions. When genuinely unsure, use "none" -- a \
+missed task is a smaller problem than falsely claiming to track one, or \
+falsely ending a real one that's still in progress.\
+"""
+
+
+async def maybe_update_task(user_text: str) -> str | None:
+    """Runs every turn (see this section's own comment above for why
+    there's no cheap keyword gate first, unlike forget.maybe_forget).
+    Returns an instruction fragment for app.py to inject into the same
+    ephemeral memory-block message forget.py's hint goes into, or None
+    if nothing changed this turn -- covers "classified as none,"
+    "classified as stop but nothing was actually active," and any
+    failure (LLM unreachable, unparseable output), all treated the same:
+    no state change, turn proceeds completely normally either way."""
+    messages = [
+        {"role": "system", "content": _TASK_DETECT_SYSTEM_PROMPT},
+        {"role": "user", "content": user_text},
+    ]
+    raw_output = ""
+    try:
+        async for delta in llm.stream_reply(messages):
+            raw_output += delta
+    except llm.LLMUnreachableError as exc:
+        print(f"[luna] task guide: detection LLM unreachable, skipping: {exc}", file=sys.stderr)
+        return None
+
+    parsed = _parse_task_detection(raw_output)
+    if parsed is None or parsed["action"] == "none":
+        return None
+
+    if parsed["action"] == "start":
+        description = parsed["description"] or "an unspecified task"
+        set_active_task(True, description)
+        print(f"[luna] task guide: detected task start -> '{description}'", file=sys.stderr)
+        return (
+            f"The user just described a task, and it is now being "
+            f"tracked: {description!r}. You do not need to explicitly "
+            "announce that you are tracking it -- just react naturally "
+            "to what they said, in character."
+        )
+
+    # action == "stop"
+    if not get_state().active:
+        return None
+    set_active_task(False)
+    print("[luna] task guide: detected task stop", file=sys.stderr)
+    return (
+        "The user just indicated the task you were tracking is done, "
+        "dropped, or paused, and tracking has been stopped. React "
+        "naturally in character -- do not explicitly narrate that "
+        "tracking stopped."
+    )
+
+
+def _parse_task_detection(raw_output: str) -> dict | None:
+    """Forgiving, same shape as _parse_check_result above and forget.py's
+    _parse_remove_indices."""
+    candidates = [raw_output.strip()]
+    match = re.search(r"\{.*\}", raw_output, re.DOTALL)
+    if match:
+        candidates.append(match.group(0))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        action = parsed.get("action")
+        if action not in ("start", "stop", "none"):
+            continue
+        description = parsed.get("description")
+        if not isinstance(description, str):
+            description = ""
+        return {"action": action, "description": description.strip()}
     return None

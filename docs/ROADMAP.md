@@ -182,9 +182,7 @@ awaiting on-machine confirmation · ⬜ not started)
   real machine post-fix: confirmed working.**
   **Round 2 — the scheduled-capture/off-task-chide loop, Task Guide
   Mode's other, larger half, is now built too.** New `task_guide.py`
-  holds the single-active-task state machine (a third tool,
-  `set_active_task`, lets the model itself start/update/stop tracking a
-  concrete step — see `tools/__init__.py`) and `check_task_progress()`,
+  holds the single-active-task state machine and `check_task_progress()`,
   a VLM call comparing a screenshot against the tracked step via the
   same forgiving-JSON-parse pattern `forget.py` already uses.
   `app.py`'s `ws_endpoint` runs a per-driver-connection background loop
@@ -199,13 +197,26 @@ awaiting on-machine confirmation · ⬜ not started)
   someone who has stepped away — no chide, since nobody's there to hear
   it. Mutual exclusion against a real turn in flight is a simple skip
   (never run a screen check and a live reply concurrently on the same
-  socket/history). Full test coverage of the state machine and parsing
-  (`test_task_guide.py`, plus dispatch-level tests in
-  `tools/test_tools.py`) — same "no display/no real Ollama in this
-  sandbox" limit as everything else vision-related: the loop's timing,
-  the VLM's actual on/off-task judgment quality, and whether a chide
-  reads as natural rather than naggy are all **not yet verified on the
-  user's real machine.**
+  socket/history).
+  **Starting/stopping tracking was originally the model's own
+  `set_active_task` tool call (same mechanism as `capture_screen`/
+  `read_clipboard`) but real testing showed that doesn't fire reliably
+  for this model — moved to `maybe_update_task()`, a dedicated
+  classification call structurally identical to `forget.py`'s
+  `maybe_forget()`, run every turn and wired into `_run_turn` alongside
+  it.** See `docs/DECISIONS.md`'s two "set_active_task never fired"
+  entries for the full investigation (an Ollama tool-calling bug that
+  turned out to already be fixed on the user's version, then a
+  cross-framework test pointing at a genuine 9B model capability
+  ceiling rather than anything prompt-fixable). The tool itself is left
+  in place as a harmless redundant path. Full test coverage of the
+  state machine, parsing, and the new classifier (`test_task_guide.py`,
+  plus dispatch-level tests in `tools/test_tools.py`) — same "no
+  display/no real Ollama in this sandbox" limit as everything else
+  vision-related: the loop's timing, the VLM's actual on/off-task
+  judgment quality, whether the new classifier actually fires
+  reliably, and whether a chide reads as natural rather than naggy are
+  all **not yet verified on the user's real machine.**
 - ⬜ **Phase 5 — Camera + game-assist polish.** Gated camera tool, light
   game-context awareness (e.g. active-window detection), expression/emotion
   mapping refined.

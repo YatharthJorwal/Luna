@@ -247,8 +247,14 @@ async def _run_turn(
     # neither has anything to add -- a turn should never fail or even
     # look different structurally just because memory had nothing to do.
     forget_hint = await forget.maybe_forget(user_text)
+    # Phase 4 Round 2 fix -- see task_guide.py's own comment on why this
+    # is a dedicated classification call rather than left to the model's
+    # own set_active_task tool call: real testing showed the latter
+    # doesn't fire reliably for this model. Same ephemeral-hint treatment
+    # as forget_hint right above.
+    task_hint = await task_guide.maybe_update_task(user_text)
     memory_block = await recall.build_recall_context(user_text, CONFIG.memory.recall_top_k)
-    memory_parts = [part for part in (forget_hint, memory_block) if part]
+    memory_parts = [part for part in (forget_hint, task_hint, memory_block) if part]
 
     # Phase 10: where she physically is, if the sandbox has told us. Same
     # ephemeral-system-message treatment as the memory blocks above, and

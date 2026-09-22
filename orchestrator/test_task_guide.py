@@ -203,3 +203,100 @@ def test_parse_check_result_non_bool_on_task_returns_none():
 def test_parse_check_result_missing_note_defaults_empty():
     result = task_guide._parse_check_result('{"on_task": true}')
     assert result == {"on_task": True, "note": ""}
+
+
+# ---------------------------------------------------------------------------
+# maybe_update_task -- the programmatic start/stop classifier (bypasses
+# Ollama's native tool-calling, see task_guide.py's own comment on why)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_maybe_update_task_start(monkeypatch):
+    async def fake_stream_reply(messages):
+        yield '{"action": "start", "description": "writing the game loop"}'
+
+    monkeypatch.setattr(task_guide.llm, "stream_reply", fake_stream_reply)
+    hint = await task_guide.maybe_update_task("I'm going to work on the game loop, keep an eye on me")
+    assert hint is not None
+    assert "writing the game loop" in hint
+    state = task_guide.get_state()
+    assert state.active is True
+    assert state.description == "writing the game loop"
+
+
+@pytest.mark.asyncio
+async def test_maybe_update_task_stop_when_active(monkeypatch):
+    task_guide.set_active_task(True, "something")
+
+    async def fake_stream_reply(messages):
+        yield '{"action": "stop"}'
+
+    monkeypatch.setattr(task_guide.llm, "stream_reply", fake_stream_reply)
+    hint = await task_guide.maybe_update_task("okay I'm done with that")
+    assert hint is not None
+    assert task_guide.get_state().active is False
+
+
+@pytest.mark.asyncio
+async def test_maybe_update_task_stop_when_not_active_returns_none(monkeypatch):
+    async def fake_stream_reply(messages):
+        yield '{"action": "stop"}'
+
+    monkeypatch.setattr(task_guide.llm, "stream_reply", fake_stream_reply)
+    hint = await task_guide.maybe_update_task("okay I'm done with that")
+    assert hint is None
+
+
+@pytest.mark.asyncio
+async def test_maybe_update_task_none_returns_none(monkeypatch):
+    async def fake_stream_reply(messages):
+        yield '{"action": "none"}'
+
+    monkeypatch.setattr(task_guide.llm, "stream_reply", fake_stream_reply)
+    hint = await task_guide.maybe_update_task("what's the weather like")
+    assert hint is None
+    assert task_guide.get_state().active is False
+
+
+@pytest.mark.asyncio
+async def test_maybe_update_task_llm_unreachable_returns_none(monkeypatch):
+    async def failing_stream_reply(messages):
+        raise task_guide.llm.LLMUnreachableError("no server")
+        yield  # pragma: no cover -- makes this an async generator
+
+    monkeypatch.setattr(task_guide.llm, "stream_reply", failing_stream_reply)
+    hint = await task_guide.maybe_update_task("I'm going to work on something")
+    assert hint is None
+
+
+@pytest.mark.asyncio
+async def test_maybe_update_task_unparseable_returns_none(monkeypatch):
+    async def fake_stream_reply(messages):
+        yield "sure, sounds like a task I guess"
+
+    monkeypatch.setattr(task_guide.llm, "stream_reply", fake_stream_reply)
+    hint = await task_guide.maybe_update_task("I'm going to work on something")
+    assert hint is None
+    assert task_guide.get_state().active is False
+
+
+def test_parse_task_detection_start():
+    result = task_guide._parse_task_detection('{"action": "start", "description": "writing tests"}')
+    assert result == {"action": "start", "description": "writing tests"}
+
+
+def test_parse_task_detection_stop_no_description_key():
+    result = task_guide._parse_task_detection('{"action": "stop"}')
+    assert result == {"action": "stop", "description": ""}
+
+
+def test_parse_task_detection_invalid_action_returns_none():
+    result = task_guide._parse_task_detection('{"action": "maybe", "description": "x"}')
+    assert result is None
+
+
+def test_parse_task_detection_markdown_fenced():
+    raw = '```json\n{"action": "none"}\n```'
+    result = task_guide._parse_task_detection(raw)
+    assert result == {"action": "none", "description": ""}

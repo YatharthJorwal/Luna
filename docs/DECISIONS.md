@@ -4935,3 +4935,129 @@ structured (e.g. a lighter-weight classifier step, or accepting that only
 explicit asks like "track this" will reliably work and adjusting the
 persona's own behavior/expectations to match rather than fighting the
 model).
+
+## set_active_task never fired, round 2: it's a model capability ceiling, not Ollama or prompting -- moved to a dedicated classifier call
+
+Continuation of the entry right above this one. After that prompt
+strengthening still didn't work (three more real turns, all "replied
+directly," `tool_calls` key never present -- even on the exact described
+trigger phrase again), research turned up a genuine, well-documented,
+dated Ollama bug: `ollama/ollama#14493` and related issues describe
+Ollama routing Qwen 3.5's tool calls through the wrong renderer/parser
+pipeline (Hermes-style JSON instead of the Qwen3-Coder XML format the
+model was actually trained on) across all Qwen 3.5 sizes -- exactly
+matching the observed symptom (tools offered, acknowledged, never
+actually called). Community reports describe this as fixed upstream as
+of Ollama v0.17.6.
+
+That looked like the answer -- except the user was already running Ollama
+0.34.2, well past that fix, and separately confirmed the same 9B model
+also failed to call a tool (fail to open a browser, an explicit direct
+command, not an implicit one) in a *completely different* agent
+framework (Hermes Agent). That combination -- fixed Ollama version, plus
+a cross-framework failure on an explicit ask -- rules out both "it's an
+Ollama wiring bug" and "it's a Luna prompting problem." What's left is
+the more sobering, but actionable, explanation: qwen3.5:9b's actual
+agentic tool-calling reliability, independent of framework or prompt
+wording, isn't strong enough to trust for this. This tracks with the
+broader pattern the Ollama issue thread itself surfaces once you read
+past the renderer bug -- reliable agentic tool-use is something larger
+Qwen 3.5 sizes (27B+) are actually benchmarked/trained for; smaller
+sizes inherit the architecture but not necessarily the same agentic
+reliability.
+
+Rather than keep fighting a real capability ceiling with more prompt
+engineering, moved `set_active_task`'s trigger detection off of Ollama's
+native tool-calling entirely, onto the exact same architecture
+`forget.py`'s `maybe_forget()` and `consolidation.py`'s session
+distillation already use successfully with this same model: a narrow,
+dedicated classification call asking for a small JSON object
+(`{"action": "start"|"stop"|"none", "description": "..."}`), forgiving-
+parsed the same way every other small-model JSON call in this codebase
+already is, calling `task_guide.set_active_task()` directly in Python
+rather than depending on the model to emit a `tool_calls` field at all.
+The insight worth naming: this model has already been proven, in this
+very codebase, to reliably do "read a short prompt, emit one JSON object,
+nothing else" -- forget.py and consolidation.py depend on exactly that
+and it works. What it apparently can't reliably do is the more open-ended
+"decide mid-roleplay-reply whether this is also a moment to invoke a
+tool." Decoupling those two into separate calls sidesteps the actual
+weakness instead of asking harder for something the model structurally
+isn't good at.
+
+Unlike `forget.py`'s cheap keyword gate before its classification call,
+`maybe_update_task()` has no such gate -- task-starting phrasing is far
+more varied than the word "forget," and Task Guide Mode is the product's
+flagship behavior, so one extra short classification call per turn was
+judged a reasonable reliability cost rather than a wasteful one.
+`set_active_task` (the tool) is left in place, unremoved, as a harmless
+redundant path in case the model does call it sometimes -- doesn't hurt
+anything if it never fires again.
+
+**Still not confirmed on the user's real machine** -- this fix is
+architecturally sound and consistent with what's already proven to work
+elsewhere in this exact codebase with this exact model, which is a much
+stronger basis for confidence than the previous round's prompt-wording
+guess, but it's still unverified against the real Ollama server. Next
+real test should watch for `[luna] task guide: detected task start ->
+'...'` in `orchestrator.log` rather than the old
+`tool-calling: offered [...] ... 'tool_calls' key ever present` line,
+which is no longer the mechanism actually driving this.
+
+## Stale one-off mention kept resurfacing across unrelated conversations for weeks -- fact-extraction bar was too loose
+
+Reported alongside the tool-calling investigation above: the user
+mentioned a VRoid avatar project once, in passing, two weeks prior, and
+Luna kept bringing it up unprompted in roughly ten unrelated
+conversations since -- including reaching for it mid-insult when the
+user brought up something else entirely ("finishing your damn VRoid
+model" apropos of a completely different piece of code).
+
+Root cause, once traced: `consolidation.py`'s fact-extraction prompt told
+the model facts are "stated preferences, ongoing projects,
+**tools/stack/games mentioned**, anything that would still be true weeks
+from now. Skip anything trivial, one-off..." -- two instructions in
+tension. "Tools/stack/games mentioned" is broad enough to literally match
+a single passing mention, and the "skip trivial/one-off" qualifier
+depends on the model correctly judging durability -- the same class of
+nuanced conditional judgment call this model has now demonstrated,
+across two separate features in the same session, that it doesn't
+reliably apply (see the `set_active_task` entries above). Once
+mis-extracted as a fact, the bug compounds structurally:
+`recall.py`'s `MAX_FACTS_IN_RECALL` facts are injected into *every*
+turn's prompt unconditionally (no embedding/relevance filtering the way
+episode recall gets -- deliberately so, per recall.py's own docstring,
+so fact recall survives an embedding-server outage) with only a prompt
+instruction ("only bring something up if genuinely relevant") asking the
+model to filter at generation time -- which is exactly the same kind of
+instruction this model doesn't reliably follow.
+
+Two-part fix, both in the prompts rather than the architecture (no
+change to the unconditional-fact-injection design itself, which has a
+real robustness reason to stay that way):
+1. `consolidation.py`'s extraction bar tightened with an explicit test
+   ("would it still make sense to casually mention this back to the user
+   weeks from now, in a conversation about something else entirely?")
+   and a concrete positive/negative pair ("let me pull up VRoid real
+   quick" vs. "I've been using VRoid for my avatar project") -- built
+   directly from this exact real failure, not a hypothetical.
+2. `recall.py`'s injected-block instruction strengthened with a matching
+   negative example (reaching for a listed fact as a jab when the user
+   brings up something unrelated is explicitly called out as "exactly
+   the wrong move").
+Neither is a structural fix for "small model doesn't reliably follow
+conditional instructions" as a general problem -- that's the same
+underlying limitation the `set_active_task` entries above describe, just
+manifesting here as over-eager fact storage instead of under-eager tool
+use. If facts keep leaking after this, the more structural fix worth
+trying is embedding-based relevance filtering for facts too (matching
+how episodes already work), at the cost of losing the "still works if
+the embedding server is down" robustness recall.py's docstring
+specifically calls out as the reason facts don't already work that way.
+
+Immediate relief for the user's already-stored bad fact (not a code fix,
+just the existing capability): `forget.py`'s explicit "forget that"
+handling was already built and already covers this -- telling her
+"forget that I mentioned VRoid" (or similar phrasing matching
+`_FORGET_TRIGGER`) finds and deletes the specific stored fact right away,
+without needing to wait for a code change to take effect.

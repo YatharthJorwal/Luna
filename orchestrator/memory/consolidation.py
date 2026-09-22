@@ -47,13 +47,24 @@ shape:
 
 {"facts": ["short standalone fact about the user", ...], "episode_summary": "one or two sentence summary of what happened this session"}
 
-Facts are durable things worth remembering long-term: stated \
-preferences, ongoing projects, tools/stack/games mentioned, anything \
-that would still be true weeks from now. Skip anything trivial, \
-one-off, or already obvious from context. If nothing durable came up, \
-use an empty facts list. The episode_summary should read like a \
-memory of what happened, not a transcript -- brief enough to recall at \
-a glance later.\
+Facts are durable things worth remembering long-term and bringing up in \
+*future, unrelated* conversations: stated preferences, identity details, \
+and projects or tools the user is actually working with on an ongoing \
+basis. The test for each one: would it still make sense to casually \
+mention this back to the user weeks from now, in a conversation about \
+something else entirely? A single passing mention of a tool, app, \
+game, or website -- named once, in the context of that session, never \
+described as something the user actually uses or works on regularly -- \
+fails that test and should be skipped, even though it might look like \
+"a tool mentioned." For example: the user saying "let me pull up VRoid \
+real quick" during an unrelated session is not durable; the user saying \
+"I've been using VRoid for my avatar project" is. When genuinely unsure \
+whether something clears this bar, leave it out -- an incomplete fact \
+list is a much smaller problem than a stale one-off mention resurfacing \
+in unrelated conversations for weeks. If nothing durable came up, use \
+an empty facts list. The episode_summary should read like a memory of \
+what happened, not a transcript -- brief enough to recall at a glance \
+later.\
 """
 
 
