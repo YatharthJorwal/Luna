@@ -315,12 +315,17 @@ interface Hud {
 
 function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const input = document.getElementById("input-box") as HTMLInputElement;
-  const statusDot = document.getElementById("status-dot") as HTMLDivElement;
+  const statusOrb = document.getElementById("status-orb") as HTMLDivElement;
   const micButton = document.getElementById("mic-button") as HTMLButtonElement;
   const actionButton = document.getElementById("action-button") as HTMLButtonElement;
-  const emotionTestButton = document.getElementById("emotion-test-button") as HTMLButtonElement;
   const caption = document.getElementById("caption") as HTMLDivElement;
-  const logButton = document.getElementById("log-button") as HTMLButtonElement;
+  const hud = document.getElementById("hud") as HTMLDivElement;
+  const quickActionButton = document.getElementById("quick-action-button") as HTMLButtonElement;
+  const quickActionMenu = document.getElementById("quick-action-menu") as HTMLDivElement;
+  const qaTempModeButton = document.getElementById("qa-temp-mode") as HTMLButtonElement;
+  const qaTempModeState = document.getElementById("qa-temp-mode-state") as HTMLSpanElement;
+  const qaLogButton = document.getElementById("qa-log") as HTMLButtonElement;
+  const qaEmotionTestButton = document.getElementById("qa-emotion-test") as HTMLButtonElement;
   const logPanel = document.getElementById("log-panel") as HTMLDivElement;
   const logPanelBody = document.getElementById("log-panel-body") as HTMLDivElement;
   const logEmptyMessage = document.getElementById("log-empty-message") as HTMLParagraphElement;
@@ -333,9 +338,9 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.4 20.6 21 12 3.4 3.4 3 10l12 2-12 2z" /></svg>';
 
   const setState = (state: ConnectionState) => {
-    statusDot.classList.remove("connected", "listening");
-    statusDot.title = state;
-    if (state !== "offline") statusDot.classList.add(state);
+    statusOrb.classList.remove("connected", "listening");
+    statusOrb.title = state;
+    if (state !== "offline") statusOrb.classList.add(state);
   };
 
   // Toggled true right when a turn starts (sendUserText/sendUserAudio),
@@ -440,7 +445,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   function setLogPanelOpen(open: boolean): void {
     logPanelOpen = open;
     logPanel.hidden = !open;
-    logButton.classList.toggle("active", open);
+    qaLogButton.classList.toggle("active", open);
     if (open) client.sendGetLog();
   }
 
@@ -621,16 +626,24 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   }
 
   const defaultPlaceholder = input.placeholder;
+  const TEMP_MODE_PLACEHOLDER = "Temp chat — nothing said here is kept…";
   let placeholderTimer: number | undefined;
   // Generic "flash a message in the input's placeholder for a few
   // seconds" helper -- originally just for STT transcripts, now also
   // used by the expression-test button below so both share one revert
-  // timer instead of two independently racing each other.
+  // timer instead of two independently racing each other. Reverts to
+  // TEMP_MODE_PLACEHOLDER instead of defaultPlaceholder while Temp Chat
+  // is on (tempModeEnabled, declared further below but already set by
+  // the time this timeout can actually fire -- see its own comment) --
+  // otherwise a transcript flash or an expression-test click would
+  // silently revert the input to the normal placeholder mid Temp Chat,
+  // contradicting the "must have a highlighter" requirement this exists
+  // to satisfy.
   function flashPlaceholder(text: string): void {
     window.clearTimeout(placeholderTimer);
     input.placeholder = text;
     placeholderTimer = window.setTimeout(() => {
-      input.placeholder = defaultPlaceholder;
+      input.placeholder = tempModeEnabled ? TEMP_MODE_PLACEHOLDER : defaultPlaceholder;
     }, 4000);
   }
 
@@ -693,8 +706,58 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   });
   client.connect();
 
-  logButton.addEventListener("click", () => {
+  // Quick-action menu: opened/closed by quickActionButton, closed again
+  // by picking any item, clicking outside it, or Escape -- standard
+  // dropdown behavior. aria-expanded kept in sync for screen readers;
+  // the rotated-+ visual (see .active in style.css) is the sighted
+  // equivalent.
+  let quickActionMenuOpen = false;
+  function setQuickActionMenuOpen(open: boolean): void {
+    quickActionMenuOpen = open;
+    quickActionMenu.hidden = !open;
+    quickActionButton.classList.toggle("active", open);
+    quickActionButton.setAttribute("aria-expanded", String(open));
+  }
+  quickActionButton.addEventListener("click", () => {
+    setQuickActionMenuOpen(!quickActionMenuOpen);
+  });
+  document.addEventListener("click", (event) => {
+    if (!quickActionMenuOpen) return;
+    const target = event.target as Node;
+    if (quickActionMenu.contains(target) || quickActionButton.contains(target)) return;
+    setQuickActionMenuOpen(false);
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && quickActionMenuOpen) setQuickActionMenuOpen(false);
+  });
+
+  // Temp Chat -- quick-action menu's own toggle (see app.py's
+  // temp_mode/temp_turn_flags for what this actually does server-side:
+  // no recall, no forget, no task tracking, and excluded from
+  // end-of-session consolidation). Purely a local boolean plus one
+  // fire-and-forget message -- there's nothing to await or roll back,
+  // see ws-client.ts's sendSetTempMode for why.
+  let tempModeEnabled = false;
+  function setTempModeEnabled(enabled: boolean): void {
+    tempModeEnabled = enabled;
+    qaTempModeState.textContent = enabled ? "On" : "Off";
+    qaTempModeState.classList.toggle("on", enabled);
+    hud.classList.toggle("temp-mode-active", enabled);
+    input.placeholder = enabled ? TEMP_MODE_PLACEHOLDER : defaultPlaceholder;
+    client.sendSetTempMode(enabled);
+  }
+  qaTempModeButton.addEventListener("click", () => {
+    setTempModeEnabled(!tempModeEnabled);
+    // Deliberately does NOT close the menu -- a toggle the user might
+    // want to flip back within the next few seconds (e.g. "actually
+    // no, turn it back off") shouldn't require reopening the menu to
+    // undo. The other items below do close it, since they're one-shot
+    // actions rather than a state you'd immediately reconsider.
+  });
+
+  qaLogButton.addEventListener("click", () => {
     setLogPanelOpen(!logPanelOpen);
+    setQuickActionMenuOpen(false);
   });
   logCloseButton.addEventListener("click", () => {
     setLogPanelOpen(false);
@@ -766,11 +829,12 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   // mood out of the LLM by conversation. Starts at index -1 so the very
   // first click lands on EMOTION_NAMES[0] rather than skipping it.
   let emotionTestIndex = -1;
-  emotionTestButton.addEventListener("click", () => {
+  qaEmotionTestButton.addEventListener("click", () => {
     emotionTestIndex = (emotionTestIndex + 1) % EMOTION_NAMES.length;
     const emotion = EMOTION_NAMES[emotionTestIndex]!;
     setTargetEmotion(emotion);
     flashPlaceholder(`Testing expression: ${emotion}`);
+    setQuickActionMenuOpen(false);
   });
 
   const mic = new MicInput({

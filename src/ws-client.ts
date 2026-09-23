@@ -244,6 +244,24 @@ export class WsClient {
     this.socket.send(JSON.stringify({ type: "clear_log" }));
   }
 
+  /** Quick-action menu's Temp Chat toggle -- while enabled, the
+   * orchestrator skips reading or writing any persistent memory for this
+   * connection's turns (see app.py's temp_mode/temp_turn_flags). Fire-
+   * and-forget like sendSceneState -- there's no meaningful failure mode
+   * to react to, and the frontend already reflects its own toggle state
+   * optimistically the instant the user clicks it. Known gap, not
+   * handled here: temp_mode lives server-side per *connection*, so a
+   * reconnect (this class's own scheduleReconnect below) starts a fresh
+   * connection with temp_mode back at false, even if the UI still shows
+   * it on -- there's no onopen hook here yet to resend it automatically.
+   * Low-stakes for now (a dropped connection mid Temp Chat is rare and
+   * the user would see the toggle re-click still work), but worth fixing
+   * properly if that turns out to actually happen in practice. */
+  sendSetTempMode(enabled: boolean): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: "set_temp_mode", enabled }));
+  }
+
   private scheduleReconnect(): void {
     window.clearTimeout(this.reconnectTimer);
     this.reconnectTimer = window.setTimeout(() => this.connect(), RECONNECT_DELAY_MS);

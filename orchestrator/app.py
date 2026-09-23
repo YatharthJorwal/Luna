@@ -204,19 +204,31 @@ async def _clear_transcript_log_safely() -> None:
         print(f"[luna] transcript log: clear failed: {exc}", file=sys.stderr)
 
 
-def _trim_history(history: list[dict[str, str]]) -> None:
+def _trim_history(history: list[dict[str, str]], temp_turn_flags: list[bool] | None = None) -> None:
     """Keeps the system prompt plus the last N (user, assistant) turns.
     Session memory only (Phase 3 adds durable memory), but still needs a
-    cap so a long session doesn't grow the LLM's context unbounded."""
+    cap so a long session doesn't grow the LLM's context unbounded.
+
+    temp_turn_flags, when given, is trimmed the same way and by the same
+    amount -- it's kept in lockstep with history[1:] (see _run_turn's own
+    docstring), so whatever gets dropped from the front of `turns` here
+    has to be dropped from its front too, or every flag after the cut
+    would silently point at the wrong history entry."""
     system, turns = history[0], history[1:]
     max_messages = CONFIG.session.max_history_turns * 2
     if len(turns) > max_messages:
         turns = turns[-max_messages:]
+        if temp_turn_flags is not None:
+            temp_turn_flags[:] = temp_turn_flags[-max_messages:]
     history[:] = [system] + turns
 
 
 async def _run_turn(
-    websocket: WebSocket, history: list[dict[str, str]], user_text: str
+    websocket: WebSocket,
+    history: list[dict[str, str]],
+    user_text: str,
+    temp_mode: bool = False,
+    temp_turn_flags: list[bool] | None = None,
 ) -> None:
     """The actual agent turn: append user_text to history, stream the LLM
     reply, speak each sentence chunk as it's ready, commit (or roll back)
@@ -228,8 +240,19 @@ async def _run_turn(
     (memory/store.py) per call, regardless of how the turn ends (normal
     completion, LLM-unreachable fallback, or stopped mid-sentence) -- see
     spoken_parts below for what that does and doesn't include, and why
-    it's tracked separately from reply_parts/history."""
+    it's tracked separately from reply_parts/history.
+
+    temp_mode/temp_turn_flags (quick-action menu's Temp Chat toggle):
+    temp_turn_flags is a list kept in lockstep with history[1:] (one
+    entry per history.append(), True if temp_mode was active for that
+    append) -- see ws_endpoint's own comment on why this is tracked
+    per-turn rather than as a single per-session flag, and consolidation
+    time (also in ws_endpoint) for where it actually gets used. None
+    means "don't bother" (there's nowhere to track it, or this call site
+    doesn't care) -- every real call site passes a real list."""
     history.append({"role": "user", "content": user_text})
+    if temp_turn_flags is not None:
+        temp_turn_flags.append(temp_mode)
     # Phase 4 Round 2: any real user turn counts as "they're still here,"
     # regardless of whether it's about the tracked task at all -- resets
     # Task Guide Mode's idle clock (see task_guide.is_idle/_task_guide_loop
@@ -246,14 +269,25 @@ async def _run_turn(
     # someone actually said). Falls back to plain `history` unchanged if
     # neither has anything to add -- a turn should never fail or even
     # look different structurally just because memory had nothing to do.
-    forget_hint = await forget.maybe_forget(user_text)
-    # Phase 4 Round 2 fix -- see task_guide.py's own comment on why this
-    # is a dedicated classification call rather than left to the model's
-    # own set_active_task tool call: real testing showed the latter
-    # doesn't fire reliably for this model. Same ephemeral-hint treatment
-    # as forget_hint right above.
-    task_hint = await task_guide.maybe_update_task(user_text)
-    memory_block = await recall.build_recall_context(user_text, CONFIG.memory.recall_top_k)
+    # Skipped entirely in temp_mode -- Temp Chat's whole point is "read
+    # nothing from persistent memory, write nothing to it," and
+    # maybe_update_task counts here too even though task state isn't
+    # SQLite-persisted: it's still a live, carry-forward side effect
+    # (a task tracked from a "this doesn't count" conversation chiding
+    # the user later in a normal one would defeat the point).
+    if temp_mode:
+        forget_hint = None
+        task_hint = None
+        memory_block = None
+    else:
+        forget_hint = await forget.maybe_forget(user_text)
+        # Phase 4 Round 2 fix -- see task_guide.py's own comment on why this
+        # is a dedicated classification call rather than left to the model's
+        # own set_active_task tool call: real testing showed the latter
+        # doesn't fire reliably for this model. Same ephemeral-hint treatment
+        # as forget_hint right above.
+        task_hint = await task_guide.maybe_update_task(user_text)
+        memory_block = await recall.build_recall_context(user_text, CONFIG.memory.recall_top_k)
     memory_parts = [part for part in (forget_hint, task_hint, memory_block) if part]
 
     # Phase 10: where she physically is, if the sandbox has told us. Same
@@ -368,13 +402,17 @@ async def _run_turn(
         # end up looking like a real reply in history either.
         if reply_parts:
             history.append({"role": "assistant", "content": " ".join(reply_parts)})
+            if temp_turn_flags is not None:
+                temp_turn_flags.append(temp_mode)
         else:
             # Nothing usable came back (LLM unreachable and no fallback
             # line ended up in reply_parts either, or stopped before a
             # single chunk arrived) -- drop the dangling user turn rather
             # than leave a one-sided exchange in context for next time.
             history.pop()
-        _trim_history(history)
+            if temp_turn_flags is not None:
+                temp_turn_flags.pop()
+        _trim_history(history, temp_turn_flags)
         # Awaiting here, inside `finally`, after a possible cancellation
         # above is safe: the cancellation that got us here already fired
         # once (at whichever `await` this task was sitting on), and
@@ -426,7 +464,11 @@ def _drift_prompt(task_description: str, observation: str) -> str:
 
 
 async def _run_task_guide_check(
-    websocket: WebSocket, history: list[dict[str, str]], task_description: str
+    websocket: WebSocket,
+    history: list[dict[str, str]],
+    task_description: str,
+    temp_mode: bool = False,
+    temp_turn_flags: list[bool] | None = None,
 ) -> None:
     """The scheduled half of Task Guide Mode actually doing its job: grab
     a screenshot, ask the VLM whether it still matches the tracked step
@@ -434,6 +476,16 @@ async def _run_task_guide_check(
     react in character over the same speak pipeline _run_turn uses for a
     real reply -- just triggered by _task_guide_loop's timer instead of
     the user typing something.
+
+    temp_mode/temp_turn_flags: read live off the connection at call time
+    (see _task_guide_loop's own comment on late-binding closures) so a
+    chide that happens to land while Temp Chat is toggled on still gets
+    excluded from end-of-session consolidation, same as everything else
+    said during that window -- this does NOT suppress the chide itself,
+    just how its history entry gets treated afterward. Task tracking
+    itself already can't *start* during temp_mode (see _run_turn), so
+    this only matters for a task that was already active before Temp
+    Chat got toggled on mid-session.
 
     Always calls task_guide.mark_checked() up front (whether or not this
     ends up chiding) so due_for_check() measures from "last time we
@@ -495,7 +547,9 @@ async def _run_task_guide_check(
     # matching "user" turn precedes it -- nobody said anything -- which
     # is a legitimate shape for an unprompted comment, not a bug.
     history.append({"role": "assistant", "content": " ".join(reply_parts)})
-    _trim_history(history)
+    if temp_turn_flags is not None:
+        temp_turn_flags.append(temp_mode)
+    _trim_history(history, temp_turn_flags)
     await _log_transcript_turn_safely("", " ".join(apply_persona_pass(p) for p in reply_parts))
     await websocket.send_json({"type": "turn_end", "emotion": detected_emotion})
 
@@ -563,6 +617,17 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     await websocket.send_json({"type": "surface_status", "role": "driver" if is_driver else "observer"})
 
     history: list[dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Quick-action menu's Temp Chat toggle -- per-connection, unlike
+    # task_guide's module-level state, since it's about this window's own
+    # conversation rather than anything shared. temp_turn_flags is kept
+    # in lockstep with history[1:], one bool per history.append() (see
+    # _run_turn's own docstring for the exact bookkeeping) -- read at
+    # session end (this function's own `finally` below) to exclude
+    # anything said while temp_mode was on from consolidation, without
+    # having to throw away memorable content from the rest of a session
+    # that only briefly touched temp mode.
+    temp_mode = False
+    temp_turn_flags: list[bool] = []
     # The in-flight turn, if any -- run as its own task (not just awaited
     # inline) specifically so the main loop below can keep concurrently
     # watching for a "stop" message (or /shutdown) while generation is
@@ -607,7 +672,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 # mark_checked() is only called once a check actually
                 # runs, so nothing here silently resets the interval.
                 continue
-            await _run_task_guide_check(websocket, history, state.description)
+            await _run_task_guide_check(websocket, history, state.description, temp_mode, temp_turn_flags)
 
     task_guide_task: asyncio.Task | None = (
         asyncio.create_task(_task_guide_loop()) if is_driver else None
@@ -683,6 +748,18 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 _scene_state = text[:400] or None
                 continue
 
+            if msg_type == "set_temp_mode":
+                # Quick-action menu's Temp Chat toggle -- per-connection
+                # (see temp_mode's own declaration above), so no driver
+                # gate needed: an observer toggling it only affects a
+                # variable that observer's own connection never actually
+                # reads (observers can't start turns at all, see the
+                # driver-only check right below). No reply sent -- the
+                # frontend already reflects its own toggle state
+                # optimistically the moment it's clicked.
+                temp_mode = bool(data.get("enabled"))
+                continue
+
             if msg_type in ("user_text", "user_audio") and websocket is not _driver:
                 # Observer window trying to start a turn -- the frontend
                 # should already have disabled its own input for this
@@ -707,7 +784,9 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # The frontend should disable input while a reply is
                     # in flight; this is just defense in depth regardless.
                     continue
-                current_turn_task = asyncio.create_task(_run_turn(websocket, history, user_text))
+                current_turn_task = asyncio.create_task(
+                    _run_turn(websocket, history, user_text, temp_mode, temp_turn_flags)
+                )
 
             elif msg_type == "user_audio":
                 audio_b64 = data.get("audio_b64") or ""
@@ -756,7 +835,9 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # Silence, noise, or nothing intelligible -- nothing to
                     # reply to, and nothing worth adding to history.
                     continue
-                current_turn_task = asyncio.create_task(_run_turn(websocket, history, user_text))
+                current_turn_task = asyncio.create_task(
+                    _run_turn(websocket, history, user_text, temp_mode, temp_turn_flags)
+                )
             else:
                 continue
     except WebSocketDisconnect:
@@ -812,8 +893,18 @@ async def ws_endpoint(websocket: WebSocket) -> None:
         # modes internally (LLM/embedding unreachable) -- a session ending
         # should never be blocked by memory work, and an unforeseen bug
         # here shouldn't take down connection teardown.
+        #
+        # Temp Chat turns are filtered out first -- temp_turn_flags is
+        # kept in lockstep with history[1:] (one bool per history.append,
+        # see _run_turn's docstring), so this excludes exactly what was
+        # said while the toggle was on, not the whole session just
+        # because it was touched at some point. history[0] is always the
+        # system prompt, never flag-tracked, so it's kept unconditionally.
+        history_to_consolidate = [history[0]] + [
+            msg for msg, is_temp in zip(history[1:], temp_turn_flags) if not is_temp
+        ]
         try:
-            await consolidation.consolidate_session(history)
+            await consolidation.consolidate_session(history_to_consolidate)
         except Exception as exc:  # noqa: BLE001 -- see comment above
             print(f"[luna] consolidation failed unexpectedly: {exc}", file=sys.stderr)
         # Only reachable for the shutdown-event break above -- a real

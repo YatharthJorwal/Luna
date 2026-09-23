@@ -178,24 +178,54 @@ body {
   border-radius: 999px;
   backdrop-filter: blur(6px);
   -webkit-app-region: no-drag;
+  transition:
+    border-color 200ms ease,
+    box-shadow 200ms ease;
 }
 
-#status-dot {
+/* Bigger, glowing stand-in for the old #status-dot -- pink/purple radial
+   glow built from the palette's own --accent-idle/--accent-lavender
+   pair, since this is a best-effort placeholder built from what's
+   already in this file, not a reproduction of whatever reference the
+   user has in mind (see chat -- still waiting on that). Same functional
+   role as the old dot (connection + listening state at a glance), just
+   sized and styled as an actual focal element per the request instead
+   of a tiny corner indicator. Swap this rule (and the .connected/
+   .listening ones below it) out once the real reference is in hand --
+   main.ts's connection-state logic that toggles these classes doesn't
+   need to change either way. */
+#status-orb {
   flex: none;
-  width: 8px;
-  height: 8px;
+  width: 20px;
+  height: 20px;
   border-radius: 50%;
-  background: var(--accent-offline);
-  box-shadow: 0 0 6px currentColor;
-  transition: background-color 200ms ease;
+  background: radial-gradient(circle at 35% 30%, var(--ink), var(--accent-idle) 55%, var(--accent-lavender) 100%);
+  box-shadow: 0 0 10px 1px var(--accent-idle);
+  opacity: 0.45;
+  transition:
+    opacity 200ms ease,
+    box-shadow 200ms ease;
 }
 
-#status-dot.connected {
-  background: var(--accent-idle);
+#status-orb.connected {
+  opacity: 1;
+  animation: orb-breathe 3.4s ease-in-out infinite;
 }
 
-#status-dot.listening {
-  background: var(--accent-listening);
+#status-orb.listening {
+  opacity: 1;
+  box-shadow: 0 0 14px 3px var(--accent-listening);
+  animation: orb-breathe 1.1s ease-in-out infinite;
+}
+
+@keyframes orb-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.12);
+  }
 }
 
 #input-box {
@@ -286,11 +316,13 @@ body {
   }
 }
 
-/* Dev/QA toggle -- cycles through every VRM expression on click (see
-   main.ts's emotionTestButton handler). Deliberately styled identically
-   to mic/action-button rather than called out as special, since it's a
-   permanent fixture of the HUD, not a temporary debug flag. */
-#emotion-test-button {
+/* Quick-action menu's trigger button (the +/cross icon) -- same base
+   sizing as mic/action-button, now the leading element in the HUD pill.
+   #log-button and #emotion-test-button (formerly separate permanent HUD
+   buttons) moved inside the menu this opens -- see .quick-action-item
+   below -- rather than staying as their own top-level icons; the default
+   HUD pill is meant to hold only send/stop, input, orb, and mic now. */
+#quick-action-button {
   flex: none;
   width: 22px;
   height: 22px;
@@ -302,51 +334,139 @@ body {
   color: var(--dim);
   cursor: pointer;
   -webkit-app-region: no-drag;
-  transition: color 150ms ease;
+  transition:
+    color 150ms ease,
+    transform 150ms ease;
 }
 
-#emotion-test-button svg {
+#quick-action-button svg {
   width: 16px;
   height: 16px;
 }
 
-#emotion-test-button:hover {
+#quick-action-button:hover {
   color: var(--ink);
 }
 
-/* Opens/closes #log-panel below (see main.ts's setupHud) -- styled
-   identically to mic/action/emotion-test-button, same reasoning as the
-   comment on #emotion-test-button above: this is a permanent HUD
-   fixture, not a one-off. */
-#log-button {
-  flex: none;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  display: grid;
-  place-items: center;
-  background: transparent;
-  border: none;
-  color: var(--dim);
-  cursor: pointer;
-  -webkit-app-region: no-drag;
-  transition: color 150ms ease;
-}
-
-#log-button svg {
-  width: 16px;
-  height: 16px;
-}
-
-#log-button:hover {
-  color: var(--ink);
-}
-
-/* Highlighted while open, same idea as .recording on the mic button --
-   a quick glance at the HUD should tell you the panel's state without
-   needing to check whether it's actually visible below. */
-#log-button.active {
+/* Rotates the + into an x while the menu's open -- same "state visible
+   at a glance" idea #log-button.active used to cover on its own. */
+#quick-action-button.active {
   color: var(--accent-idle);
+  transform: rotate(45deg);
+}
+
+/* The quick-action menu itself -- a small floating card, positioned the
+   same way #log-panel is (see its own comment below): anchored above
+   the HUD pill, opened/closed by #quick-action-button (see main.ts's
+   setupHud). A vertical list of full-width row buttons rather than a
+   grid -- simpler to scan for a handful of items, and leaves room for
+   each row's state/soon badge on the right. */
+#quick-action-menu {
+  position: absolute;
+  left: 50%;
+  bottom: 66px;
+  transform: translateX(-50%);
+  display: flex;
+  flex-direction: column;
+  width: min(88%, 280px);
+  padding: 6px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 16px;
+  backdrop-filter: blur(6px);
+  -webkit-app-region: no-drag;
+}
+
+#quick-action-menu[hidden] {
+  display: none;
+}
+
+.quick-action-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  background: transparent;
+  border: none;
+  border-radius: 10px;
+  color: var(--ink);
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+  transition: background-color 150ms ease;
+}
+
+.quick-action-item:hover:not(:disabled) {
+  background: rgba(255, 242, 248, 0.08);
+}
+
+/* Highlighted while its own panel/mode is open -- e.g. #qa-log while
+   the log panel is showing, same idea the old standalone #log-button
+   used (a quick glance should tell you state without needing to check
+   whether the panel behind this menu is actually visible). */
+.quick-action-item.active {
+  color: var(--accent-idle);
+}
+
+/* Not-yet-built items (Live Voice Chat, Camera, Continuous OCR, Upload,
+   Agent Mode) -- present in the menu so the shape of what's coming is
+   visible, but inert: disabled, dimmed, no hover state, and each has a
+   title="Not built yet" tooltip on top of the visible "Soon" badge. */
+.quick-action-item:disabled {
+  color: var(--dim);
+  cursor: default;
+  opacity: 0.55;
+}
+
+.quick-action-soon {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+/* Temp Chat's own state badge (Off/On) -- same row shape as the soon
+   badge above but color-coded instead of static, so its state reads
+   correctly even inside the menu before the HUD-level indicator (see
+   .temp-mode-active below) is visible. */
+.quick-action-state {
+  flex: none;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--dim);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  padding: 2px 7px;
+}
+
+#qa-temp-mode-state.on {
+  color: var(--accent-lavender);
+  border-color: var(--accent-lavender);
+}
+
+.quick-action-divider {
+  height: 1px;
+  margin: 4px 6px;
+  background: var(--glass-border);
+}
+
+/* Temp Chat's HUD-level indicator -- visible without opening the menu,
+   per the request's own "must have a highlighter or something to show
+   enabled/disabled" spec. A colored border/glow on the whole pill rather
+   than just the orb, since Temp Chat changes how *every* part of the
+   turn behaves (nothing recalled, nothing remembered), not just one
+   element's state. */
+#hud.temp-mode-active {
+  border-color: var(--accent-lavender);
+  box-shadow: 0 0 12px 1px rgba(203, 166, 247, 0.45);
 }
 
 /* The conversation-log panel itself -- a small floating card, not part

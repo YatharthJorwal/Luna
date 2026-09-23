@@ -69,9 +69,12 @@ later.\
 
 
 async def consolidate_session(history: list[dict[str, str]]) -> None:
-    """`history` is the exact list app.py keeps per connection -- index 0
+    """`history` matches the shape app.py keeps per connection -- index 0
     is the persona system prompt (skipped here, it's not part of what
-    happened), the rest are the real user/assistant turns."""
+    happened), the rest are the real user/assistant turns. May be a
+    filtered copy rather than the literal same list object (app.py
+    excludes Temp Chat turns before calling this) -- doesn't matter here,
+    this function only ever reads it."""
     turns = history[1:]
     if not turns:
         return  # nothing actually happened this session -- nothing to distill
