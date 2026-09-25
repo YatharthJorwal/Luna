@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Awaitable, Callable
 
+import camera
 import task_guide
 from tools import vision
 
@@ -86,6 +87,24 @@ TOOL_SCHEMAS: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "capture_camera",
+            "description": (
+                "Look through the user's webcam right now and get back a "
+                "text description of what's visible -- the user "
+                "themselves, their expression, their surroundings. Only "
+                "works if the user has armed the camera from their "
+                "quick-action menu; if they haven't, this will fail and "
+                "you should just tell them to turn it on first. Use this "
+                "when the user asks you to look at them or their room "
+                "through the camera -- not for the screen, that's "
+                "capture_screen."
+            ),
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
 ]
 
 
@@ -107,6 +126,20 @@ async def _set_active_task_tool(active: bool = False, description: str = "", **_
     return task_guide.set_active_task(bool(active), str(description or ""))
 
 
+async def _capture_camera_tool(*, websocket: Any = None, **_ignored: Any) -> str:
+    # websocket is required for this one tool (see camera.py's own
+    # docstring on why: there's no server-side equivalent of a webcam
+    # grab, only a browser round trip) -- but the signature still accepts
+    # it as a keyword with a default so this function has the exact same
+    # shape as every other handler in _HANDLERS below, and dispatch_tool_
+    # call can call all four identically rather than special-casing one.
+    # None only if dispatch_tool_call is ever called without a websocket,
+    # which shouldn't happen in practice (every real call site has one).
+    if websocket is None:
+        return "(tool unavailable: no active connection to request a camera frame over)"
+    return await camera.describe_camera(websocket)
+
+
 # name -> async callable, every one of which always returns a plain
 # string result and never raises anything but vision.ToolUnavailableError
 # (dispatch_tool_call below turns even that into a safe string instead of
@@ -117,21 +150,28 @@ _HANDLERS: dict[str, Callable[..., Awaitable[str]]] = {
     "capture_screen": _capture_screen_tool,
     "read_clipboard": _read_clipboard_tool,
     "set_active_task": _set_active_task_tool,
+    "capture_camera": _capture_camera_tool,
 }
 
 
-async def dispatch_tool_call(name: str, arguments: dict[str, Any]) -> str:
+async def dispatch_tool_call(name: str, arguments: dict[str, Any], websocket: Any = None) -> str:
     """Runs one tool call by name and always returns a plain string --
     either the real result, the tool's own failure message
     (ToolUnavailableError), or a note that the model asked for a tool
     that doesn't exist (a hallucinated name, which -- being a local 9B
     model -- is real enough to handle rather than crash the turn over).
+
+    websocket is threaded through to every handler as a keyword
+    argument (harmlessly absorbed by **_ignored on the three that don't
+    need it) rather than given its own special-cased call path, purely
+    so capture_camera -- the one tool that genuinely needs it, see
+    camera.py -- doesn't need different wiring than the rest.
     """
     handler = _HANDLERS.get(name)
     if handler is None:
         return f"(no such tool: {name!r})"
     try:
-        return await handler(**arguments)
+        return await handler(**arguments, websocket=websocket)
     except vision.ToolUnavailableError as exc:
         return f"(tool unavailable: {exc})"
     except TypeError as exc:

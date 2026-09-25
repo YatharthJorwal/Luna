@@ -2614,3 +2614,74 @@ handling was already built and already covers this -- telling her
 "forget that I mentioned VRoid" (or similar phrasing matching
 `_FORGET_TRIGGER`) finds and deletes the specific stored fact right away,
 without needing to wait for a code change to take effect.
+
+## Phase 5 Round 1: gated camera tool -- 2D canvas beats WebGL for this, tray icon is the only indicator
+
+`capture_camera` follows `capture_screen`'s exact "pull, not push" shape
+(`docs/ARCHITECTURE.md`'s "Vision tools" section): every capture only
+happens because the model chose to call the tool, never a continuous
+feed. What's genuinely different from `capture_screen`: there is no
+server-side equivalent of a webcam grab (unlike `PIL.ImageGrab`/`mss` for
+the screen), so the pixels can only come from the browser.
+
+**Why 2D canvas, not WebGL, despite the user specifically asking for a
+"WebGL camera setup."** `docs/ARCHITECTURE.md`'s own spec for
+`capture_camera()` says the indicator is a tray icon state, "even though
+nothing is displayed back to the user" -- there was never going to be an
+on-screen preview to render. With nothing shown and no per-frame effects/
+filters applied, WebGL provides zero speed advantage over a plain
+`canvas.getContext("2d").drawImage()` for grabbing a single still frame --
+both are sub-millisecond to a few ms, and the actual bottleneck in this
+pipeline is the browser's own `getUserMedia`/video-decode path either way,
+not which canvas API reads the pixels out afterward. The user's "I heard
+it's millisecond-level fast" instinct about camera capture speed is
+correct -- that part of the pipeline genuinely is fast -- but WebGL isn't
+what makes it fast, and reaching for a WebGL context/shader setup here
+would have been real complexity with no real benefit. Named this
+explicitly rather than silently substituting 2D and hoping it doesn't
+come up -- if a future feature needs actual GPU-side pixel processing
+(a live preview with filters, continuous frame-diffing for the "Dedicated
+OCR" menu item), WebGL would earn its keep then, just not for one-shot
+still capture.
+
+**The permission/indicator design was mostly already decided, not
+invented this round** -- `docs/ARCHITECTURE.md` already specified a
+one-time permission plus a tray-icon indicator (not an in-window one)
+before this round touched any code. What this round actually built: the
+Rust side to make the tray icon swappable at all (`lib.rs` previously
+just discarded the `TrayIcon` handle after building it -- now stored via
+`app.manage()`, same pattern `ManagedChildren` already uses), a second
+tray icon asset (`icons/tray-camera-active.png`, a red dot composited
+onto the main icon via Pillow, matching the same visual language a
+standard OS camera-in-use light uses), and a new `set_camera_indicator`
+Tauri command swapping between it and `app.default_window_icon()`. The
+indicator tracks "is the stream open" (armed at toggle-on, released at
+toggle-off), not literally "is a frame being read this millisecond" --
+deliberately: that's both simpler to implement correctly and more honest
+about the actual privacy-relevant fact (the camera *could* be read from
+at any point while armed), the same way a physical webcam light works.
+
+**The request/response round trip is new plumbing, not reused from
+anything.** `orchestrator/camera.py`'s `request_frame()` sends
+`request_camera_frame` over the websocket and awaits an
+`asyncio.Future` that `resolve_pending_frame()` completes when
+`app.py`'s message loop sees the matching `camera_frame` reply --
+bounded by a 10s timeout so a browser that never answers (camera
+toggled off, window lost focus, whatever) can't hang a whole turn.
+Single-slot module-level state, same reasoning as `task_guide.py`'s
+single-active-task design: this is a single-driver-connection app, so
+there's never a genuine need for more than one in-flight camera request.
+`dispatch_tool_call` (`tools/__init__.py`) now takes an optional
+`websocket` parameter, threaded through to every handler as a keyword
+argument -- harmlessly absorbed by `**_ignored` on the three tools that
+don't need it, so `capture_camera` doesn't require different wiring than
+the rest.
+
+**What's still open, beyond real-machine verification:** the Rust
+changes (a new Cargo feature, a new command, a new managed-state struct)
+have never been compiled -- no cargo in this sandbox, same limit as
+`lib.rs`'s other rounds. `camera.ts`'s `getUserMedia`/permission flow,
+the actual round-trip timing under a real Ollama VLM call, and whether
+the tray icon swap is visually obvious enough in practice are all
+genuinely untested. Game-context awareness (the other half of Phase 5)
+isn't started.

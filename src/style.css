@@ -28,6 +28,11 @@
      apart from the user's own in the log panel below (and available for
      anything else that wants a second color besides the pink family). */
   --accent-lavender: #cba6f7;
+  /* Phase 5 -- camera-active red, matching the tray icon's own indicator
+     dot (src-tauri/icons/tray-camera-active.png) so the in-menu "On"
+     badge and the tray both read as the same "camera is live" signal
+     rather than looking like two unrelated states. */
+  --accent-camera: #ea5a5a;
 }
 
 * {
@@ -447,9 +452,14 @@ body {
   padding: 2px 7px;
 }
 
-#qa-temp-mode-state.on {
+.quick-action-state.on {
   color: var(--accent-lavender);
   border-color: var(--accent-lavender);
+}
+
+#qa-camera-state.on {
+  color: var(--accent-camera);
+  border-color: var(--accent-camera);
 }
 
 .quick-action-divider {

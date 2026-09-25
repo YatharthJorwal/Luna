@@ -20,11 +20,27 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{
+    image::Image,
     menu::{Menu, MenuItem},
-    tray::TrayIconBuilder,
+    tray::{TrayIcon, TrayIconBuilder},
     Emitter, Manager, PhysicalPosition, Position, WindowEvent,
 };
 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
+
+/// Embedded at compile time rather than read from disk at runtime -- same
+/// "don't depend on a working-directory-relative path being right" reasoning
+/// as everything else that's been machine-specific trouble in this file.
+/// Swapped onto the tray via set_camera_indicator (see its own doc comment)
+/// whenever the frontend's camera toggle is armed; swapped back to
+/// `app.default_window_icon()` when it isn't. Needs the `image-png` Cargo
+/// feature (Cargo.toml) for `Image::from_bytes` below to even compile.
+const CAMERA_ACTIVE_TRAY_ICON: &[u8] = include_bytes!("../icons/tray-camera-active.png");
+
+/// Handle to the tray icon itself, stored as Tauri-managed state (same
+/// pattern as `ManagedChildren`) so `set_camera_indicator` can swap its
+/// icon later -- `build_tray()`'s own `.build(app)?` call used to just
+/// discard this.
+struct TrayIconHandle(TrayIcon);
 
 /// No visible console window for a spawned child process. Same numeric
 /// flag Windows' own CreateProcess API uses -- there's no named constant
@@ -55,9 +71,39 @@ fn toggle_click_through(window: tauri::WebviewWindow, ignore: bool) -> Result<()
         .map_err(|e| e.to_string())
 }
 
+/// **UNVERIFIED -- no Rust toolchain in the sandbox this was written in.**
+/// Phase 5's camera indicator, per `docs/ARCHITECTURE.md`'s own spec for
+/// `capture_camera()`: "a visible 'camera active' indicator (tray icon
+/// state) whenever it's used, even though nothing is displayed back to the
+/// user." Called from the frontend's camera module (src/camera.ts) the
+/// instant `getUserMedia` actually grants a live stream (active=true) and
+/// the instant that stream is stopped (active=false) -- tracks "is the
+/// camera stream open," not literally "is a frame being read from it this
+/// millisecond," which is both simpler and more honest: the OS's own
+/// camera light works the same way (on for the whole time a stream is
+/// open, not just per-frame).
+#[tauri::command]
+fn set_camera_indicator(
+    app: tauri::AppHandle,
+    tray: tauri::State<TrayIconHandle>,
+    active: bool,
+) -> Result<(), String> {
+    let icon = if active {
+        Image::from_bytes(CAMERA_ACTIVE_TRAY_ICON).map_err(|e| e.to_string())?
+    } else {
+        app.default_window_icon()
+            .cloned()
+            .ok_or_else(|| "no default window icon configured".to_string())?
+    };
+    tray.0.set_icon(Some(icon)).map_err(|e| e.to_string())
+}
+
 pub fn run() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![toggle_click_through])
+        .invoke_handler(tauri::generate_handler![
+            toggle_click_through,
+            set_camera_indicator
+        ])
         .setup(|app| {
             let window = app
                 .get_webview_window("main")
@@ -351,7 +397,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     // call site), so a plain `let mut` captured by the closure won't compile.
     let click_through_state = Arc::new(AtomicBool::new(false));
 
-    TrayIconBuilder::new()
+    let tray = TrayIconBuilder::new()
         .icon(app.default_window_icon().unwrap().clone())
         .menu(&menu)
         .on_menu_event(move |app, event| {
@@ -386,6 +432,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             }
         })
         .build(app)?;
+
+    app.manage(TrayIconHandle(tray));
 
     Ok(())
 }

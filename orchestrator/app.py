@@ -50,6 +50,7 @@ from typing import Any
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
+import camera
 import llm
 import stt
 import task_guide
@@ -338,7 +339,7 @@ async def _run_turn(
                     # model, same as a real multi-tool exchange would.
                     for call in event["calls"]:
                         result_text = await tools.dispatch_tool_call(
-                            call["name"], call["arguments"]
+                            call["name"], call["arguments"], websocket=websocket
                         )
                         tool_messages.append(
                             {
@@ -758,6 +759,23 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 # frontend already reflects its own toggle state
                 # optimistically the moment it's clicked.
                 temp_mode = bool(data.get("enabled"))
+                continue
+
+            if msg_type == "camera_frame":
+                # Phase 5 -- the frontend's answer to a camera.py
+                # request_camera_frame it sent earlier this turn (see
+                # camera.py's own docstring for the full round trip).
+                # image_b64 missing/None means the frontend is reporting
+                # a failure (camera not armed, getUserMedia permission
+                # denied, capture threw) -- resolve_pending_frame treats
+                # that the same as a real frame, just with None instead
+                # of a string; camera.request_frame turns a None result
+                # into the ToolUnavailableError the model actually sees.
+                # No driver gate -- same reasoning as set_temp_mode
+                # above, and in practice only the driver's own camera
+                # module would ever be holding a pending request to
+                # answer.
+                camera.resolve_pending_frame(data.get("image_b64"))
                 continue
 
             if msg_type in ("user_text", "user_audio") and websocket is not _driver:

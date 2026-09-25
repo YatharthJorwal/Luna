@@ -12,11 +12,23 @@
 //   -> { type: "stop" }
 //   -> { type: "get_log" }
 //   -> { type: "clear_log" }
+//   -> { type: "set_temp_mode", enabled: boolean }
+//   -> { type: "camera_frame", image_b64: string | null }
 //   <- { type: "speak", text: string, audio_b64: string, mime: string }
 //   <- { type: "transcript", text: string }
 //   <- { type: "turn_end", emotion?: string }
 //   <- { type: "surface_status", role: "driver" | "observer" }
 //   <- { type: "log", turns: { user: string, assistant: string, ts: string }[], user_name: string }
+//   <- { type: "request_camera_frame" }
+//
+// `request_camera_frame` (Phase 5's capture_camera tool, see
+// orchestrator/camera.py) is the one message the orchestrator sends
+// specifically expecting an answer back over this same connection rather
+// than just broadcasting state -- the frontend replies with `camera_frame`
+// as soon as it can (a captured frame's base64, or null if the camera
+// isn't armed/capture failed), and the orchestrator's camera.py is the one
+// that actually waits for it (bounded by a timeout there, not anything
+// enforced here).
 //
 // `get_log`/`clear_log` (Phase 9's persistent conversation-log panel) are
 // answered with the same `log` message either way -- `clear_log` just
@@ -107,6 +119,10 @@ export type SurfaceStatusMessage = {
   role: SurfaceRole;
 };
 
+export type RequestCameraFrameMessage = {
+  type: "request_camera_frame";
+};
+
 export type ConnectionState = "offline" | "connected" | "listening";
 
 interface WsClientOptions {
@@ -132,6 +148,16 @@ interface WsClientOptions {
    * optional rather than required avoids forcing every future caller to
    * handle a concern that may not apply to it) can simply omit it. */
   onSurfaceStatus?: (role: SurfaceRole) => void;
+  /** Phase 5's capture_camera tool asking this connection for a frame --
+   * see this file's own protocol comment on request_camera_frame/
+   * camera_frame. The caller is expected to answer with sendCameraFrame
+   * (below) as soon as it reasonably can; there's no enforcement here if
+   * it doesn't, camera.py's own timeout is what actually bounds the
+   * wait. Optional: a caller with no camera module (sandbox.ts, at least
+   * for now) can simply omit it and camera.py's request will time out
+   * and surface as "camera isn't armed" to the model, same as if it
+   * genuinely weren't armed. */
+  onRequestCameraFrame?: () => void;
 }
 
 export class WsClient {
@@ -152,7 +178,13 @@ export class WsClient {
     });
 
     this.socket.addEventListener("message", (event) => {
-      let parsed: SpeakMessage | TranscriptMessage | TurnEndMessage | SurfaceStatusMessage | LogMessage;
+      let parsed:
+        | SpeakMessage
+        | TranscriptMessage
+        | TurnEndMessage
+        | SurfaceStatusMessage
+        | LogMessage
+        | RequestCameraFrameMessage;
       try {
         parsed = JSON.parse(event.data);
       } catch {
@@ -170,6 +202,8 @@ export class WsClient {
         this.opts.onSurfaceStatus?.(parsed.role);
       } else if (parsed.type === "log") {
         this.opts.onLog?.(parsed);
+      } else if (parsed.type === "request_camera_frame") {
+        this.opts.onRequestCameraFrame?.();
       }
     });
 
@@ -260,6 +294,20 @@ export class WsClient {
   sendSetTempMode(enabled: boolean): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify({ type: "set_temp_mode", enabled }));
+  }
+
+  /** Answers a request_camera_frame (see onRequestCameraFrame in
+   * WsClientOptions above) -- image_b64 is null when the camera isn't
+   * armed, permission was denied, or the capture otherwise failed;
+   * camera.py on the other end turns that into the same "camera isn't
+   * armed" message the model sees either way, so the caller doesn't need
+   * to distinguish those cases before calling this. Fire-and-forget, same
+   * as every other send* method here -- if the socket isn't open, the
+   * request will simply time out orchestrator-side rather than error
+   * here. */
+  sendCameraFrame(image_b64: string | null): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: "camera_frame", image_b64 }));
   }
 
   private scheduleReconnect(): void {

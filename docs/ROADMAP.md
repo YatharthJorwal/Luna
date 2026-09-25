@@ -176,9 +176,27 @@ awaiting on-machine confirmation · ⬜ not started)
   judgment quality, whether the new classifier actually fires
   reliably, and whether a chide reads as natural rather than naggy are
   all **not yet verified on the user's real machine.**
-- ⬜ **Phase 5 — Camera + game-assist polish.** Gated camera tool, light
-  game-context awareness (e.g. active-window detection), expression/emotion
-  mapping refined.
+- 🔶 **Phase 5 — Camera + game-assist polish.** Gated camera tool built
+  (round 1) -- `capture_camera` follows `capture_screen`'s exact "pull,
+  not push" tool-calling shape, per `docs/ARCHITECTURE.md`'s own spec:
+  a one-time `getUserMedia` permission (quick-action menu's Camera
+  toggle, `src/camera.ts`), no live preview ever shown to the user, and
+  a tray-icon indicator (`src-tauri/src/lib.rs`'s `set_camera_indicator`,
+  a red-dot icon variant swapped in via a new Tauri command) as the only
+  visible sign it's armed. Capture itself is a plain 2D canvas grab, not
+  WebGL -- see `docs/DECISIONS.md` for why WebGL wouldn't actually add
+  anything for a single still-frame capture with no on-screen rendering.
+  Since there's no server-side webcam access, the tool call round-trips
+  over the websocket (`orchestrator/camera.py`'s `request_frame`/
+  `resolve_pending_frame`, a new `request_camera_frame`/`camera_frame`
+  message pair) rather than capturing directly like `capture_screen`
+  does. 11 new tests (`orchestrator/test_camera.py` + dispatch tests in
+  `tools/test_tools.py`), 111 total passing. **Not yet verified on the
+  user's real machine** — the Rust side especially (a new tray icon
+  swap command, a new Cargo feature) has never been compiled, same "no
+  Rust toolchain in this sandbox" limit as every other `lib.rs` change.
+  Still open: light game-context awareness (e.g. active-window
+  detection), expression/emotion mapping refined.
 - ⬜ **Phase 6 — Personality & perf pass.** Optional split into two-pass
   planner/persona, voice tuning (refining the GPT-SoVITS voice integrated in
   Phase 2.5 — retraining/re-recording reference audio, emotional range —

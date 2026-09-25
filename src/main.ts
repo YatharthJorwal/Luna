@@ -2,9 +2,9 @@ import * as THREE from "three";
 import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils, type VRM } from "@pixiv/three-vrm";
 import { listen } from "@tauri-apps/api/event";
-import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage, type LogMessage } from "./ws-client";
-import { speakWithLipsync, getMouthOpenValue, getSpeechProgress } from "./lipsync";
+import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage, type LogMessage } from "./ws-client";import { speakWithLipsync, getMouthOpenValue, getSpeechProgress } from "./lipsync";
 import { MicInput, blobToBase64 } from "./mic";
+import { CameraInput } from "./camera";
 
 // Phase 7: VRM avatar migration -- see docs/DECISIONS.md for the full
 // reasoning. Replaces pixi.js + pixi-live2d5 (a 2D Cubism rig) with
@@ -324,6 +324,8 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const quickActionMenu = document.getElementById("quick-action-menu") as HTMLDivElement;
   const qaTempModeButton = document.getElementById("qa-temp-mode") as HTMLButtonElement;
   const qaTempModeState = document.getElementById("qa-temp-mode-state") as HTMLSpanElement;
+  const qaCameraButton = document.getElementById("qa-camera") as HTMLButtonElement;
+  const qaCameraState = document.getElementById("qa-camera-state") as HTMLSpanElement;
   const qaLogButton = document.getElementById("qa-log") as HTMLButtonElement;
   const qaEmotionTestButton = document.getElementById("qa-emotion-test") as HTMLButtonElement;
   const logPanel = document.getElementById("log-panel") as HTMLDivElement;
@@ -703,6 +705,21 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       updateInputButtons();
       if (observerLocked) flashPlaceholder("Luna's active in the sandbox right now…");
     },
+    // Phase 5 -- camera.py (orchestrator) asking this connection for a
+    // frame. Referenced here before its own `const camera` declaration
+    // further below in this same setup function -- safe because this is
+    // a callback, only actually invoked later once a real
+    // request_camera_frame message arrives, by which point camera has
+    // long since been constructed (same closure/TDZ reasoning
+    // tempModeEnabled's own forward-reference in flashPlaceholder
+    // already relies on above). captureFrame() returning null (not
+    // armed, or the video isn't ready yet) is sent through exactly as
+    // null -- camera.py's request_frame turns that into the same
+    // "camera isn't armed" message the model sees either way, so there
+    // is nothing this handler needs to distinguish or react to.
+    onRequestCameraFrame: () => {
+      client.sendCameraFrame(camera.captureFrame());
+    },
   });
   client.connect();
 
@@ -858,6 +875,35 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   });
   micButton.addEventListener("click", () => {
     mic.toggle();
+  });
+
+  // Quick-action menu's Camera toggle (Phase 5) -- see camera.ts's own
+  // top comment for the full "armed but no preview, tray icon is the
+  // only indicator" design. onArmedChange/onError both just update the
+  // menu's own badge; the tray icon update happens inside camera.ts
+  // itself (via the Rust set_camera_indicator command), not here.
+  const camera = new CameraInput({
+    onArmedChange: (armed) => {
+      qaCameraState.textContent = armed ? "On" : "Off";
+      qaCameraState.classList.toggle("on", armed);
+    },
+    onError: (err) => {
+      // Most likely getUserMedia permission denied, or no camera present
+      // -- nothing client-side to recover from beyond logging; same
+      // shape as the mic's own onError above. Badge stays "Off" since
+      // arm() never actually completed.
+      console.error("[luna] camera access failed -- check camera permission", err);
+    },
+  });
+  qaCameraButton.addEventListener("click", () => {
+    if (camera.isArmed) {
+      void camera.disarm();
+    } else {
+      void camera.arm();
+    }
+    // Deliberately does NOT close the menu -- same reasoning as Temp
+    // Chat's own button above: a toggle worth immediately reconsidering
+    // shouldn't require reopening the menu to undo.
   });
 
   // F9 push-to-talk, works even when Luna's window isn't focused -- the

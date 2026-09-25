@@ -184,3 +184,48 @@ async def test_dispatch_set_active_task_missing_active_defaults_false():
     result = await tools.dispatch_tool_call("set_active_task", {})
     assert task_guide.get_state().active is False
     task_guide.clear_active_task()
+
+
+# ---------------------------------------------------------------------------
+# tools.dispatch_tool_call -- capture_camera (Phase 5)
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_dispatch_capture_camera_passes_websocket_through(monkeypatch):
+    import camera
+
+    received_ws = []
+
+    async def fake_describe_camera(websocket):
+        received_ws.append(websocket)
+        return "A person at a desk."
+
+    monkeypatch.setattr(camera, "describe_camera", fake_describe_camera)
+    sentinel_ws = object()
+    result = await tools.dispatch_tool_call("capture_camera", {}, websocket=sentinel_ws)
+    assert result == "A person at a desk."
+    assert received_ws == [sentinel_ws]
+
+
+@pytest.mark.asyncio
+async def test_dispatch_capture_camera_no_websocket_returns_safe_string():
+    # dispatch_tool_call's websocket param defaults to None -- every real
+    # call site (app.py's tool-calling loop) always passes one, but a
+    # missing one shouldn't crash, just degrade to a message the model
+    # can react to.
+    result = await tools.dispatch_tool_call("capture_camera", {})
+    assert "unavailable" in result.lower()
+
+
+@pytest.mark.asyncio
+async def test_dispatch_capture_camera_tool_unavailable_surfaces_cleanly(monkeypatch):
+    import camera
+
+    async def failing_describe_camera(websocket):
+        raise vision.ToolUnavailableError("camera isn't armed right now")
+
+    monkeypatch.setattr(camera, "describe_camera", failing_describe_camera)
+    result = await tools.dispatch_tool_call("capture_camera", {}, websocket=object())
+    assert "unavailable" in result.lower()
+    assert "armed" in result.lower()
