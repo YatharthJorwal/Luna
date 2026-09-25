@@ -2685,3 +2685,66 @@ the actual round-trip timing under a real Ollama VLM call, and whether
 the tray icon swap is visually obvious enough in practice are all
 genuinely untested. Game-context awareness (the other half of Phase 5)
 isn't started.
+
+## Orb, corrected: the user's reference finally arrived -- a small flat dot, not a big gradient sphere
+
+The earlier placeholder (a 20px radial-gradient orb with a scaling pulse
+animation, built with no reference to go on beyond "pink and purple")
+turned out to be a significant overguess -- the user's actual reference,
+two cropped screenshots, showed a small (~8px in the reference images,
+clearly minor relative to the pill it sits in) flat-colored dot with a
+soft glow, one screenshot purple and one pink/red, no visible gradient or
+animation. Corrected by sampling the reference images' pixels directly
+(`colorsys`-based saturation search to find the dot against the
+background, since a straightforward coordinate guess landed on the pill's
+background color instead) rather than eyeballing colors again: the purple
+reads as `#7a5fd6`, the pink/red as `#d6588f`. Given dedicated variables
+(`--orb-idle`/`--orb-listening`) rather than reusing `--accent-idle`/
+`--accent-lavender`, since those two are already doing a different job
+elsewhere (log-panel message colors) and repointing them would have
+cascaded somewhere this fix was never about. `#status-orb` is back to a
+small flat dot (10px, one px larger than the very first `#status-dot` this
+whole thing started from) with a soft `box-shadow` glow and no scale
+animation -- just an opacity/color transition between states.
+
+**Lesson for next time a "make it look like X" request has no attachment
+yet:** build the smallest, most literal placeholder consistent with the
+words used, not an elaborated/embellished version -- guessing toward "more
+polished" when the reference is unknown moves further from the target,
+not closer, and cost a full extra round trip here.
+
+## Camera tool: re-invocation reliability -- narrower fix than set_active_task's, prompting first
+
+First real usage of Phase 5 Round 1's `capture_camera` surfaced a
+different reliability gap than `set_active_task`'s: not "never fires,"
+but "doesn't always re-fire when it should." Across four consecutive
+camera-related turns, three correctly triggered a fresh capture
+(including one that correctly identified a phone the user was holding);
+one did not -- "now see and tell me what i am holding" got a description
+of the *previous* object (a thermos, already put down) instead of a new
+capture, and only the next, more explicit rephrasing ("use the camera.
+see what i am holding now.") actually triggered a real look.
+
+Deliberately **not** given the same fix `set_active_task` needed (a
+dedicated classification call bypassing native tool-calling entirely).
+That fix was for a tool that never fired at all, even on an exact
+described trigger phrase -- a real capability ceiling, confirmed via a
+cross-framework test. This is different: the tool clearly *can* and
+*does* fire reliably most of the time here (3 of 4), so the miss looks
+more like a narrower prompting gap -- treating a rephrased follow-up as
+answerable from context already in the conversation, rather than
+recognizing every "look again" as its own fresh request -- than a
+structural incapacity. Tried the cheaper, less invasive fix first:
+`persona.py`'s tools paragraph now explicitly says every "look again" --
+however phrased, even moments after the last one -- means call the tool
+again, and explicitly warns against answering from a previous
+description. If this doesn't hold up under more real use, the
+`set_active_task`-style classifier bypass is the fallback, same as
+before -- but there was no reason to reach for the more invasive fix
+first when the simpler one hasn't been tried yet, and the baseline
+success rate here (3/4) is a very different starting point than
+`set_active_task`'s (0/4 across two full rounds).
+
+Also folded into the same `persona.py` edit: the tools paragraph still
+said "three real tools," stale since `capture_camera` was added --
+fixed to four, with the camera tool described alongside the others.
