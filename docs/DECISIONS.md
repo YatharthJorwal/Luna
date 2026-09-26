@@ -2748,3 +2748,67 @@ success rate here (3/4) is a very different starting point than
 Also folded into the same `persona.py` edit: the tools paragraph still
 said "three real tools," stale since `capture_camera` was added --
 fixed to four, with the camera tool described alongside the others.
+
+## Quick-action menu: Upload Image/File
+
+Scoped deliberately narrower than the original "image/file/mp4" ask:
+images (any `image/*` MIME type) and plain text/code files this round;
+PDFs, Word docs, and video are explicitly not attempted -- each needs its
+own real parsing/frame-extraction work, not a small extension of this.
+`src/file-upload.ts`'s `classifyFile()` is the actual gate on what's
+usable (checked client-side, before any reading happens, so an
+unsupported pick fails fast with a clear reason rather than partway
+through producing garbled output from trying to read a PDF as text).
+
+**Reused the vision pipeline rather than adding a second one.** An
+uploaded image goes through the exact same `llm.describe_image()` call
+`capture_screen`/`capture_camera`/Task Guide Mode's screen-check already
+use -- a neutral "describe what's visible" pass, then the result is
+handed to the main roleplay turn as if it were something the user said,
+letting her react to it in character rather than reacting to a flat
+third-party description in her own voice from the vision call itself.
+Considered passing the raw image directly into the main conversational
+turn instead (`qwen3.5:9b` is natively multimodal, so this was technically
+possible) but rejected it: every other vision-handling code path in this
+project already goes through `describe_image()` as a deliberate single
+choke point, and there was no strong reason for uploads specifically to
+be the one exception -- consistency here was worth more than the (real
+but marginal) loss of nuance from describing first, reacting second.
+
+**Why an upload becomes a synthetic user_text rather than a new code path
+through `_run_turn`.** `app.py`'s `user_file` handler builds a string like
+`(shared an image, "photo.jpg") <description>` or
+`(shared a file, "notes.txt") <content>` and calls the exact same
+`_run_turn()` every text/audio turn already uses. This means recall,
+forget-detection, Phase 4 Round 2's task classifier, Temp Chat's
+memory-skip, history, and transcript logging all apply to an upload for
+free, with zero new code in `_run_turn` itself -- an upload is just
+another way the user said something, not a structurally different kind
+of turn. The alternative (a parallel, upload-specific turn-handling
+function) would have meant re-implementing or carefully sharing all of
+that, for no real benefit.
+
+**Sizing:** images are downscaled client-side to at most 1024px on the
+longest side via a plain 2D canvas (same "no on-screen rendering, so
+WebGL wouldn't add anything" reasoning as `camera.ts`'s own capture) --
+a full-resolution phone photo would just be wasted bandwidth and
+processing for no extra understanding. Text files are truncated at 6000
+characters client-side (with an explicit "truncated" marker so the model
+knows a file is incomplete rather than reasoning about a partial file as
+if it were the whole thing) and re-capped server-side defensively rather
+than trusting the client's cap alone. A 15MB hard ceiling rejects an
+absurd pick (a video selected by mistake, say) before any reading is
+attempted at all.
+
+**Not yet verified on the user's real machine** -- same limit as
+everything vision-related in this project. No frontend test
+infrastructure exists in this project at all (no vitest/jest, confirmed
+by checking `package.json`), consistent with every other `src/*.ts`
+change so far -- `tsc --noEmit` plus a real `vite build` is the existing
+verification bar for frontend code, and this round doesn't change that.
+`app.py`'s `user_file` handler itself has no dedicated test either, for
+the same reason `_run_turn`'s message-dispatch loop as a whole never has:
+there is no `test_app.py` in this project, and `ws_endpoint`'s top-level
+orchestration has always been "logically checked, not confirmed" rather
+than unit-tested -- consistent with, not a new gap introduced by, this
+feature.

@@ -43,6 +43,19 @@
       <button id="action-button" type="button" hidden></button>
     </div>
 
+    <!-- Quick-action menu's Upload item's actual file picker -- hidden,
+         triggered programmatically by #qa-upload's click handler (see
+         main.ts's setupHud). accept is a UX hint for the OS file dialog
+         only; src/file-upload.ts's classifyFile() is the real gate on
+         what's actually usable once something's picked, since accept
+         can't fully express "text/* OR this extension list". -->
+    <input
+      id="file-upload-input"
+      type="file"
+      accept="image/*,text/*,.md,.markdown,.csv,.log,.json,.yaml,.yml,.toml,.ini,.xml,.html,.css,.js,.ts,.jsx,.tsx,.py,.rs,.go,.java,.c,.cpp,.h,.hpp,.cs,.rb,.php,.sh,.sql"
+      hidden
+    />
+
     <!-- Quick-action menu -- opened by #quick-action-button, closed on
          outside click/Escape/picking an item (see main.ts's setupHud).
          Positioned the same way #log-panel is (anchored above #hud) for
@@ -75,9 +88,8 @@
         <span class="quick-action-label">Continuous OCR</span>
         <span class="quick-action-soon">Soon</span>
       </button>
-      <button class="quick-action-item" type="button" data-status="soon" disabled title="Not built yet">
+      <button class="quick-action-item" id="qa-upload" type="button" data-action="upload">
         <span class="quick-action-label">Upload Image / File</span>
-        <span class="quick-action-soon">Soon</span>
       </button>
       <button class="quick-action-item" type="button" data-status="soon" disabled title="Not built yet">
         <span class="quick-action-label">Agent Mode</span>

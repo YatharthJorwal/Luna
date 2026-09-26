@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage, type LogMessage } from "./ws-client";import { speakWithLipsync, getMouthOpenValue, getSpeechProgress } from "./lipsync";
 import { MicInput, blobToBase64 } from "./mic";
 import { CameraInput } from "./camera";
+import { classifyFile, resizeImageToBase64Jpeg, readTextFile } from "./file-upload";
 
 // Phase 7: VRM avatar migration -- see docs/DECISIONS.md for the full
 // reasoning. Replaces pixi.js + pixi-live2d5 (a 2D Cubism rig) with
@@ -326,6 +327,8 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const qaTempModeState = document.getElementById("qa-temp-mode-state") as HTMLSpanElement;
   const qaCameraButton = document.getElementById("qa-camera") as HTMLButtonElement;
   const qaCameraState = document.getElementById("qa-camera-state") as HTMLSpanElement;
+  const qaUploadButton = document.getElementById("qa-upload") as HTMLButtonElement;
+  const fileUploadInput = document.getElementById("file-upload-input") as HTMLInputElement;
   const qaLogButton = document.getElementById("qa-log") as HTMLButtonElement;
   const qaEmotionTestButton = document.getElementById("qa-emotion-test") as HTMLButtonElement;
   const logPanel = document.getElementById("log-panel") as HTMLDivElement;
@@ -905,6 +908,46 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     // Chat's own button above: a toggle worth immediately reconsidering
     // shouldn't require reopening the menu to undo.
   });
+
+  // Quick-action menu's Upload Image/File item. Unlike Temp Chat/Camera
+  // (toggles that don't start a turn), picking a file does start one --
+  // same shape as submitText()/mic's onClip -- so it's gated the same
+  // way the text input already is (disabled while turnActive/
+  // observerLocked) rather than left able to race a turn already in
+  // flight into sending a second, overlapping user_file message.
+  qaUploadButton.addEventListener("click", () => {
+    if (turnActive || observerLocked) return;
+    setQuickActionMenuOpen(false);
+    fileUploadInput.click();
+  });
+  fileUploadInput.addEventListener("change", () => {
+    const file = fileUploadInput.files?.[0];
+    // Reset immediately so picking the exact same file again still
+    // fires a change event next time -- browsers don't fire `change`
+    // for selecting an already-selected file otherwise.
+    fileUploadInput.value = "";
+    if (file) void submitFile(file);
+  });
+
+  async function submitFile(file: File): Promise<void> {
+    const classified = classifyFile(file);
+    if (classified.kind === "unsupported") {
+      flashPlaceholder(classified.reason);
+      return;
+    }
+    let content: string;
+    try {
+      content = classified.kind === "image" ? await resizeImageToBase64Jpeg(file) : await readTextFile(file);
+    } catch (err) {
+      console.error("[luna] failed to read uploaded file", err);
+      flashPlaceholder("Couldn't read that file -- try a different one?");
+      return;
+    }
+    client.sendUserFile(file.name, classified.kind, content);
+    orchestratorDone = false;
+    turnStopped = false;
+    recomputeTurnActive();
+  }
 
   // F9 push-to-talk, works even when Luna's window isn't focused -- the
   // actual global shortcut registration lives in src-tauri/src/lib.rs

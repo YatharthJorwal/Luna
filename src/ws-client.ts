@@ -14,6 +14,7 @@
 //   -> { type: "clear_log" }
 //   -> { type: "set_temp_mode", enabled: boolean }
 //   -> { type: "camera_frame", image_b64: string | null }
+//   -> { type: "user_file", filename: string, kind: "image" | "text", content: string }
 //   <- { type: "speak", text: string, audio_b64: string, mime: string }
 //   <- { type: "transcript", text: string }
 //   <- { type: "turn_end", emotion?: string }
@@ -233,6 +234,24 @@ export class WsClient {
     }
     this.opts.onStateChange("listening");
     this.socket.send(JSON.stringify({ type: "user_audio", audio_b64: audioB64 }));
+  }
+
+  /** Quick-action menu's Upload Image/File item. `kind` tells the
+   * orchestrator how to treat `content` -- "image" means base64 (no
+   * data: prefix, same convention every other image payload in this
+   * project uses), described through the vision model before she reacts
+   * to it; "text" means content is the file's own text, read directly,
+   * no vision step needed. Starts a real turn the same way sendUserText
+   * does (onStateChange("listening")) -- from the turn-handling side,
+   * an upload is just another way the user said something, not a
+   * separate mechanism. */
+  sendUserFile(filename: string, kind: "image" | "text", content: string): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) {
+      console.warn("[luna] not connected to orchestrator yet");
+      return;
+    }
+    this.opts.onStateChange("listening");
+    this.socket.send(JSON.stringify({ type: "user_file", filename, kind, content }));
   }
 
   /**

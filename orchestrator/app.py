@@ -132,6 +132,16 @@ STT_UNREACHABLE_LINE = (
     "Check the orchestrator terminal?"
 )
 
+# Phase 5.1 -- same reasoning as STT_UNREACHABLE_LINE above: canned,
+# in-character text for when describing an uploaded image fails (Ollama
+# unreachable, same failure class llm.LLMUnreachableError already covers
+# elsewhere) -- sent instead of ever reaching _run_turn, since there's no
+# description to build a synthetic user_text out of.
+UPLOAD_VISION_UNREACHABLE_LINE = (
+    "I-I can't actually look at that right now, something's wrong on my "
+    "end. Check the orchestrator terminal?"
+)
+
 # Phase 8 -- hardcoded emotion for the two error-fallback lines above,
 # rather than trying to get the LLM to tag them: both LLM_UNREACHABLE_LINE
 # and STT_UNREACHABLE_LINE are canned text sent *instead of* a real LLM
@@ -140,6 +150,7 @@ STT_UNREACHABLE_LINE = (
 # way -- this is app-level knowledge, not something to fake a tag for.
 EMOTION_LLM_UNREACHABLE = "sad"
 EMOTION_STT_UNREACHABLE = "sad"
+EMOTION_UPLOAD_VISION_UNREACHABLE = "sad"
 
 # Phase 4 -- how many rounds of "model calls a tool, gets a result, tries
 # again" one turn allows before giving up. 3 is generous for the two
@@ -778,7 +789,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 camera.resolve_pending_frame(data.get("image_b64"))
                 continue
 
-            if msg_type in ("user_text", "user_audio") and websocket is not _driver:
+            if msg_type in ("user_text", "user_audio", "user_file") and websocket is not _driver:
                 # Observer window trying to start a turn -- the frontend
                 # should already have disabled its own input for this
                 # (see onSurfaceStatus in main.ts/sandbox.ts), so this is
@@ -853,6 +864,52 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # Silence, noise, or nothing intelligible -- nothing to
                     # reply to, and nothing worth adding to history.
                     continue
+                current_turn_task = asyncio.create_task(
+                    _run_turn(websocket, history, user_text, temp_mode, temp_turn_flags)
+                )
+            elif msg_type == "user_file":
+                # Quick-action menu's Upload Image/File item
+                # (src/file-upload.ts classifies + reads/resizes
+                # client-side; this just turns the result into a
+                # synthetic user_text and runs it through the exact same
+                # _run_turn every other kind of turn already uses --
+                # recall/forget/task-detection, temp_mode, history,
+                # logging, all of it for free, no special-casing needed
+                # anywhere else in this file).
+                filename = (data.get("filename") or "uploaded file").strip()
+                kind = data.get("kind")
+                content = data.get("content") or ""
+                if not content or kind not in ("image", "text"):
+                    continue
+                if current_turn_task is not None and not current_turn_task.done():
+                    # Same "already mid-reply, ignore" policy as
+                    # user_text/user_audio above -- the frontend already
+                    # guards this (turnActive disables the upload
+                    # button), this is defense in depth.
+                    continue
+
+                if kind == "text":
+                    # Length is already capped client-side
+                    # (file-upload.ts's MAX_TEXT_CHARS) -- re-capped here
+                    # too, defensively, rather than trusting the client.
+                    user_text = f'(shared a file, "{filename}") {content[:6000]}'
+                else:
+                    prompt = (
+                        "Describe what's in this image in a few "
+                        "sentences -- focus on what's actually visible, "
+                        "not a generic guess."
+                    )
+                    try:
+                        description = await llm.describe_image(prompt, content)
+                    except llm.LLMUnreachableError as exc:
+                        print(f"[luna] describe_image failed for upload: {exc}", file=sys.stderr)
+                        await _send_speak(websocket, apply_persona_pass(UPLOAD_VISION_UNREACHABLE_LINE))
+                        await websocket.send_json(
+                            {"type": "turn_end", "emotion": EMOTION_UPLOAD_VISION_UNREACHABLE}
+                        )
+                        continue
+                    user_text = f'(shared an image, "{filename}") {description}'
+
                 current_turn_task = asyncio.create_task(
                     _run_turn(websocket, history, user_text, temp_mode, temp_turn_flags)
                 )
