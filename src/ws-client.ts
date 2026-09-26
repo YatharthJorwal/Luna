@@ -14,7 +14,7 @@
 //   -> { type: "clear_log" }
 //   -> { type: "set_temp_mode", enabled: boolean }
 //   -> { type: "camera_frame", image_b64: string | null }
-//   -> { type: "user_file", filename: string, kind: "image" | "text", content: string }
+//   -> { type: "user_file", filename: string, kind: "image" | "text", content: string, caption?: string | null }
 //   <- { type: "speak", text: string, audio_b64: string, mime: string }
 //   <- { type: "transcript", text: string }
 //   <- { type: "turn_end", emotion?: string }
@@ -241,17 +241,20 @@ export class WsClient {
    * data: prefix, same convention every other image payload in this
    * project uses), described through the vision model before she reacts
    * to it; "text" means content is the file's own text, read directly,
-   * no vision step needed. Starts a real turn the same way sendUserText
-   * does (onStateChange("listening")) -- from the turn-handling side,
-   * an upload is just another way the user said something, not a
-   * separate mechanism. */
-  sendUserFile(filename: string, kind: "image" | "text", content: string): void {
+   * no vision step needed. `caption`, when given, is whatever the user
+   * typed in the normal input box alongside the attachment (see
+   * main.ts's submitTurn) -- optional, since sending a file with no
+   * comment is a real, common case, not a degraded one. Starts a real
+   * turn the same way sendUserText does (onStateChange("listening")) --
+   * from the turn-handling side, an upload is just another way the user
+   * said something, not a separate mechanism. */
+  sendUserFile(filename: string, kind: "image" | "text", content: string, caption?: string): void {
     if (this.socket?.readyState !== WebSocket.OPEN) {
       console.warn("[luna] not connected to orchestrator yet");
       return;
     }
     this.opts.onStateChange("listening");
-    this.socket.send(JSON.stringify({ type: "user_file", filename, kind, content }));
+    this.socket.send(JSON.stringify({ type: "user_file", filename, kind, content, caption: caption || null }));
   }
 
   /**

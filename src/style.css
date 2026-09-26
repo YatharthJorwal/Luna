@@ -476,6 +476,67 @@ body {
   box-shadow: 0 0 12px 1px rgba(203, 166, 247, 0.45);
 }
 
+/* Pending-attachment chip -- appears above #hud once a file's been
+   picked but not sent yet (see main.ts's attachFile/submitTurn). Same
+   glass-pill visual language as #hud/#quick-action-menu, sized to hug
+   its content rather than matching their fixed width, since a filename
+   can be short or long. */
+#pending-attachment {
+  position: absolute;
+  left: 50%;
+  bottom: 56px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: min(88%, 280px);
+  padding: 5px 6px 5px 12px;
+  background: var(--glass);
+  border: 1px solid var(--glass-border);
+  border-radius: 999px;
+  backdrop-filter: blur(6px);
+  -webkit-app-region: no-drag;
+}
+
+#pending-attachment[hidden] {
+  display: none;
+}
+
+#pending-attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--ink);
+}
+
+#pending-attachment-remove {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  display: grid;
+  place-items: center;
+  background: transparent;
+  border: none;
+  border-radius: 50%;
+  color: var(--dim);
+  cursor: pointer;
+  transition:
+    color 150ms ease,
+    background-color 150ms ease;
+}
+
+#pending-attachment-remove svg {
+  width: 13px;
+  height: 13px;
+}
+
+#pending-attachment-remove:hover {
+  color: var(--ink);
+  background: rgba(255, 242, 248, 0.1);
+}
+
 /* The conversation-log panel itself -- a small floating card, not part
    of the thin HUD pill. Needs its own solid-ish glass background (more
    opaque than the HUD's) since it holds a block of readable text over

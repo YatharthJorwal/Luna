@@ -329,6 +329,9 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const qaCameraState = document.getElementById("qa-camera-state") as HTMLSpanElement;
   const qaUploadButton = document.getElementById("qa-upload") as HTMLButtonElement;
   const fileUploadInput = document.getElementById("file-upload-input") as HTMLInputElement;
+  const pendingAttachmentEl = document.getElementById("pending-attachment") as HTMLDivElement;
+  const pendingAttachmentNameEl = document.getElementById("pending-attachment-name") as HTMLSpanElement;
+  const pendingAttachmentRemoveButton = document.getElementById("pending-attachment-remove") as HTMLButtonElement;
   const qaLogButton = document.getElementById("qa-log") as HTMLButtonElement;
   const qaEmotionTestButton = document.getElementById("qa-emotion-test") as HTMLButtonElement;
   const logPanel = document.getElementById("log-panel") as HTMLDivElement;
@@ -365,7 +368,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   let audioIdle = true;
   let turnActive = false;
   // Set true the instant the user clicks "stop," cleared the instant a
-  // new turn actually starts (submitText/onClip below). Exists because
+  // new turn actually starts (submitTurn/onClip below). Exists because
   // GPT-SoVITS synthesis can legitimately take tens of seconds per
   // chunk (confirmed on the user's own machine) -- if a chunk was
   // already mid-synthesis server-side when stop was clicked, there's a
@@ -379,6 +382,17 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   // from the manual override) and refreshes the log panel, both
   // harmless no-ops if it arrives late.
   let turnStopped = false;
+
+  // Quick-action menu's Upload item, attach-then-send flow: set the
+  // instant a file is picked and successfully read (attachFile below),
+  // cleared on send (submitTurn) or explicit removal
+  // (pendingAttachmentRemoveButton). Holding the already-read/resized
+  // content here (not just the File object) means submitTurn never has
+  // to redo any file I/O -- attachFile does that work exactly once,
+  // when the file is picked, not again at send time.
+  type PendingAttachment = { filename: string; kind: "image" | "text"; content: string };
+  let pendingAttachment: PendingAttachment | null = null;
+
   // Full-body sandbox round: true whenever this window is the "observer"
   // (the sandbox got there first) -- see ws-client.ts's top-of-file
   // comment. Distinct from turnActive: this is about *which window* may
@@ -474,7 +488,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       micButton.hidden = true;
       return;
     }
-    const hasText = input.value.trim().length > 0;
+    const hasText = input.value.trim().length > 0 || pendingAttachment !== null;
     if (turnActive) {
       actionButton.hidden = false;
       actionButton.classList.add("stop-mode");
@@ -501,10 +515,29 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     updateInputButtons();
   }
 
-  function submitText(): void {
+  function clearPendingAttachment(): void {
+    pendingAttachment = null;
+    pendingAttachmentEl.hidden = true;
+    updateInputButtons();
+  }
+
+  // Replaces the old submitText -- now handles both a plain typed
+  // message and a pending attachment (with or without a typed caption
+  // alongside it), since after the attach-then-send redesign there are
+  // three ways this can fire: text alone, attachment alone, or both
+  // together. Text-alone keeps the exact same sendUserText path it
+  // always had; either case involving an attachment goes through
+  // sendUserFile with whatever's in the input box (possibly empty) as
+  // the caption.
+  function submitTurn(): void {
     const text = input.value.trim();
-    if (!text) return;
-    client.sendUserText(text);
+    if (pendingAttachment) {
+      client.sendUserFile(pendingAttachment.filename, pendingAttachment.kind, pendingAttachment.content, text);
+      clearPendingAttachment();
+    } else {
+      if (!text) return;
+      client.sendUserText(text);
+    }
     input.value = "";
     orchestratorDone = false;
     turnStopped = false;
@@ -793,7 +826,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
 
   input.addEventListener("keydown", (event) => {
     if (event.key !== "Enter") return;
-    submitText();
+    submitTurn();
   });
   input.addEventListener("input", updateInputButtons);
 
@@ -838,7 +871,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       recomputeTurnActive();
       setTargetEmotion("neutral");
     } else {
-      submitText();
+      submitTurn();
     }
   });
 
@@ -909,12 +942,14 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     // shouldn't require reopening the menu to undo.
   });
 
-  // Quick-action menu's Upload Image/File item. Unlike Temp Chat/Camera
-  // (toggles that don't start a turn), picking a file does start one --
-  // same shape as submitText()/mic's onClip -- so it's gated the same
-  // way the text input already is (disabled while turnActive/
-  // observerLocked) rather than left able to race a turn already in
-  // flight into sending a second, overlapping user_file message.
+  // Quick-action menu's Upload Image/File item. Attach-then-send: picking
+  // a file no longer starts a turn immediately -- it reads/resizes the
+  // file once (attachFile below) and stages it as pendingAttachment, so
+  // the user can add a typed caption in the normal input box before
+  // actually sending (submitTurn handles both cases). Still gated the
+  // same way the text input already is (disabled while turnActive/
+  // observerLocked) -- attaching mid-turn has no obvious use and would
+  // just complicate when the eventual send is allowed to fire.
   qaUploadButton.addEventListener("click", () => {
     if (turnActive || observerLocked) return;
     setQuickActionMenuOpen(false);
@@ -926,10 +961,13 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     // fires a change event next time -- browsers don't fire `change`
     // for selecting an already-selected file otherwise.
     fileUploadInput.value = "";
-    if (file) void submitFile(file);
+    if (file) void attachFile(file);
+  });
+  pendingAttachmentRemoveButton.addEventListener("click", () => {
+    clearPendingAttachment();
   });
 
-  async function submitFile(file: File): Promise<void> {
+  async function attachFile(file: File): Promise<void> {
     const classified = classifyFile(file);
     if (classified.kind === "unsupported") {
       flashPlaceholder(classified.reason);
@@ -943,10 +981,11 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       flashPlaceholder("Couldn't read that file -- try a different one?");
       return;
     }
-    client.sendUserFile(file.name, classified.kind, content);
-    orchestratorDone = false;
-    turnStopped = false;
-    recomputeTurnActive();
+    pendingAttachment = { filename: file.name, kind: classified.kind, content };
+    pendingAttachmentNameEl.textContent = `File uploaded: ${file.name}`;
+    pendingAttachmentEl.hidden = false;
+    updateInputButtons();
+    input.focus();
   }
 
   // F9 push-to-talk, works even when Luna's window isn't focused -- the

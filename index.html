@@ -13,6 +13,20 @@
 
     <div id="caption" aria-live="polite"></div>
 
+    <!-- Pending-attachment chip -- shown after a file is picked from the
+         quick-action menu's Upload item but before it's actually sent,
+         so the user can add a caption in the normal input box first (see
+         main.ts's attachFile/submitTurn). Positioned directly above
+         #hud, same anchoring idea #quick-action-menu/#log-panel use. -->
+    <div id="pending-attachment" hidden>
+      <span id="pending-attachment-name"></span>
+      <button id="pending-attachment-remove" type="button" title="Remove attachment" aria-label="Remove attachment">
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 6l12 12M18 6 6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+        </svg>
+      </button>
+    </div>
+
     <div id="hud">
       <button
         id="quick-action-button"

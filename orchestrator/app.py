@@ -875,10 +875,15 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 # _run_turn every other kind of turn already uses --
                 # recall/forget/task-detection, temp_mode, history,
                 # logging, all of it for free, no special-casing needed
-                # anywhere else in this file).
+                # anywhere else in this file). caption is whatever the
+                # user typed in the normal input box alongside the
+                # attachment (attach-then-send flow, see main.ts's
+                # submitTurn) -- optional; a bare upload with no comment
+                # is a real, common case, not a degraded one.
                 filename = (data.get("filename") or "uploaded file").strip()
                 kind = data.get("kind")
                 content = data.get("content") or ""
+                caption = (data.get("caption") or "").strip()
                 if not content or kind not in ("image", "text"):
                     continue
                 if current_turn_task is not None and not current_turn_task.done():
@@ -892,7 +897,7 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                     # Length is already capped client-side
                     # (file-upload.ts's MAX_TEXT_CHARS) -- re-capped here
                     # too, defensively, rather than trusting the client.
-                    user_text = f'(shared a file, "{filename}") {content[:6000]}'
+                    shared_line = f'(shared a file, "{filename}") {content[:6000]}'
                 else:
                     prompt = (
                         "Describe what's in this image in a few "
@@ -908,7 +913,14 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                             {"type": "turn_end", "emotion": EMOTION_UPLOAD_VISION_UNREACHABLE}
                         )
                         continue
-                    user_text = f'(shared an image, "{filename}") {description}'
+                    shared_line = f'(shared an image, "{filename}") {description}'
+
+                # caption goes on its own line, after the shared-file
+                # marker, so a real accompanying comment ("look how
+                # clean my desk is") reads as the user's own words next
+                # to -- not folded into -- the file's own
+                # description/content.
+                user_text = f"{shared_line}\n\n{caption}" if caption else shared_line
 
                 current_turn_task = asyncio.create_task(
                     _run_turn(websocket, history, user_text, temp_mode, temp_turn_flags)

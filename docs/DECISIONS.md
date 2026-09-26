@@ -2812,3 +2812,37 @@ there is no `test_app.py` in this project, and `ws_endpoint`'s top-level
 orchestration has always been "logically checked, not confirmed" rather
 than unit-tested -- consistent with, not a new gap introduced by, this
 feature.
+
+## Upload redesigned: attach-then-send, not send-on-pick
+
+First real feedback on the Upload Image/File feature: picking a file
+shouldn't immediately start a turn -- it should show a "file uploaded"
+indicator and let the user add a typed comment before actually sending,
+same as attaching a file in any normal chat app. The original round sent
+immediately on pick, treating an upload as already a complete turn on its
+own; that was too eager.
+
+Redesigned around a `pendingAttachment` staged in `main.ts`: picking a
+file still reads/resizes it immediately (`attachFile()`, doing the same
+work the old `submitFile()` did), but stores the result instead of
+sending it, and shows a chip above the HUD ("File uploaded: <name>",
+with a way to remove it before sending). The normal input box stays live
+the whole time -- typing in it and hitting send (or Enter) now goes
+through one combined `submitTurn()` that checks for a pending attachment
+first: attachment-plus-caption, attachment-alone (empty input, a real
+and common case, not a degraded one), or plain text-alone, all three
+handled by the same function rather than three separate code paths.
+`updateInputButtons()` now treats a pending attachment the same as typed
+text for deciding whether to show send vs. mic, so "attached, nothing
+typed yet" still shows a send button rather than misleadingly offering
+the mic.
+
+Threaded the caption through as an optional field on the existing
+`user_file` message rather than inventing a second message type --
+`app.py`'s handler builds the same `(shared an image, "x.jpg")
+<description>` line as before, then appends the caption on its own line
+underneath when there is one, so a real accompanying comment reads as
+the user's own words sitting next to the file's content, not folded
+into it. Everything downstream (`_run_turn`, recall, Temp Chat, logging)
+needed zero changes -- the caption is just part of the same synthetic
+`user_text` string that already existed.
