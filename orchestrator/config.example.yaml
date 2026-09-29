@@ -142,3 +142,13 @@ task_guide:
   # than kept active forever nagging someone who has stepped away.
   # 1800 = 30 minutes.
   idle_timeout_seconds: 1800
+
+ocr_watch:
+  # Quick-action menu's Continuous OCR toggle (ocr_watch.py) -- how often,
+  # in seconds, the orchestrator glances at the screen while watching is
+  # on. Much longer than task_guide's own capture_interval_seconds above
+  # on purpose -- this is ambient commentary, not goal-directed
+  # drift-checking, and should be rare by design. 240 = 4 minutes; tune
+  # up if it ever feels naggy, down if genuinely interesting moments are
+  # being missed.
+  comment_interval_seconds: 240

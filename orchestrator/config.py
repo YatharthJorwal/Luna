@@ -84,6 +84,20 @@ class TaskGuideConfig:
 
 
 @dataclass(frozen=True)
+class OCRWatchConfig:
+    # Quick-action menu's Continuous OCR toggle (ocr_watch.py) -- how
+    # often, in seconds, the orchestrator glances at the screen while
+    # watching is on. Deliberately much longer than task_guide's own
+    # capture_interval_seconds -- this is ambient commentary, not
+    # goal-directed drift-checking, and should be rare by design. 240 =
+    # 4 minutes; tune up if it ever feels naggy (the more likely
+    # direction to need tuning, given the user's own "low stakes" framing
+    # for this feature), down if genuinely interesting moments are being
+    # missed.
+    comment_interval_seconds: int
+
+
+@dataclass(frozen=True)
 class Config:
     llm: LLMConfig
     tts: TTSConfig
@@ -91,6 +105,7 @@ class Config:
     session: SessionConfig
     memory: MemoryConfig
     task_guide: TaskGuideConfig
+    ocr_watch: OCRWatchConfig
 
 
 def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
@@ -133,6 +148,7 @@ def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
         session=SessionConfig(**raw["session"]),
         memory=MemoryConfig(**raw_memory),
         task_guide=TaskGuideConfig(**raw["task_guide"]),
+        ocr_watch=OCRWatchConfig(**raw["ocr_watch"]),
     )
 
 

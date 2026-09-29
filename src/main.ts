@@ -325,6 +325,8 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const quickActionMenu = document.getElementById("quick-action-menu") as HTMLDivElement;
   const qaTempModeButton = document.getElementById("qa-temp-mode") as HTMLButtonElement;
   const qaTempModeState = document.getElementById("qa-temp-mode-state") as HTMLSpanElement;
+  const qaOcrWatchButton = document.getElementById("qa-ocr-watch") as HTMLButtonElement;
+  const qaOcrWatchState = document.getElementById("qa-ocr-watch-state") as HTMLSpanElement;
   const qaCameraButton = document.getElementById("qa-camera") as HTMLButtonElement;
   const qaCameraState = document.getElementById("qa-camera-state") as HTMLSpanElement;
   const qaUploadButton = document.getElementById("qa-upload") as HTMLButtonElement;
@@ -806,6 +808,27 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     // no, turn it back off") shouldn't require reopening the menu to
     // undo. The other items below do close it, since they're one-shot
     // actions rather than a state you'd immediately reconsider.
+  });
+
+  // Continuous OCR -- quick-action menu's own toggle (see
+  // orchestrator/ocr_watch.py: ambient screen-watching, independent of
+  // Task Guide Mode). Same shape as Temp Chat's own toggle right above --
+  // a local boolean, a badge update, one fire-and-forget message. No
+  // HUD-level border/glow the way Temp Chat gets -- this doesn't change
+  // how a turn behaves the way Temp Chat does, it just occasionally
+  // speaks unprompted, so the menu's own on/off badge is indicator
+  // enough.
+  let ocrWatchEnabled = false;
+  function setOcrWatchEnabled(enabled: boolean): void {
+    ocrWatchEnabled = enabled;
+    qaOcrWatchState.textContent = enabled ? "On" : "Off";
+    qaOcrWatchState.classList.toggle("on", enabled);
+    client.sendSetOcrWatch(enabled);
+  }
+  qaOcrWatchButton.addEventListener("click", () => {
+    setOcrWatchEnabled(!ocrWatchEnabled);
+    // Same reasoning as Temp Chat's button above -- stays open for quick
+    // reconsideration.
   });
 
   qaLogButton.addEventListener("click", () => {

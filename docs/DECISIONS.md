@@ -2846,3 +2846,72 @@ the user's own words sitting next to the file's content, not folded
 into it. Everything downstream (`_run_turn`, recall, Temp Chat, logging)
 needed zero changes -- the caption is just part of the same synthetic
 `user_text` string that already existed.
+
+## Quick-action menu: Continuous OCR -- ambient commentary, deliberately separate from Task Guide Mode
+
+Built as its own module (`ocr_watch.py`) and its own background loop
+(`_ocr_watch_loop`/`_run_ocr_watch_check` in `app.py`) rather than folded
+into Task Guide Mode, even though the two are structurally almost
+identical (module-level state, a periodic screen capture, a VLM judgment
+call, an in-character reaction). The reason they stay separate: they
+answer genuinely different questions. Task Guide Mode checks "does the
+screen match a specific tracked task" -- it requires an active task and
+has a fixed comparison target. Continuous OCR checks "is there anything
+on screen worth an unprompted remark at all" -- no task, no goal, pure
+ambient observation, and can run whether or not a task is being tracked.
+Folding one judgment into the other would have meant a single prompt and
+a single state shape trying to serve two different questions, which
+seemed more likely to blur both than serve either well.
+
+**Biased hard toward silence.** The user's own framing going in was "low
+stakes... cuz 9b's limit," but the actual design risk here isn't really
+about capability -- it's that an ambient-commentary feature that
+comments too often reads as naggy or surveillance-like rather than
+charming, and that failure mode costs more than a missed comment does.
+`_WATCH_SYSTEM_PROMPT` explicitly says most glances should find nothing
+worth commenting on, and the check always records a `summary` of the
+current screen (compared against `last_seen_summary` from the previous
+check) specifically so repeat comments about an unchanging screen -- the
+single most likely way this feature would become annoying -- have a
+concrete signal to avoid, not just a vague "don't repeat yourself"
+instruction. Default interval (`ocr_watch.comment_interval_seconds`,
+240s) is also far longer than Task Guide Mode's own
+`capture_interval_seconds` (90s) for the same reason: rare and
+occasionally surprising beats frequent and predictable for this specific
+feature.
+
+**A real concurrency bug caught before it shipped, not after.** Task
+Guide Mode's chide and Continuous OCR's comment are two independent
+`asyncio` loops on different schedules -- nothing stopped them from both
+deciding to fire around the same moment, which would have meant two
+concurrent `_send_speak` calls on the same websocket and two concurrent
+`history.append`s racing each other. Added `ambient_speak_lock`, an
+`asyncio.Lock` shared between both loops (held only around the actual
+check+speak call, checked with `.locked()` first so a loop that isn't
+due doesn't even attempt to acquire it) -- on top of the existing guard
+against either firing while a real user turn (`current_turn_task`) is in
+flight. Found by reasoning through the two loops' independence while
+building the second one, not by observing it happen -- worth naming
+since it's exactly the kind of bug that wouldn't show up in this
+sandbox's own testing (no real timing, no real concurrent load) and
+would have been a genuinely confusing bug report to trace back to its
+cause if it had shipped.
+
+**A real bug the tests caught, not just inspection.** The first version
+of `check_for_comment`'s prompt-building used `str.format()` on a
+template that itself contains literal JSON examples with their own
+`{curly braces}` -- `.format()` tried to interpret those as format
+fields too and raised immediately. Caught by this module's own tests
+(`test_ocr_watch.py`, written before ever running them against a real
+server), not by re-reading the code -- fixed with a plain
+`str.replace()` on a placeholder token instead, sidestepping the
+escaping problem entirely rather than trying to remember to double every
+brace in the template by hand.
+
+**Not yet verified on the user's real machine** -- same limit as every
+other vision-related feature in this project. Whether the "worth a
+comment" judgment is actually well-calibrated, whether 240s is the right
+interval, and whether the ambient-speak lock's "skip, don't defer"
+policy ever causes a real check to be silently skipped often enough to
+matter are all genuinely open questions that only real usage can answer.
+18 new tests (`test_ocr_watch.py`), 129 total passing.

@@ -1,0 +1,173 @@
+"""
+Quick-action menu's Continuous OCR toggle -- ambient screen-watching,
+independent of Task Guide Mode's goal-directed drift checking
+(task_guide.py). Where that requires an active tracked task and checks
+specifically for "has the user drifted off it," this is a general "glance
+at the screen every so often and remark on anything genuinely notable"
+mode -- no task, no goal, just ambient commentary. Both can run at once;
+neither depends on the other.
+
+Explicitly a lower-confidence feature by the user's own framing ("low
+stakes... cuz 9b's limit") -- built lean on purpose, expecting it may need
+real tuning after actual use, same as everything else vision-related in
+this project. The single biggest risk with an ambient-commentary feature
+is being naggy/creepy rather than charming, so every design choice here
+leans toward under-commenting: a missed genuinely-interesting moment costs
+nothing; an unwanted comment about someone's screen costs trust.
+
+Single-slot, module-level state -- same reasoning as task_guide.py's
+single-active-task design: this is a single-driver-connection app, so
+there's never a genuine need for more than one watch state at a time.
+"""
+
+from __future__ import annotations
+
+import json
+import re
+import sys
+import time
+from dataclasses import dataclass, replace
+
+import llm
+
+# Polled far less often than Task Guide Mode's own loop (15s) -- ambient
+# commentary should be rare by design, not prompt-timely the way noticing
+# task drift is. The actual real-world cadence is controlled by
+# CONFIG.ocr_watch.comment_interval_seconds (app.py reads it), this is
+# just how granular the "is a check due yet" polling is.
+WATCH_POLL_SECONDS = 30
+
+
+@dataclass(frozen=True)
+class WatchState:
+    active: bool = False
+    last_check_at: float = 0.0
+    # A brief, one-line gist of what was on screen at the last check --
+    # not a transcript, just enough for the next check's prompt to reason
+    # about "has this changed since last time" rather than judging each
+    # screenshot in isolation, which would make repeat comments about an
+    # unchanging screen much more likely.
+    last_seen_summary: str = ""
+
+
+_state = WatchState()
+
+
+def get_state() -> WatchState:
+    """Frozen snapshot -- the caller can't accidentally mutate module
+    state through the object it gets back."""
+    return _state
+
+
+def set_active(active: bool) -> None:
+    """The set_ocr_watch message's actual implementation (see app.py).
+    Starting fresh always clears last_seen_summary and resets the check
+    clock -- a freshly enabled watch shouldn't immediately fire using a
+    stale summary from a previous session, and shouldn't be treated as
+    already overdue for a check the instant it's turned on."""
+    global _state
+    if active:
+        _state = WatchState(active=True, last_check_at=time.time(), last_seen_summary="")
+    else:
+        _state = WatchState(active=False)
+
+
+def due_for_check(state: WatchState, interval_seconds: float) -> bool:
+    if not state.active:
+        return False
+    return (time.time() - state.last_check_at) >= interval_seconds
+
+
+def mark_checked(summary: str = "") -> None:
+    """Called right before/after a check actually runs (whether or not it
+    finds something comment-worthy) -- due_for_check() measures from "last
+    time we actually looked," not "last time we found something to say."
+    summary, when given, becomes the next check's last_seen_summary --
+    left unchanged (not cleared) if omitted, e.g. on a failed check where
+    there's nothing new to record."""
+    global _state
+    if _state.active:
+        _state = replace(_state, last_check_at=time.time(), last_seen_summary=summary or _state.last_seen_summary)
+
+
+_WATCH_SYSTEM_PROMPT = """\
+You are glancing at someone's screen every so often, just to notice what \
+they're up to -- not tracking a specific task, not checking for \
+anything in particular, just an occasional look. Respond with ONLY a \
+JSON object, no markdown fences, no commentary before or after it:
+
+{"comment_worthy": true, "summary": "one short phrase describing what is on screen right now", "note": "one short observation worth remarking on"}
+
+or, when there is nothing worth saying:
+
+{"comment_worthy": false, "summary": "one short phrase describing what is on screen right now", "note": ""}
+
+"summary" is always filled in either way -- it is compared against what \
+was on screen last time you looked, given below. Only set \
+"comment_worthy" to true if something is genuinely interesting, has \
+changed meaningfully since last time, or is funny/notable enough that a \
+person glancing over someone's shoulder would actually say something out \
+loud -- a new application, something that looks like trouble, a clear \
+milestone or achievement, something genuinely funny. Do NOT set it true \
+just because the screen has content, because enough time has passed, or \
+because the summary is merely different in wording from last time with \
+nothing actually new happening. Most glances should find nothing worth \
+commenting on -- when in doubt, set it false. Never remark on the same \
+thing you already commented on before.
+
+What was on screen last time you looked (empty if this is the first \
+check): __PREVIOUS_SUMMARY__\
+"""
+
+
+async def check_for_comment(previous_summary: str, image_b64: str) -> dict | None:
+    """One-shot VLM call judging whether the current screen is worth an
+    unprompted remark, given a brief note on what was there last time.
+    Returns {"comment_worthy": bool, "summary": str, "note": str} or None
+    if the call failed or came back unparseable -- both treated the same
+    by the caller (app.py's _run_ocr_watch_check): skip this check, try
+    again next interval, never crash the loop or comment on a guess.
+    """
+    # Plain string replacement, not str.format() -- the template above
+    # contains literal JSON examples with their own {curly braces},
+    # which .format() would try to interpret as format fields too (and
+    # did, the first time this was written -- caught by this function's
+    # own tests, not by inspection).
+    prompt = _WATCH_SYSTEM_PROMPT.replace("__PREVIOUS_SUMMARY__", repr(previous_summary or "(nothing yet)"))
+    try:
+        raw_output = await llm.describe_image(prompt, image_b64)
+    except llm.LLMUnreachableError:
+        return None
+    return _parse_watch_result(raw_output)
+
+
+def _parse_watch_result(raw_output: str) -> dict | None:
+    """Forgiving parse, same shape as task_guide.py's _parse_check_result
+    and forget.py's _parse_remove_indices -- a small model's output
+    shouldn't be trusted to be clean JSON and nothing else. Returns None
+    on anything that doesn't parse into the expected shape -- the safe
+    direction to fail in is "skip this check," not "assume it's worth a
+    comment."""
+    candidates = [raw_output.strip()]
+    match = re.search(r"\{.*\}", raw_output, re.DOTALL)
+    if match:
+        candidates.append(match.group(0))
+
+    for candidate in candidates:
+        try:
+            parsed = json.loads(candidate)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(parsed, dict):
+            continue
+        comment_worthy = parsed.get("comment_worthy")
+        if not isinstance(comment_worthy, bool):
+            continue
+        summary = parsed.get("summary")
+        note = parsed.get("note")
+        return {
+            "comment_worthy": comment_worthy,
+            "summary": summary.strip() if isinstance(summary, str) else "",
+            "note": note.strip() if isinstance(note, str) else "",
+        }
+    return None

@@ -13,6 +13,7 @@
 //   -> { type: "get_log" }
 //   -> { type: "clear_log" }
 //   -> { type: "set_temp_mode", enabled: boolean }
+//   -> { type: "set_ocr_watch", enabled: boolean }
 //   -> { type: "camera_frame", image_b64: string | null }
 //   -> { type: "user_file", filename: string, kind: "image" | "text", content: string, caption?: string | null }
 //   <- { type: "speak", text: string, audio_b64: string, mime: string }
@@ -316,6 +317,14 @@ export class WsClient {
   sendSetTempMode(enabled: boolean): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify({ type: "set_temp_mode", enabled }));
+  }
+
+  /** Quick-action menu's Continuous OCR toggle -- ambient screen-watching
+   * (see orchestrator/ocr_watch.py), independent of Task Guide Mode.
+   * Fire-and-forget, same reasoning as sendSetTempMode above. */
+  sendSetOcrWatch(enabled: boolean): void {
+    if (this.socket?.readyState !== WebSocket.OPEN) return;
+    this.socket.send(JSON.stringify({ type: "set_ocr_watch", enabled }));
   }
 
   /** Answers a request_camera_frame (see onRequestCameraFrame in

@@ -52,6 +52,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 import camera
 import llm
+import ocr_watch
 import stt
 import task_guide
 import tools
@@ -176,6 +177,13 @@ TOOL_STUCK_LINE = "...tch, I got stuck trying to do that. Ask me again?"
 # isn't meaningfully delayed by polling granularity, long enough not to
 # spin the event loop for no reason while no task is even active.
 TASK_GUIDE_POLL_SECONDS = 15
+
+# Continuous OCR -- same reasoning as TASK_GUIDE_POLL_SECONDS above, just
+# coarser: this feature's own real interval
+# (CONFIG.ocr_watch.comment_interval_seconds, 240s by default) is far
+# longer than task_guide's, so there's no need to poll as tightly to stay
+# close to it.
+OCR_WATCH_POLL_SECONDS = 30
 
 
 async def _send_speak(websocket: WebSocket, text: str) -> None:
@@ -475,8 +483,7 @@ def _drift_prompt(task_description: str, observation: str) -> str:
     )
 
 
-async def _run_task_guide_check(
-    websocket: WebSocket,
+async def _run_task_guide_check(    websocket: WebSocket,
     history: list[dict[str, str]],
     task_description: str,
     temp_mode: bool = False,
@@ -558,6 +565,105 @@ async def _run_task_guide_check(
     # 9's transcript-log panel shows it happened. Deliberately no
     # matching "user" turn precedes it -- nobody said anything -- which
     # is a legitimate shape for an unprompted comment, not a bug.
+    history.append({"role": "assistant", "content": " ".join(reply_parts)})
+    if temp_turn_flags is not None:
+        temp_turn_flags.append(temp_mode)
+    _trim_history(history, temp_turn_flags)
+    await _log_transcript_turn_safely("", " ".join(apply_persona_pass(p) for p in reply_parts))
+    await websocket.send_json({"type": "turn_end", "emotion": detected_emotion})
+
+
+def _ambient_comment_prompt(observation: str) -> str:
+    return (
+        f"You just glanced at the user's screen on your own, without "
+        f"them saying anything, and noticed something worth remarking "
+        f"on: {observation!r}. React to this right now, in character, "
+        "in one short spoken line -- a genuine, in-the-moment remark, "
+        "not a report. Do not mention that you were checking, do not "
+        "mention a timer or a tool or that this was automatic, just "
+        "react like you noticed it yourself. End with your usual "
+        "[emotion] tag on its own line, same as always."
+    )
+
+
+async def _run_ocr_watch_check(
+    websocket: WebSocket,
+    history: list[dict[str, str]],
+    temp_mode: bool = False,
+    temp_turn_flags: list[bool] | None = None,
+) -> None:
+    """Continuous OCR's own scheduled check -- structurally the same
+    shape as _run_task_guide_check above (grab a screenshot, ask the VLM
+    a judgment question, react in character if it says yes), but judging
+    "is this worth an unprompted remark at all" (ocr_watch.
+    check_for_comment) rather than "does this match a tracked task."
+    Unlike Task Guide Mode, there is no task description to compare
+    against -- ocr_watch.py's own WatchState.last_seen_summary is the only
+    context carried between checks, so the judgment is "changed/notable
+    since last glance," not "off the goal."
+
+    temp_mode/temp_turn_flags: same treatment as _run_task_guide_check's
+    own -- read live at call time so a comment landing while Temp Chat is
+    on still gets excluded from end-of-session consolidation, without
+    suppressing the comment itself.
+
+    Always calls ocr_watch.mark_checked() (with the fresh summary, so the
+    next check has something to compare against) whether or not this
+    ends up commenting -- due_for_check() measures from "last time we
+    actually looked," not "last time we said something."
+
+    Same "narrow about what's worth logging vs. silently skipping" policy
+    as _run_task_guide_check: a failed capture, an unreachable LLM, or an
+    unparseable VLM response all just mean "try again next interval,"
+    never more than a missed check.
+    """
+    try:
+        image_b64 = await asyncio.to_thread(vision.capture_screen)
+    except vision.ToolUnavailableError as exc:
+        print(f"[luna] ocr watch: capture failed, skipping this check: {exc}", file=sys.stderr)
+        return
+
+    previous_summary = ocr_watch.get_state().last_seen_summary
+    result = await ocr_watch.check_for_comment(previous_summary, image_b64)
+    if result is None:
+        print("[luna] ocr watch: check result didn't parse, skipping this check", file=sys.stderr)
+        return
+    ocr_watch.mark_checked(result["summary"])
+    # Logged unconditionally, same reasoning as task_guide's own check
+    # line: confirms the loop is alive without waiting for a real comment.
+    print(
+        f"[luna] ocr watch: checked -> comment_worthy={result['comment_worthy']} "
+        f"({result['summary'] or 'no summary'})",
+        file=sys.stderr,
+    )
+    if not result["comment_worthy"]:
+        return
+    if not result["note"]:
+        # Said comment_worthy=true but gave no actual observation to react
+        # to -- nothing sensible to build a remark out of, so skip rather
+        # than have her react to an empty string.
+        return
+
+    prompt = _ambient_comment_prompt(result["note"])
+    try:
+        buffer = ""
+        async for delta in llm.stream_reply(history + [{"role": "user", "content": prompt}]):
+            buffer += delta
+    except llm.LLMUnreachableError as exc:
+        print(f"[luna] ocr watch: LLM unreachable for comment, skipping: {exc}", file=sys.stderr)
+        return
+
+    buffer, detected_emotion = extract_emotion_tag(buffer)
+    reply_parts = flush(buffer)
+    if not reply_parts:
+        return
+
+    for chunk in reply_parts:
+        await _send_speak(websocket, apply_persona_pass(chunk))
+
+    # Same "unprompted comment, no preceding user turn" shape
+    # _run_task_guide_check's own chide uses -- see its comment for why
+    # that's legitimate here too, not a bug.
     history.append({"role": "assistant", "content": " ".join(reply_parts)})
     if temp_turn_flags is not None:
         temp_turn_flags.append(temp_mode)
@@ -660,6 +766,17 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     # enclosing-scope variable at call time, not a snapshot from when the
     # closure was created, which is exactly the "is a turn running right
     # now" read this needs on every wake.
+    #
+    # ambient_speak_lock is shared with _ocr_watch_loop below -- without
+    # it, Task Guide Mode's chide and Continuous OCR's comment could both
+    # decide to fire around the same moment (two independent asyncio
+    # tasks, polling on different schedules) and race on the same
+    # `history` list and the same websocket's _send_speak calls. Held
+    # only around the actual check+speak call, not the sleep/poll --
+    # locked() is checked first so a loop that's not due doesn't even
+    # attempt to acquire it.
+    ambient_speak_lock = asyncio.Lock()
+
     async def _task_guide_loop() -> None:
         while True:
             await asyncio.sleep(TASK_GUIDE_POLL_SECONDS)
@@ -684,10 +801,34 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 # mark_checked() is only called once a check actually
                 # runs, so nothing here silently resets the interval.
                 continue
-            await _run_task_guide_check(websocket, history, state.description, temp_mode, temp_turn_flags)
+            if ambient_speak_lock.locked():
+                # Continuous OCR's own check is currently speaking --
+                # same "skip, don't defer" policy as the current_turn_task
+                # guard just above.
+                continue
+            async with ambient_speak_lock:
+                await _run_task_guide_check(websocket, history, state.description, temp_mode, temp_turn_flags)
+
+    async def _ocr_watch_loop() -> None:
+        while True:
+            await asyncio.sleep(OCR_WATCH_POLL_SECONDS)
+            state = ocr_watch.get_state()
+            if not state.active:
+                continue
+            if not ocr_watch.due_for_check(state, CONFIG.ocr_watch.comment_interval_seconds):
+                continue
+            if current_turn_task is not None and not current_turn_task.done():
+                continue
+            if ambient_speak_lock.locked():
+                continue
+            async with ambient_speak_lock:
+                await _run_ocr_watch_check(websocket, history, temp_mode, temp_turn_flags)
 
     task_guide_task: asyncio.Task | None = (
         asyncio.create_task(_task_guide_loop()) if is_driver else None
+    )
+    ocr_watch_task: asyncio.Task | None = (
+        asyncio.create_task(_ocr_watch_loop()) if is_driver else None
     )
 
     try:
@@ -770,6 +911,18 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 # frontend already reflects its own toggle state
                 # optimistically the moment it's clicked.
                 temp_mode = bool(data.get("enabled"))
+                continue
+
+            if msg_type == "set_ocr_watch":
+                # Quick-action menu's Continuous OCR toggle. Unlike
+                # temp_mode, this genuinely is module-level, shared state
+                # (ocr_watch.py, same reasoning task_guide's own state
+                # has for being module-level rather than per-connection)
+                # -- but in practice only the driver's own menu can ever
+                # send this, since it's an observer-window UI element
+                # this build doesn't even show, so no explicit gate is
+                # needed here either.
+                ocr_watch.set_active(bool(data.get("enabled")))
                 continue
 
             if msg_type == "camera_frame":
@@ -971,6 +1124,14 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             task_guide_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await task_guide_task
+        # Same reasoning as task_guide_task right above, for Continuous
+        # OCR's own loop -- also does NOT clear ocr_watch's module-level
+        # WatchState, same "independent of any one connection's
+        # lifetime" reasoning.
+        if ocr_watch_task is not None and not ocr_watch_task.done():
+            ocr_watch_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await ocr_watch_task
         # Phase 3: distill this session into durable memory (facts +
         # one episode summary) once it's actually over. In `finally`, not
         # just the `except WebSocketDisconnect` branch, so it also runs on
