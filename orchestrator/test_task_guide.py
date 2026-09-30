@@ -300,3 +300,15 @@ def test_parse_task_detection_markdown_fenced():
     raw = '```json\n{"action": "none"}\n```'
     result = task_guide._parse_task_detection(raw)
     assert result == {"action": "none", "description": ""}
+
+
+def test_detect_prompt_keeps_command_to_the_ai_out_of_tasks():
+    # Regression: real usage classified "see i am playing minecraft. use
+    # OCR" as a task start ('use OCR on Minecraft game') -- a command aimed
+    # at the AI, not work the user is doing -- which then started periodic
+    # Task Guide screen checks for nothing. The prompt has to keep saying
+    # so explicitly; a small model needs the negative examples spelled out.
+    prompt = task_guide._TASK_DETECT_SYSTEM_PROMPT  # noqa: SLF001
+    assert "directed at the AI" in prompt
+    assert '"use OCR"' in prompt
+    assert "I'm playing Minecraft" in prompt

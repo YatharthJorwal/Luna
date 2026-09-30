@@ -52,6 +52,7 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 import camera
 import llm
+import look_intent
 import ocr_watch
 import stt
 import task_guide
@@ -308,7 +309,14 @@ async def _run_turn(
         # as forget_hint right above.
         task_hint = await task_guide.maybe_update_task(user_text)
         memory_block = await recall.build_recall_context(user_text, CONFIG.memory.recall_top_k)
-    memory_parts = [part for part in (forget_hint, task_hint, memory_block) if part]
+    # Explicit "look at my screen / camera" requests, handled here in Python
+    # instead of trusting the model to call capture_screen/capture_camera
+    # itself -- see look_intent.py for the real-log evidence (2 of ~9
+    # explicit requests actually fired the tool). Deliberately NOT gated on
+    # temp_mode: this is live sensing that gets spliced in for this one
+    # turn, not a read from or write to persistent memory.
+    look_hint = await look_intent.maybe_look(user_text, websocket)
+    memory_parts = [part for part in (forget_hint, task_hint, look_hint, memory_block) if part]
 
     # Phase 10: where she physically is, if the sandbox has told us. Same
     # ephemeral-system-message treatment as the memory blocks above, and

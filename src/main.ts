@@ -435,13 +435,19 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
       timeLine.textContent = formatLogTimestamp(turn.ts);
       row.appendChild(timeLine);
 
-      const userLine = document.createElement("div");
-      userLine.className = "log-turn-user";
-      const userName = document.createElement("span");
-      userName.className = "log-turn-name";
-      userName.textContent = `${logUserName}:`;
-      userLine.append(userName, document.createTextNode(turn.user));
-      row.appendChild(userLine);
+      // Unprompted comments (Task Guide chides, Continuous OCR remarks) are
+      // logged with an empty user string -- nobody said anything. Skip the
+      // user line for those instead of rendering a dangling "Name:" with
+      // nothing after it.
+      if (turn.user.trim()) {
+        const userLine = document.createElement("div");
+        userLine.className = "log-turn-user";
+        const userName = document.createElement("span");
+        userName.className = "log-turn-name";
+        userName.textContent = `${logUserName}:`;
+        userLine.append(userName, document.createTextNode(turn.user));
+        row.appendChild(userLine);
+      }
 
       // A turn stopped before she said anything (see app.py's _run_turn)
       // still gets a row, just with nothing after her name -- an honest

@@ -244,15 +244,22 @@ commentary before or after it, in exactly one of these three shapes:
 {"action": "stop"}
 {"action": "none"}
 
-Use "start" when the message states or clearly implies a task the user \
-is about to do or is currently doing -- e.g. "I'm going to debug this \
-function", "working on a poster for a bit", "keep an eye on me while I \
-do X". "description" should be a short, concrete phrase, not a full \
-sentence. Use "stop" only when the message says the task is finished, \
-asks to stop being watched, or clearly drops/abandons it -- e.g. "I'm \
-done", "stop watching me", "never mind that". A message about doing \
-something else for a bit (checking a video, taking a break) is NOT a \
-stop -- that is a normal distraction, not the task ending, so use \
+Use "start" only when the message says the USER themselves is about to \
+do, or is currently doing, some piece of work or a project -- e.g. "I'm \
+going to debug this function", "working on a poster for a bit", "keep an \
+eye on me while I do X". "description" should be a short, concrete \
+phrase about THEIR work, not a full sentence. A request or command \
+directed at the AI itself is NOT a task, no matter how it is phrased: \
+"use OCR", "look at my screen", "check what's on screen", "see what I'm \
+playing", "what am I holding", "what time is it", "read this", or \
+telling it to use a tool are all "none". Merely mentioning what they are \
+playing or watching ("I'm playing Minecraft", "I'm watching a video") is \
+also "none" -- that is a hobby or leisure, not something they asked to \
+be kept on track for. Use "stop" only when the message says the task is \
+finished, asks to stop being watched, or clearly drops/abandons it -- \
+e.g. "I'm done", "stop watching me", "never mind that". A message about \
+doing something else for a bit (checking a video, taking a break) is NOT \
+a stop -- that is a normal distraction, not the task ending, so use \
 "none" for it. Use "none" for everything else, including ordinary \
 conversation and questions. When genuinely unsure, use "none" -- a \
 missed task is a smaller problem than falsely claiming to track one, or \

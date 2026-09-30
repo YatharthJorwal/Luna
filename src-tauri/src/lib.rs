@@ -1,14 +1,13 @@
 // NOTE: this sandbox has no Rust toolchain, so this file was originally
-// written against the Tauri v2 API from memory and unverified. The
-// global-shortcut block has since been through a real `cargo build` on the
-// user's machine and fixed once (see docs/DECISIONS.md for the E0277
-// error and fix). The process-spawning block (spawn_backend_processes and
-// everything it calls) was new as of that same round and has NOT been
-// through a real build yet -- same unverified status the global-shortcut
-// block started in, treat with the same suspicion on first compile.
-// graceful_shutdown_then_kill() and request_orchestrator_shutdown() are
-// newer still (Phase 3 follow-up, fixing a hard-kill-loses-memory bug) --
-// same unverified status, flagged again at their own definitions below.
+// written against the Tauri v2 API from memory and unverified. Confirmed
+// building and running successfully on the user's real machine as of a
+// launch that included spawn_backend_processes, the tray icon/camera
+// indicator code, and everything else through that point -- the file is
+// no longer "unverified from memory," but new additions since then still
+// start in that same unverified state until their own first real build.
+// The `gpt_sovits_still_alive` check inside spawn_backend_processes
+// (Child::try_wait() on the tracked GPT-SoVITS process) is the newest
+// such addition and has not been through a real build yet.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -98,7 +97,55 @@ fn set_camera_indicator(
     tray.0.set_icon(Some(icon)).map_err(|e| e.to_string())
 }
 
+/// Puts this process (and therefore every child it later spawns --
+/// GPT-SoVITS, the orchestrator and the real interpreter the venv's
+/// python.exe launcher stub spawns underneath it, WebView2's helpers) into
+/// a Windows Job Object flagged KILL_ON_JOB_CLOSE. The OS itself then kills
+/// every process in the job the instant this one dies, *for any reason*:
+/// tray Quit, End Task from the taskbar, Ctrl+C on `npm run tauri dev`, a
+/// crash, Task Manager. That is the whole point -- every fix before this one
+/// (graceful_shutdown_then_kill, the orchestrator's PID-file takeover) only
+/// helps on paths where this process gets to run its own code before dying,
+/// and End Task / Ctrl+C are exactly the paths where it doesn't, which is
+/// what left orphaned GPT-SoVITS instances squatting port 9880 across
+/// launches on the user's real machine.
+///
+/// Same pattern the Tauri project itself uses in tauri-driver. Kept alive
+/// with mem::forget rather than stored anywhere: the job's handle must stay
+/// open for the whole life of the process (dropping it would *trigger* the
+/// kill early), and the OS closing it at process exit is exactly the
+/// behavior wanted. A failure here is logged and otherwise ignored -- the
+/// graceful-quit path and the PID-file takeover still exist as before, this
+/// is an additional safety net, not a replacement.
+///
+/// **UNVERIFIED on a real build** -- API confirmed against the win32job
+/// docs and tauri-driver's own usage, but never compiled here.
+#[cfg(windows)]
+fn install_kill_on_close_job() {
+    let result = (|| -> Result<win32job::Job, Box<dyn std::error::Error>> {
+        let job = win32job::Job::create()?;
+        let mut info = job.query_extended_limit_info()?;
+        info.limit_kill_on_job_close();
+        job.set_extended_limit_info(&mut info)?;
+        job.assign_current_process()?;
+        Ok(job)
+    })();
+    match result {
+        Ok(job) => std::mem::forget(job),
+        Err(e) => eprintln!(
+            "[luna] WARNING: couldn't set up the kill-on-close job object ({e}); \
+             children may be orphaned if Luna is closed via End Task or Ctrl+C \
+             instead of tray Quit."
+        ),
+    }
+}
+
 pub fn run() {
+    // Must happen before anything spawns a child -- processes only inherit
+    // job membership from a parent that's already in the job.
+    #[cfg(windows)]
+    install_kill_on_close_job();
+
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             toggle_click_through,
@@ -281,6 +328,43 @@ fn spawn_backend_processes(children: Arc<Mutex<Vec<(String, Child)>>>) {
     let orchestrator_children = children;
     std::thread::spawn(move || {
         wait_for_port(9880, Duration::from_secs(60));
+
+        // Something answered on 9880 -- but is it actually the GPT-SoVITS
+        // process this launch just spawned, or a stale leftover from a
+        // previous session that was already squatting the port before
+        // this one even tried to bind (the exact scenario found on the
+        // user's real machine: a fresh spawn attempt failing with
+        // WinError 10048/"only one usage of each socket address" while
+        // an old orphaned instance keeps answering requests)? Checked
+        // against the real Child handle's own exit status, not just
+        // trusting the port -- `children` already holds it, no new
+        // dependency or PID-lookup shelling-out needed.
+        let gpt_sovits_still_alive = {
+            let mut guard = orchestrator_children.lock().unwrap();
+            match guard.iter_mut().find(|entry| entry.0 == "GPT-SoVITS") {
+                Some(entry) => matches!(entry.1.try_wait(), Ok(None)),
+                // GPT_SOVITS_DIR wasn't set, so nothing was ever spawned
+                // -- not this warning's problem, the "skipping GPT-SoVITS
+                // auto-start" message above already covers that case.
+                None => true,
+            }
+        };
+        if !gpt_sovits_still_alive {
+            eprintln!(
+                "[luna] WARNING: port 9880 answered, but the GPT-SoVITS \
+                 process this launch just started has already exited -- \
+                 something ELSE is squatting that port, almost certainly \
+                 a leftover process from a previous session that never \
+                 shut down cleanly. Voice will likely come from that \
+                 stale process instead of this launch's own instance, \
+                 which may be fine or may be broken/outdated -- not \
+                 predictable either way. Fix: run `netstat -ano | findstr \
+                 :9880` in PowerShell, find the PID in the last column, \
+                 `taskkill /PID <pid> /F` it, then relaunch Luna for a \
+                 clean start. See README.md's troubleshooting section for \
+                 the same steps."
+            );
+        }
 
         let python = PathBuf::from("../orchestrator/venv/Scripts/python.exe");
         if !python.exists() {

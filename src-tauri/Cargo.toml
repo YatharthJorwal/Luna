@@ -18,6 +18,12 @@ tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Windows Job Object wrapper -- see lib.rs's install_kill_on_close_job() for
+# why (children must die with the parent on End Task / Ctrl+C, not just on
+# tray Quit).
+[target.'cfg(windows)'.dependencies]
+win32job = "2"
+
 [profile.release]
 # Small footprint matters here -- this runs alongside a game.
 lto = true

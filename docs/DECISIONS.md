@@ -2915,3 +2915,89 @@ interval, and whether the ambient-speak lock's "skip, don't defer"
 policy ever causes a real check to be silently skipped often enough to
 matter are all genuinely open questions that only real usage can answer.
 18 new tests (`test_ocr_watch.py`), 129 total passing.
+
+## Orphaned children on End Task / Ctrl+C: a Windows Job Object, not another workaround
+
+Third recurrence of the leftover-GPT-SoVITS-on-port-9880 problem, this time
+with the user having already tried End Task (right-click the taskbar icon)
+and Ctrl+C. Both kill `luna.exe` abruptly, so `graceful_shutdown_then_kill`
+-- which only runs from a tray Quit -- never executes, and the children keep
+running and holding their ports. Every earlier fix (graceful shutdown, the
+orchestrator's PID-file takeover, the loud port-9880 warning) only helps on
+paths where the parent gets to run its own code before dying; End Task and
+Ctrl+C are precisely the paths where it doesn't. Detection and workarounds
+were the wrong layer.
+
+Fixed at the OS level instead: `install_kill_on_close_job()` (`lib.rs`) puts
+the process into a Windows Job Object with `KILL_ON_JOB_CLOSE`, at the top of
+`run()` before anything spawns, so every child inherits membership. When
+`luna.exe` dies for *any* reason the kernel closes the job's last handle and
+kills everything in it. This also covers a case the PID-based approaches
+never could: the venv's `python.exe` on Windows is a launcher stub that
+spawns the real interpreter as a *grandchild*, which a `taskkill /PID` on the
+stub alone can leave running. Same pattern the Tauri project itself uses in
+`tauri-driver`, via the `win32job` crate (new `cfg(windows)` dependency).
+The job handle is deliberately `mem::forget`-ed: it must stay open for the
+whole process lifetime (dropping it would trigger the kill early). Failure to
+set it up is logged and non-fatal -- the older mechanisms remain as fallbacks.
+
+**Honest limits.** Never compiled here (no cargo) -- API confirmed against
+the crate docs and `tauri-driver`'s own usage, not a real build. It prevents
+*future* orphans; any GPT-SoVITS already squatting 9880 from before this
+build still needs one manual `taskkill`. And a job kill is a hard kill:
+End Task / Ctrl+C skip the orchestrator's end-of-session memory
+consolidation, so a session ended that way isn't remembered. Tray Quit
+remains the way to close cleanly.
+
+## Explicit "look at my screen" requests: deterministic, not left to native tool-calling
+
+A pasted session log showed `capture_screen` firing for 2 of ~9 requests that
+plainly asked her to look ("see what i am playing", "look at my screen", "use
+OCR", "whats on my screen", "tell me what do you see now"). Each miss was a
+`replied directly` with no `tool_calls` key, and each produced an answer from
+stale context or invention: a made-up clock reading ("2:17 AM"), a
+description of Minecraft after the wallpaper had changed. Third instance of
+one failure class (`set_active_task`, camera re-invocation, now this):
+qwen3.5:9b's autonomous decision to call a tool is unreliable regardless of
+prompt strength, and the camera-round prompt fix ("every look again means a
+fresh call") demonstrably didn't generalize to the screen tool.
+
+`look_intent.py` applies the same remedy `maybe_update_task` did: take the
+decision away from the model where intent is unambiguous. A regex gate (no
+extra LLM call, so ordinary turns pay nothing) detects explicit look-requests;
+`maybe_look` does the capture in Python via the same
+`describe_screen()`/`describe_camera()` the tools wrap; `_run_turn` splices
+the result in as ephemeral context beside the forget/task/recall hints.
+Anything the patterns miss still falls through to native tool-calling, which
+does work sometimes -- this adds a reliable path, it doesn't remove the old one.
+Failures (camera not armed, capture failed, vision model down) become a hint
+that tells her to say so plainly and explicitly not to guess, since guessing
+was the whole failure.
+
+Patterns are conservative on purpose because a false positive is an unwanted
+capture, and for the camera that's a privacy cost, not just noise: the camera
+only triggers on look-verb + camera phrasings or "what am I holding/wearing",
+never the bare word "camera" (so "turn the camera off" can't capture a frame);
+uploaded-file bodies (`(shared a ...)`) are excluded so a file that happens to
+contain "look at the screen" can't start one; "look again" with no named
+target reuses whichever target was looked at last. Not gated on Temp Chat --
+it's live sensing for one turn, not a read from or write to persistent
+memory. Tests use the literal phrases from the failing session as positives,
+plus explicit non-triggers.
+
+## Task classifier misfire: a command to the AI is not a task
+
+Same log: `"see i am playing minecraft. use OCR"` was classified as
+`detected task start -> 'use OCR on Minecraft game'`, silently starting Task
+Guide's periodic screen checks for a "task" that was really a request aimed at
+her. The classifier prompt described "start" too loosely ("states or clearly
+implies a task"). Tightened: start means the *user's own* work; commands to
+the AI ("use OCR", "look at my screen", "what time is it", "read this") and
+mere leisure mentions ("I'm playing Minecraft") are explicitly `none`, with the
+examples spelled out because a small model needs the negatives named. A test
+pins the key phrases so a future prompt edit can't quietly drop them.
+
+**Also noted, not diagnosed:** several replies in that transcript end
+mid-sentence ("Go", "but don't act"). The log panel records what was actually
+spoken, so a stopped or cancelled turn would look exactly like that -- can't
+tell from these logs which it was.
