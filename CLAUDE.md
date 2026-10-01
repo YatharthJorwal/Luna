@@ -30,18 +30,16 @@ that; every bit of it already existed in `docs/DECISIONS.md`/
 migrated — nothing was lost, check either file if something here seems to
 reference history you can't find.)
 
-**Where things stand:** Phases 0-4, 7, 8, and 9 are done and confirmed on
-the user's real machine (Windows, RTX 3060 12GB). Phase 4's scheduled-
-capture/off-task-chide loop (Round 2) is built and unit-tested but **not
-yet functionally verified end-to-end** — real-machine testing was blocked
-by an unrelated infra issue (a stale GPT-SoVITS process squatting on its
-port from a prior session; see `docs/DECISIONS.md`'s most recent entries).
-Phase 10 (the sandbox apartment) is frozen as of round 15 by explicit user
-decision, in favor of the Tauri shell phases. Phases 5, 6, and 11 haven't
-been started. `handoff.md` (regenerated at the end of sessions that change
-enough to be worth re-summarizing) has the fastest current on-ramp,
-including open questions worth confirming with the user rather than
-assuming.
+**Where things stand:** Phases 0-4, 7, 8, 9 done and confirmed on the user's
+real machine (Windows, RTX 3060 12GB). Phase 5 (camera) and the quick-action
+menu (Temp Chat, Camera, Upload Image/File, Continuous OCR) are built and were
+user-tested; Live Voice Chat and Agent Mode are still disabled placeholders
+(Agent Mode needs a dedicated safety/planning conversation before any code --
+it reverses the "observe-and-advise" constraint above). Phase 10 (sandbox
+apartment) is frozen by explicit user decision; Phases 6 and 11 not started.
+Latest fixes (Job Object + startup sweep for orphaned children, deterministic
+look-requests, reply-cutoff diagnostics) are **built but unverified on the
+user's machine**. `handoff.md` has the fastest on-ramp and the open-items list.
 
 ## Docs map
 

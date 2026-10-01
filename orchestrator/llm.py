@@ -124,6 +124,14 @@ async def stream_reply_with_tools(
     ]
     saw_tool_calls_key = False
     saw_any_content = False
+    # Tracked for the truncation diagnostic printed below: replies were
+    # observed ending mid-sentence on the user's real machine with no user
+    # action and no error anywhere in the log, and a stream that just *ends*
+    # (Ollama aborting a generation) used to be indistinguishable here from
+    # one that finished normally.
+    done_seen = False
+    done_reason: Any = None
+    chars_streamed = 0
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as client:
             async with client.stream("POST", url, json=payload) as response:
@@ -155,17 +163,33 @@ async def stream_reply_with_tools(
                         content = message.get("content") or ""
                         if content:
                             saw_any_content = True
+                            chars_streamed += len(content)
                             yield {"type": "content", "text": content}
                     if chunk.get("done"):
+                        done_seen = True
+                        done_reason = chunk.get("done_reason")
                         break
     except httpx.RequestError as exc:
         raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
     print(
         f"[luna] tool-calling: offered {tool_names}, replied directly "
         f"(saw_content={saw_any_content}, "
-        f"'tool_calls' key ever present={saw_tool_calls_key})",
+        f"'tool_calls' key ever present={saw_tool_calls_key}, "
+        f"done={done_seen}, done_reason={done_reason!r}, chars={chars_streamed})",
         file=sys.stderr,
     )
+    if not done_seen or done_reason not in (None, "stop"):
+        # The smoking gun for a reply that was cut off by the *model side*
+        # rather than by the user or a bug in this app: either the stream
+        # ended with no done marker at all (Ollama aborted mid-generation),
+        # or it ended for a reason other than a natural stop (e.g.
+        # "length" = hit the max_tokens cap).
+        print(
+            f"[luna] WARNING: LLM reply ended abnormally (done={done_seen}, "
+            f"done_reason={done_reason!r}) after {chars_streamed} chars -- "
+            "if she cut off mid-sentence, this is why.",
+            file=sys.stderr,
+        )
 
 
 def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:

@@ -45,6 +45,7 @@ import signal
 import subprocess
 import sys
 import time
+import traceback
 from pathlib import Path
 from typing import Any
 
@@ -416,6 +417,18 @@ async def _run_turn(
         await _send_speak(websocket, LLM_UNREACHABLE_LINE)
         spoken_parts.append(LLM_UNREACHABLE_LINE)
         detected_emotion = EMOTION_LLM_UNREACHABLE
+    except Exception:  # noqa: BLE001 -- deliberate catch-all, see below
+        # Anything else (a TTS failure, a socket error, a plain bug) used to
+        # kill this task silently: the finally block below still recorded
+        # whatever had been spoken so far -- which reads exactly like a
+        # reply that cut itself off -- and then the exception escaped
+        # without turn_end ever being sent, leaving the frontend's stop
+        # button stuck on. The traceback goes to the log so the cause is
+        # finally visible, and the flow falls through to the normal
+        # turn_end. CancelledError (the stop button) is a BaseException and
+        # deliberately NOT caught here -- stop must still cancel the turn.
+        print("[luna] turn failed with an unexpected error (reply cut off):", file=sys.stderr)
+        traceback.print_exc(file=sys.stderr)
     finally:
         # In `finally`, not just after the try block, so a stop-button
         # cancellation (asyncio.CancelledError, raised into whichever

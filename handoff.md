@@ -1,157 +1,105 @@
 # Handoff
 
-> **Read this once, at the start of a session, to get oriented — then stop
-> consulting it.** This is a snapshot, not a live document. It goes stale
-> the moment more work happens, on purpose — regenerating it fresh at the
-> end of a session that changed enough to be worth re-summarizing is the
-> intended workflow, not editing it line-by-line as things change mid
-> session. If anything here disagrees with `docs/ROADMAP.md` or
-> `docs/DECISIONS.md`, **those two are the source of truth, not this
-> file.** `CLAUDE.md`'s "Current status" section is the authoritative
-> rolling log; this file is just a fast on-ramp to it.
+> Read once at the start of a session, then stop consulting it. It's a snapshot
+> and goes stale on purpose. If it disagrees with `docs/ROADMAP.md` or
+> `docs/DECISIONS.md`, those win. `CLAUDE.md` has the standing rules.
 
-## Read this part first
+## Do this first (the user said they will run the latest bundle and report back)
 
-The sandbox/apartment freeze (Phase 10, since round 15) is still in effect
-— don't touch `sandbox.ts`/`src/apartment/`/`camera-modes.ts`/`postfx.ts`
-unless explicitly asked. The pivot to Tauri shell phases is underway:
-**Phase 4 is now fully done** (both the tools/tool-calling loop from Round
-1 and the scheduled-capture/off-task-chide loop from Round 2), **Phase 9
-is fully done** (frontend confirmed on the user's real machine this
-session). Next priorities are Phase 5, Phase 6, and Phase 11 — none
-started yet. See "What's next" below.
+1. **Merge may still be blocked.** The user's last `git merge` aborted because
+   their working tree had local edits to `src-tauri/Cargo.toml` and
+   `src-tauri/Cargo.lock` (cause unknown -- possibly the Tauri CLI rewriting
+   the manifest, or a plain `cargo` lock update). Ask whether the merge went
+   through and, if they saved it, what `git diff src-tauri/Cargo.toml` showed.
+2. **Their local `orchestrator/config.yaml` needs two sections** the code now
+   requires (missing = `KeyError` at startup; this already bit them once):
+   `task_guide:` (`capture_interval_seconds: 90`, `idle_timeout_seconds: 1800`)
+   and `ocr_watch:` (`comment_interval_seconds: 240`). Templates are in
+   `config.example.yaml`.
+3. **Collect results on what was built but never verified on their machine:**
+   - *Orphaned processes (Rust, never compiled):* the Tauri terminal should print
+     `[luna] kill-on-close job object ACTIVE`; after End Task / Ctrl+C,
+     `netstat -ano | findstr ":9880 :8765"` should be empty. A
+     `startup sweep: killed stale python process` line means it cleared an old
+     orphan. If `cargo` errors, get the message -- `install_kill_on_close_job`,
+     `kill_stale_listeners`, `is_python_process` are the new unverified code.
+   - *`look_intent.py`:* "look at my screen" should log `[luna] look: screen -> ...`.
+   - *Task classifier:* "use OCR" / "I'm playing X" must no longer start a task.
+   - *The open bug below.*
 
-This session also confirmed, by directly asking rather than assuming, that
-every item the previous freeze-checkpoint handoff had flagged as
-uncertain came back resolved: round 15's sandbox bundle was merged and
-tested, Phase 4's vision-tools retest passed, and Phase 9's frontend looks
-and works right. The previously-flagged `config.yaml`-tracked-in-git issue
-is also already fixed on the user's end (gitignored, with
-`config.example.yaml` as the template) — verified against the actual git
-history, not just taken on faith.
+## Open bug (top priority once the above is checked)
 
-## Current state
+**Her replies cut off mid-sentence on their own; the user did not press stop.**
+Not root-caused. Diagnostics were added (`done=` / `done_reason=` in the
+per-turn log line, a WARNING on abnormal stream end, a catch-all that prints a
+traceback in `_run_turn`). Have them reproduce it, then read `orchestrator.log`:
+`WARNING: LLM reply ended abnormally` = Ollama/model side (suspect: ambient
+vision calls from Task Guide / Continuous OCR competing with chat on one GPU);
+`turn failed with an unexpected error` + traceback = this app. Full reasoning in
+`docs/DECISIONS.md` ("Open bug"). Don't re-theorize before reading those lines.
 
-**The product:** a fully local, offline-capable desktop companion —
-Tauri shell, a 3D VRM avatar (three.js + `@pixiv/three-vrm`), a Python
-orchestrator driving a local LLM/TTS/STT stack, persistent SQLite memory,
-and both on-demand and scheduled vision tools. Flagship behavior is Task
-Guide Mode: she watches what you're doing and nudges you back on track
-without being asked, and doesn't act for you (except the shell's Work
-Mode, a deliberate later exception — Phase 11).
+## State
 
-**Phase status** (✅ done and confirmed on the user's machine · 🔶 built,
-partially verified, or awaiting on-machine confirmation · ⬜ not started —
-full detail always in `docs/ROADMAP.md`):
+Phases 0-4, 7, 8, 9 done and confirmed on the user's machine. Phase 10 (sandbox
+apartment) is frozen by their decision -- don't touch `sandbox.ts`,
+`src/apartment/`, `camera-modes.ts`, `postfx.ts` unless asked. Phases 6 and 11
+not started; Phase 5 camera built and user-tested, game-context awareness not.
 
-| Phase | What | Status |
-|---|---|---|
-| 0 | Spec | ✅ |
-| 1 | Shell MVP (Tauri window, tray, hotkey) | ✅ |
-| 2 | LLM brain online | ✅ |
-| 2.5 | Voice I/O (GPT-SoVITS TTS, faster-whisper STT) | ✅ |
-| 3 | Persistent memory (SQLite + sqlite-vec) | ✅ |
-| 4 | Vision tools + Task Guide Mode (tools + scheduled loop, both halves) | ✅ **— confirmed in sandbox this session, real-machine retest of Round 2 is the one open item, see below** |
-| **5** | **Camera + game-assist polish** | ⬜ **— not started, next priority** |
-| **6** | **Personality & perf pass** | ⬜ **— not started** |
-| 7 | VRM avatar migration (replaced Live2D) | ✅ |
-| 8 | Emotion system + expression control | ✅ |
-| 9 | UI overhaul (pastel reskin + conversation log) | ✅ **— confirmed on the user's real machine this session** |
-| 10 | Environments (the sandbox apartment) | 🔶 — **frozen as of round 15, see below** |
-| **11** | **Work Mode (shell can act, not just advise)** | ⬜ **— not started, fully scoped/approved** |
+Quick-action menu (the `+` button), all tested by the user except as noted:
+Temp Chat (works), Camera (works; red-dot tray indicator), Upload Image/File
+(works, attach-then-send), Continuous OCR (works; commented correctly on a
+wallpaper), Conversation Log + Cycle Test Expression (moved in from the HUD).
+**Live Voice Chat and Agent Mode are still disabled "Soon" rows.** New logo and
+the small flat status dot (colors sampled from the user's reference) are in.
 
-## What's next
+## Queue, roughly in order
 
-1. **Real-machine retest of Phase 4 Round 2** (the scheduled-capture/
-   off-task-chide loop just built this session). Everything that doesn't
-   need a real display or a live Ollama server has full pytest coverage
-   (`orchestrator/test_task_guide.py`, plus dispatch tests in
-   `tools/test_tools.py` — 90 tests total passing) — but the loop's
-   actual timing, whether `qwen3.5:9b` reliably produces the requested
-   on/off-task JSON, and whether the chide reads as natural rather than
-   naggy are all genuinely unverified. See `docs/DECISIONS.md`'s "Phase 4
-   Round 2" entry for the full design reasoning and open questions.
-   **Before this can even run: the user's local `config.yaml` needs a new
-   `task_guide:` section added** (copy from `config.example.yaml`'s
-   template) — the orchestrator will fail to start with a `KeyError`
-   without it. This is a breaking config change, not optional.
-2. **Phase 5** (camera tool, game-context awareness) and **Phase 6**
-   (personality/perf pass, voice tuning) — not started, ordering between
-   them is open.
-3. **Phase 11 (Work Mode)** — fully scoped and user-approved already (see
-   `docs/ROADMAP.md`'s Phase 11 entry for the exact safety scaffolding
-   agreed on), just not started.
+- **Agent Mode:** planning conversation *before any code* -- it reverses the
+  "observe-and-advise only" constraint in `CLAUDE.md`; needs a confirmation
+  design that can't be bypassed by on-screen text, a clear definition of
+  "modifying," and a cursor mechanism. The user wants hard confirmation on file
+  changes (example task: "open browser and pull some cat pics").
+- **Live Voice Chat:** a new architecture (voice-activity detection instead of
+  push-to-talk, and she initiates speech). Not a toggle.
+- **Upload gaps:** PDF, Word, and video (mp4) are deliberately unsupported.
+- Task Guide / OCR interval tuning; temp-mode resets on websocket reconnect
+  (known gap); Phase 5 game-context awareness; Phases 6 and 11.
 
-## What was built this session
+## Hard-won lessons (details in `docs/DECISIONS.md`)
 
-Phase 4 Round 2, in full — see `docs/DECISIONS.md`'s "Phase 4 Round 2"
-entry for the complete design reasoning (why a tool instead of a tag
-mechanism, why task state is module-level not per-connection, why the
-loop is nested inside `ws_endpoint`, the idle-timeout-silently-drops
-choice, etc.), and `docs/ROADMAP.md`'s Phase 4 entry for the summary.
-Short version: `orchestrator/task_guide.py` (state machine + VLM-based
-screen comparison), a third tool (`set_active_task`), a new
-`task_guide:` config section, and `app.py`'s background loop that
-actually runs the periodic check and speaks an in-character chide when
-it finds drift.
+- **qwen3.5:9b is reliable at "read a short prompt, emit one JSON object" and
+  unreliable at "decide mid-reply whether to call a tool."** Proven three times
+  (`set_active_task`, camera re-invocation, `capture_screen`). Where intent is
+  unambiguous, decide in Python (classifier or regex gate), keep native
+  tool-calling only as a fallback. Don't try prompt-strengthening first again.
+- The sandbox has no cargo, GPU, browser, or Ollama. Rust, vision, TTS and
+  anything timing-related are only ever verified by the user's real machine --
+  say "unverified" plainly, and don't reason your way to "confirmed."
+- Orphaned GPT-SoVITS on port 9880 recurred three times; the fix is OS-level
+  (Job Object + startup sweep), not more detection. The user closes Luna with
+  End Task / Ctrl+C, not tray Quit.
+- A "make it look like X" request with no attachment: build the smallest literal
+  thing, not an embellished one (the orb cost an extra round).
 
-This session's changes have been committed on `main` locally
-(`4f0beb1`) and handed over as a bundle — same no-direct-push-access
-workflow as every prior session, see "Repo/git housekeeping" below.
+## Working notes
 
-## Phase 10 (frozen): sandbox apartment status, for reference
-
-Round 12 replaced the entire procedural apartment (hand-built walls/
-furniture/materials) with a prebuilt `.glb` model
-(`public/apartment/twokinds_modern_trio_apartment.glb`, gitignored,
-Sketchfab-sourced, **licensing not independently confirmed as reusable —
-still an open item if this work ever resumes**). Rounds 13-15 were real-
-usage bugfix passes: lighting, a wall/furniture collision system
-(`three-mesh-bvh`), a stuck-detection workaround for the lack of real
-pathfinding, doors found and re-added by geometric mesh-shape search, and
-confirmation this specific model has no ceiling geometry at all.
-**Round 15's fixes (pizza texture, doors, stuck-detection) are confirmed
-merged and tested on the user's machine** — no longer an open question,
-unlike the previous handoff.
-
-If/when sandbox work resumes: real room boundaries and furniture-anchor
-positions are still unknown (the model's mesh names are generic,
-`Object_0`/`Object_1`/...) — round 15's geometric bounding-box search
-technique could plausibly extend to finding furniture anchors too,
-untried. Full history: `docs/DECISIONS.md`'s round 9 through round-15
-entries, in order.
-
-## Repo/git housekeeping
-
-No direct push access to the user's GitHub from this sandbox — work
-leaves as a git bundle, applied via `git fetch <bundle> main:main-mirror
-&& git merge main-mirror && git push origin main`. This session's bundle
-covers only Phase 4 Round 2 (docs + `orchestrator/` — no frontend/Rust
-changes, no new dependency, so no `npm install` needed after merging this
-one).
-
-Reminder for the user: after merging, add a `task_guide:` section to the
-local (gitignored) `orchestrator/config.yaml` — see "What's next" above.
+- The user's merge routine is three PowerShell lines per bundle, in this form:
+  `git fetch "C:\Users\User\Downloads\<name>.bundle" main:main-mirror`, then
+  `git merge main-mirror`, then `git push origin main`. Repo is at
+  `D:\AI\Project Luna\luna-phase1\luna`. There is no direct push from the sandbox;
+  work ships as a git bundle in `/mnt/user-data/outputs`.
+- The user wants **lean docs**: decisions + why + lessons only, no per-session
+  narrative. `CLAUDE.md` stays short; history goes in `DECISIONS.md`, status in
+  `ROADMAP.md`. Both were trimmed once already (about 5,800 -> about 2,900 lines
+  combined) -- don't let them re-bloat.
+- Tests: `orchestrator/` pytest (161 passing), `npx tsc --noEmit`, `npx vite
+  build`. The frontend has no test runner; `ws_endpoint`'s message loop has no
+  direct tests (a known, long-standing gap, not a regression).
+- The sandbox's `orchestrator/config.yaml` is a gitignored local copy of the
+  example, only there so tests import `config.py`.
 
 ## Ask the user, don't assume
 
-Per the working agreement established last freeze checkpoint: **if
-anything in this file or the docs seems out of sync with what's actually
-working on the user's end, ask rather than assume the docs are right.**
-Concretely, worth confirming at the start of the next session:
-- Has this session's bundle actually been merged and pushed?
-- Has Phase 4 Round 2 (the scheduled-capture loop) been tried on the
-  real machine yet, even informally? This handoff assumes "not yet."
-- Was the `task_guide:` config section actually added to the user's real
-  `config.yaml`? Without it the orchestrator won't start.
-- Any local changes made directly on the user's machine (not through a
-  bundle from this sandbox) that these docs wouldn't know about at all.
-
-## Docs map, for anything this snapshot doesn't cover
-
-`CLAUDE.md` (rolling status log + working agreement) → `docs/ROADMAP.md`
-(phase-by-phase scope/status) → `docs/DECISIONS.md` (why non-obvious
-things are the way they are) → `docs/ARCHITECTURE.md` (system design) →
-`docs/MODELS.md` (which LLM/TTS to run) → `README.md` (human setup/run
-instructions). This file is the fastest of the six to read and the
-least authoritative — treat it accordingly.
+Did the last bundle merge and push? Did the app build (any Rust error text)? Did
+the confirm recipe in README's troubleshooting section show what it should? Any
+local edits made on their machine that these docs wouldn't know about?

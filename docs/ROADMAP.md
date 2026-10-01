@@ -363,6 +363,12 @@ for TTS cloning are on the user to confirm, not something this doc
 tracks.
 
 Still open:
+- **Replies cutting off mid-sentence on their own** (user did not press
+  stop) -- not root-caused; diagnostics added, see `docs/DECISIONS.md`'s
+  "Open bug" entry for what to look for in `orchestrator.log` first.
+- Unverified on the user's machine: the Windows Job Object + startup sweep
+  (orphaned GPT-SoVITS/orchestrator), `look_intent.py` (explicit look
+  requests), Continuous OCR's tuning, and Upload/Camera under real use.
 - Task Guide Mode tuning: whether `capture_interval_seconds` (90s
   default) and the chide's tone feel right in real use — not yet
   meaningfully tested (see Phase 4's own entry).

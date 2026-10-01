@@ -559,6 +559,19 @@ Still applies from Phase 1 -- unchanged:
   9880 entry above), and a hard close skips the orchestrator's end-of-session
   memory consolidation -- use the tray icon's Quit when you want the session
   remembered.
+- **Confirming the stale-process fix actually works (do this once):** launch
+  with `npm run tauri dev` and look in the *Tauri terminal* (not the log
+  files) for these lines:
+  1. `[luna] kill-on-close job object ACTIVE ...` -- the Windows-level fix is
+     live. If you see `WARNING: couldn't set up the kill-on-close job object`
+     instead, paste it; the sweep below still protects you.
+  2. `[luna] startup sweep: killed stale python process (pid N) ...` -- only
+     appears if something stale was actually found and cleared (expected the
+     first launch after updating if an old orphan was still around). No line =
+     nothing stale existed, which is the good case.
+  Then close Luna with End Task (or Ctrl+C), wait a few seconds, and run
+  `netstat -ano | findstr ":9880 :8765"`. **Empty output = confirmed.** If
+  anything is still listening, paste the output.
 - **`Failed to unregister class Chrome_WidgetWin_0. Error = ####` printed
   to the console on quit:** a known, widely-reported WebView2/Chromium
   quirk on Windows, not specific to this project -- shows up across

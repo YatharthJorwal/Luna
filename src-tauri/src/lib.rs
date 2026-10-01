@@ -5,9 +5,10 @@
 // indicator code, and everything else through that point -- the file is
 // no longer "unverified from memory," but new additions since then still
 // start in that same unverified state until their own first real build.
-// The `gpt_sovits_still_alive` check inside spawn_backend_processes
-// (Child::try_wait() on the tracked GPT-SoVITS process) is the newest
-// such addition and has not been through a real build yet.
+// Newest additions, not yet through a real build: the Job Object
+// (install_kill_on_close_job), the startup sweep (kill_stale_listeners /
+// is_python_process), and the `gpt_sovits_still_alive` try_wait check in
+// spawn_backend_processes.
 
 use std::collections::HashMap;
 use std::io::Write;
@@ -131,7 +132,14 @@ fn install_kill_on_close_job() {
         Ok(job)
     })();
     match result {
-        Ok(job) => std::mem::forget(job),
+        Ok(job) => {
+            eprintln!(
+                "[luna] kill-on-close job object ACTIVE -- Windows will kill \
+                 GPT-SoVITS and the orchestrator if Luna dies for any reason \
+                 (End Task, Ctrl+C, crash, tray Quit)."
+            );
+            std::mem::forget(job);
+        }
         Err(e) => eprintln!(
             "[luna] WARNING: couldn't set up the kill-on-close job object ({e}); \
              children may be orphaned if Luna is closed via End Task or Ctrl+C \
@@ -277,6 +285,13 @@ fn spawn_backend_processes(children: Arc<Mutex<Vec<(String, Child)>>>) {
 
     let config = read_launcher_config();
 
+    // Startup sweep -- see kill_stale_listeners' own doc comment. Must run
+    // before anything below spawns, so the fresh processes bind cleanly.
+    if config.contains_key("GPT_SOVITS_DIR") {
+        kill_stale_listeners(9880, "GPT-SoVITS");
+    }
+    kill_stale_listeners(8765, "orchestrator");
+
     if let Some(sovits_dir) = config.get("GPT_SOVITS_DIR") {
         // Spawning runtime\python.exe directly, not through `cmd /C`, is
         // deliberate -- see the quit handler's comment on why that matters
@@ -394,6 +409,105 @@ fn spawn_backend_processes(children: Arc<Mutex<Vec<(String, Child)>>>) {
             &orchestrator_children,
         );
     });
+}
+
+/// True only for Python interpreters -- the one kind of process the startup
+/// sweep below is willing to kill. Luna's own children (GPT-SoVITS's embedded
+/// python.exe, the orchestrator's venv python.exe) are all Python, so this
+/// is enough to clean up Luna's own orphans without ever touching, say, a
+/// browser or a game that happens to be sitting on the same port.
+fn is_python_process(pid: u32) -> bool {
+    let out = Command::new("tasklist")
+        .args(["/FI", &format!("PID eq {pid}"), "/FO", "CSV", "/NH"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output();
+    match out {
+        Ok(o) => {
+            let text = String::from_utf8_lossy(&o.stdout).to_lowercase();
+            text.contains("\"python.exe\"") || text.contains("\"pythonw.exe\"")
+        }
+        Err(_) => false,
+    }
+}
+
+/// **UNVERIFIED -- no Rust toolchain in the sandbox this was written in.**
+/// Startup sweep: before spawning anything, kill any stale Python process
+/// still LISTENING on `port` from a previous Luna run. This is the safety
+/// net behind the Job Object (install_kill_on_close_job): the Job Object
+/// stops *new* orphans, but this also clears ones left by older builds, by
+/// a Job Object that failed to install, or by anything else -- so a stale
+/// GPT-SoVITS can never again silently squat port 9880 and make a fresh
+/// launch fail to bind. Same manual steps the user had to do by hand
+/// (`netstat -ano | findstr :9880`, `taskkill /PID <pid> /F`), automated,
+/// with `/T` so a launcher stub's real-interpreter child dies with it.
+/// Deliberately refuses to kill non-Python holders (see is_python_process)
+/// and says so instead of failing silently.
+fn kill_stale_listeners(port: u16, what: &str) {
+    let output = match Command::new("netstat")
+        .args(["-ano", "-p", "TCP"])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!(
+                "[luna] startup sweep: couldn't run netstat ({e}); not checking port {port} ({what})"
+            );
+            return;
+        }
+    };
+    let text = String::from_utf8_lossy(&output.stdout);
+    let suffix = format!(":{port}");
+    let mut pids: Vec<u32> = Vec::new();
+    for line in text.lines() {
+        // Proto  Local Address  Foreign Address  State  PID
+        let cols: Vec<&str> = line.split_whitespace().collect();
+        if cols.len() >= 5 && cols[0] == "TCP" && cols[1].ends_with(&suffix) && cols[3] == "LISTENING"
+        {
+            if let Ok(pid) = cols[4].parse::<u32>() {
+                if !pids.contains(&pid) {
+                    pids.push(pid);
+                }
+            }
+        }
+    }
+
+    let mut killed_any = false;
+    for pid in pids {
+        if pid == std::process::id() {
+            continue;
+        }
+        if !is_python_process(pid) {
+            eprintln!(
+                "[luna] startup sweep: port {port} ({what}) is held by pid {pid}, which isn't a \
+                 Python process -- leaving it alone. Free that port yourself or the {what} \
+                 won't be able to start."
+            );
+            continue;
+        }
+        let result = Command::new("taskkill")
+            .args(["/PID", &pid.to_string(), "/F", "/T"])
+            .creation_flags(CREATE_NO_WINDOW)
+            .output();
+        match result {
+            Ok(o) if o.status.success() => {
+                killed_any = true;
+                eprintln!(
+                    "[luna] startup sweep: killed stale python process (pid {pid}) still \
+                     listening on port {port} ({what}) from a previous run."
+                );
+            }
+            _ => eprintln!(
+                "[luna] startup sweep: tried to kill stale python pid {pid} on port {port} \
+                 ({what}) but taskkill failed -- kill it manually."
+            ),
+        }
+    }
+    if killed_any {
+        // Give the OS a moment to actually release the socket so the fresh
+        // process's bind doesn't race the dying one's.
+        std::thread::sleep(Duration::from_millis(500));
+    }
 }
 
 /// Polls 127.0.0.1:<port> until something's listening, or gives up after
