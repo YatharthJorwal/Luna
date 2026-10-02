@@ -74,6 +74,20 @@ raw latency. Keep the seam in the code either way (a `persona.py` module the
 core pass output flows through) so splitting later is a small change, not a
 rewrite.
 
+## Context window
+
+Every native-Ollama call carries the same `options.num_ctx` (`llm.num_ctx`,
+default 8192) via `llm._ollama_options()`; a mismatch between calls makes
+Ollama reload the model. A turn's prompt is the persona prompt (~2.3k tokens)
++ tool schemas + the per-turn recall/hint block + history, so history is the
+only part that grows. Two guards in `context_budget.py` keep it bounded:
+`fit_messages()` drops the oldest non-system history from the copy sent to the
+model until prompt + reserved reply fit (the real `history` is untouched, so
+consolidation still sees everything), and `cap_unprompted()` keeps only the
+newest few Task Guide / OCR comments in history. Each turn's log line reports
+Ollama's real `prompt_tokens` / `gen_tokens` against `num_ctx`. Why this
+exists: `docs/DECISIONS.md`, "Reply cutoffs were the context window".
+
 ## Memory — durable across restarts, not just context
 
 SQLite file in the app's local data dir (e.g. `~/.local/share/<app>/memory.db`

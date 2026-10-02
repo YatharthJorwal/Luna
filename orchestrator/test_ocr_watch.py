@@ -177,3 +177,103 @@ def test_parse_watch_result_non_bool_comment_worthy_returns_none():
 def test_parse_watch_result_missing_summary_and_note_default_empty():
     result = ocr_watch._parse_watch_result('{"comment_worthy": false}')
     assert result == {"comment_worthy": False, "summary": "", "note": ""}
+
+
+# ---------------------------------------------------------------------------
+# Deterministic quiet rules -- the model said "worth a comment" on 12 of 15
+# checks in a real session, five times in a row about the identical summary.
+# ---------------------------------------------------------------------------
+
+SAME_SCREEN_PAIRS = [
+    # the literal consecutive summaries from the real log
+    ("debugging a Python application with an anime avatar", "Debugging a Python app with an anime avatar"),
+    ("Minecraft gameplay with anime avatar overlay", "Minecraft gameplay with anime avatar overlay"),
+    ("player mining wood in Minecraft with new recipe unlocked", "player mining wood in Minecraft with new recipe unlocked"),
+]
+DIFFERENT_SCREEN_PAIRS = [
+    ("player mining wood in Minecraft with new recipe unlocked", "player exploring a lush forest biome in Minecraft"),
+    ("Minecraft gameplay with anime avatar overlay", "Canva design interface with laptop mockup"),
+    ("Canva design interface with laptop mockup", "File explorer showing game-related folders and Unity files"),
+    ("Minecraft launcher settings with a cute anime avatar and luxury car wallpaper",
+     "player mining wood in Minecraft with new recipe unlocked"),
+]
+
+
+@pytest.mark.parametrize("a,b", SAME_SCREEN_PAIRS)
+def test_summaries_match_real_repeats(a, b):
+    assert ocr_watch.summaries_match(a, b, 0.6) is True
+
+
+@pytest.mark.parametrize("a,b", DIFFERENT_SCREEN_PAIRS)
+def test_summaries_match_real_changes_are_not_matches(a, b):
+    assert ocr_watch.summaries_match(a, b, 0.6) is False
+
+
+def test_summaries_match_empty_side_is_never_a_match():
+    assert ocr_watch.summaries_match("", "anything on screen", 0.6) is False
+    assert ocr_watch.summaries_match("anything on screen", "", 0.6) is False
+
+
+def _worthy(summary="a new thing", note="something funny"):
+    return {"comment_worthy": True, "summary": summary, "note": note}
+
+
+def test_decide_comment_speaks_for_a_genuinely_new_screen():
+    speak, why = ocr_watch.decide_comment(_worthy("Yahtzee game in progress"), "Canva design", 0.0, 120, 0.6)
+    assert speak is True and why == ""
+
+
+def test_decide_comment_model_said_no():
+    result = {"comment_worthy": False, "summary": "x", "note": ""}
+    assert ocr_watch.decide_comment(result, "", 0.0, 120, 0.6)[0] is False
+
+
+def test_decide_comment_needs_a_note_to_react_to():
+    assert ocr_watch.decide_comment(_worthy(note=""), "", 0.0, 120, 0.6)[0] is False
+
+
+def test_decide_comment_suppresses_an_unchanged_screen_even_if_model_says_yes():
+    speak, why = ocr_watch.decide_comment(
+        _worthy("Debugging a Python app with an anime avatar"),
+        "debugging a Python application with an anime avatar",
+        0.0, 120, 0.6,
+    )
+    assert speak is False and "same screen" in why
+
+
+def test_decide_comment_enforces_the_minimum_gap():
+    now = 10_000.0
+    speak, why = ocr_watch.decide_comment(_worthy("brand new"), "old", now - 30, 120, 0.6, now=now)
+    assert speak is False and "minimum gap" in why
+    speak, _ = ocr_watch.decide_comment(_worthy("brand new"), "old", now - 121, 120, 0.6, now=now)
+    assert speak is True
+
+
+def test_decide_comment_first_comment_of_a_watch_ignores_the_gap():
+    # last_comment_at == 0 means "never spoke this watch"
+    assert ocr_watch.decide_comment(_worthy("brand new"), "old", 0.0, 120, 0.6, now=5.0)[0] is True
+
+
+def test_mark_commented_records_time_only_while_active():
+    ocr_watch.mark_commented()
+    assert ocr_watch.get_state().last_comment_at == 0.0
+    ocr_watch.set_active(True)
+    ocr_watch.mark_commented()
+    assert ocr_watch.get_state().last_comment_at > 0.0
+
+
+def test_defer_check_restarts_the_clock_but_keeps_summary_and_last_comment():
+    ocr_watch.set_active(True)
+    ocr_watch.mark_checked("old screen")
+    ocr_watch.mark_commented()
+    commented = ocr_watch.get_state().last_comment_at
+    ocr_watch._state = ocr_watch.replace(ocr_watch._state, last_check_at=time.time() - 9999)  # noqa: SLF001
+    ocr_watch.defer_check()
+    state = ocr_watch.get_state()
+    assert ocr_watch.due_for_check(state, interval_seconds=60) is False
+    assert state.last_seen_summary == "old screen" and state.last_comment_at == commented
+
+
+def test_defer_check_is_a_noop_when_inactive():
+    ocr_watch.defer_check()
+    assert ocr_watch.get_state().active is False

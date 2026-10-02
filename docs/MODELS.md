@@ -19,6 +19,11 @@ pool is also shared with GPT-SoVITS and, during Task Guide Mode, whatever
 game is in the foreground. Worth designing for from the start rather than
 discovering it later:
 
+- Set the context window explicitly: `llm.num_ctx` (default 8192) in
+  `config.yaml`. Left unset, Ollama's server default applies and replies get
+  cut off with `done_reason: length` once the prompt outgrows it. A bigger
+  window costs VRAM (KV cache) on the same 12GB pool -- raise it to 16384
+  only if `nvidia-smi` shows headroom with GPT-SoVITS and a game running.
 - Run GPT-SoVITS on CPU. She only speaks in short bursts, so the latency hit
   is acceptable, and it frees the full 12GB for the LLM + game.
 - Idle/unload the model when the foreground app is a game and no request is

@@ -25,6 +25,16 @@ class LLMConfig:
     max_tokens: int
     api_style: str  # "ollama_native" | "openai"
     think: bool | None
+    # The context window (in tokens) sent to Ollama as options.num_ctx on
+    # EVERY call to the model -- chat, tool-calling, vision and the small
+    # background classifiers alike. It must be the same value everywhere:
+    # Ollama reloads the model whenever consecutive requests disagree on
+    # it. Defaulted (not required) so an older config.yaml without the key
+    # keeps loading; None means "don't send it, use the server's default"
+    # (which is how replies were silently cut off with done_reason
+    # 'length' once the history outgrew an unknown default -- see
+    # docs/DECISIONS.md). Only honored with api_style: ollama_native.
+    num_ctx: int | None = 8192
 
 
 @dataclass(frozen=True)
@@ -54,6 +64,12 @@ class STTConfig:
 class SessionConfig:
     max_history_turns: int
     user_name: str
+    # How many unprompted comments (Task Guide chides + Continuous OCR
+    # remarks -- assistant turns with no user turn before them) are kept
+    # in history at once; older ones are dropped. They carry little
+    # information, flood the context, and stacked together they make the
+    # model invent a dialogue partner. Defaulted so old configs still load.
+    max_unprompted_in_history: int = 3
 
 
 @dataclass(frozen=True)
@@ -95,6 +111,19 @@ class OCRWatchConfig:
     # for this feature), down if genuinely interesting moments are being
     # missed.
     comment_interval_seconds: int
+    # Hard floor between two SPOKEN comments, enforced in code. The model
+    # was observed saying "worth a comment" on 12 of 15 checks, five times
+    # in a row about an unchanged screen, so the prompt alone can't be
+    # trusted to keep her quiet. All three keys below are defaulted so an
+    # older config.yaml keeps loading.
+    min_comment_gap_seconds: int = 120
+    # Two consecutive screen summaries whose content words overlap at least
+    # this much (Jaccard, 0-1) count as "the same screen" -> no comment.
+    same_screen_similarity: float = 0.6
+    # Skip ambient checks entirely while a Task Guide task is active: Task
+    # Guide already watches the screen, and both commenting on the same
+    # screen within a minute is redundant (and doubles the vision calls).
+    pause_during_task: bool = True
 
 
 @dataclass(frozen=True)

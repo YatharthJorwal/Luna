@@ -160,6 +160,13 @@ interface WsClientOptions {
    * and surface as "camera isn't armed" to the model, same as if it
    * genuinely weren't armed. */
   onRequestCameraFrame?: () => void;
+  /** Fired every time the socket opens, first connect and every reconnect.
+   * The shell uses it to resend per-connection UI state (Temp Chat) and the
+   * Continuous OCR toggle: sendSetTempMode/sendSetOcrWatch silently drop
+   * their message when the socket isn't OPEN, so a toggle clicked while the
+   * orchestrator was still starting (or reconnecting) showed "On" in the
+   * menu while the backend never heard about it. */
+  onOpen?: () => void;
 }
 
 export class WsClient {
@@ -177,6 +184,7 @@ export class WsClient {
 
     this.socket.addEventListener("open", () => {
       this.opts.onStateChange("connected");
+      this.opts.onOpen?.();
     });
 
     this.socket.addEventListener("message", (event) => {
@@ -310,10 +318,8 @@ export class WsClient {
    * handled here: temp_mode lives server-side per *connection*, so a
    * reconnect (this class's own scheduleReconnect below) starts a fresh
    * connection with temp_mode back at false, even if the UI still shows
-   * it on -- there's no onopen hook here yet to resend it automatically.
-   * Low-stakes for now (a dropped connection mid Temp Chat is rare and
-   * the user would see the toggle re-click still work), but worth fixing
-   * properly if that turns out to actually happen in practice. */
+   * it on. Fixed via the onOpen option: the shell resends its Temp Chat
+   * state every time the socket opens. */
   sendSetTempMode(enabled: boolean): void {
     if (this.socket?.readyState !== WebSocket.OPEN) return;
     this.socket.send(JSON.stringify({ type: "set_temp_mode", enabled }));

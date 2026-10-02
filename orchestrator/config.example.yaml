@@ -37,6 +37,18 @@ llm:
   # "ollama_native" (see above). Set to null to not send the field at all
   # (e.g. if you swap to a model that errors on an unrecognized param).
   think: false
+  # Context window in tokens, sent to Ollama on EVERY call to the model
+  # (chat, tools, vision, background classifiers -- keep it one value:
+  # Ollama reloads the model when two requests disagree). Not setting it
+  # leaves the server's default, which was too small once the persona
+  # prompt + tool schemas + memory block + history grew: replies were cut
+  # off after a few words with done_reason "length" (docs/DECISIONS.md).
+  # 8192 fits comfortably on the 12GB 3060 next to GPT-SoVITS; raise to
+  # 16384 only if `nvidia-smi` shows headroom. null = don't send it.
+  # Only honored with api_style "ollama_native" (for "openai", set
+  # OLLAMA_CONTEXT_LENGTH on the server instead). app.py trims the oldest
+  # history to fit this window before each call (context_budget.py).
+  num_ctx: 8192
 
 tts:
   # "pyttsx3" (current active default) or "gpt_sovits" (flip this once your
@@ -101,6 +113,10 @@ session:
   # the LLM or used in the persona prompt; purely a frontend label pulled
   # through app.py's `get_log` response.
   user_name: "Yatharth"
+  # How many unprompted comments (Task Guide chides + Continuous OCR
+  # remarks) stay in the LLM's history at once; older ones are dropped.
+  # They add little and flood the context. Optional (defaults to 3).
+  max_unprompted_in_history: 3
 
 memory:
   # Phase 3 -- persistent memory (facts + episode summaries), surviving
@@ -152,3 +168,14 @@ ocr_watch:
   # up if it ever feels naggy, down if genuinely interesting moments are
   # being missed.
   comment_interval_seconds: 240
+  # Hard floor, enforced in code, between two SPOKEN remarks. Only matters
+  # when comment_interval_seconds is set below it (e.g. 30 for testing).
+  # Optional (defaults to 120).
+  min_comment_gap_seconds: 120
+  # Two consecutive screen summaries sharing at least this fraction of
+  # their content words (0-1) count as "the same screen" and never get a
+  # remark, whatever the model said. Optional (defaults to 0.6).
+  same_screen_similarity: 0.6
+  # Skip ambient checks while a Task Guide task is active (Task Guide is
+  # already watching the screen). Optional (defaults to true).
+  pause_during_task: true

@@ -30,16 +30,18 @@ that; every bit of it already existed in `docs/DECISIONS.md`/
 migrated — nothing was lost, check either file if something here seems to
 reference history you can't find.)
 
-**Where things stand:** Phases 0-4, 7, 8, 9 done and confirmed on the user's
-real machine (Windows, RTX 3060 12GB). Phase 5 (camera) and the quick-action
-menu (Temp Chat, Camera, Upload Image/File, Continuous OCR) are built and were
-user-tested; Live Voice Chat and Agent Mode are still disabled placeholders
-(Agent Mode needs a dedicated safety/planning conversation before any code --
-it reverses the "observe-and-advise" constraint above). Phase 10 (sandbox
-apartment) is frozen by explicit user decision; Phases 6 and 11 not started.
-Latest fixes (Job Object + startup sweep for orphaned children, deterministic
-look-requests, reply-cutoff diagnostics) are **built but unverified on the
-user's machine**. `handoff.md` has the fastest on-ramp and the open-items list.
+**Where things stand:** Phases 0-4, 7, 8, 9 and the Phase 9.5 shell
+reliability round are done and confirmed on the user's real machine (Windows,
+RTX 3060 12GB), including Task Guide Mode, Continuous OCR, the quick-action
+menu (Temp Chat, Camera, Upload Image/File), voice input, and the Job Object
+fix for orphaned children. The Phase 9.5 closing bundle (context-window fix
+for mid-sentence reply cutoffs, OCR quiet rules, trailing-"look" and
+follow-up look requests) is **sandbox-verified only** until the user's next
+session. Phase 5 game-context awareness and Phase 6 are not started; Phase 10
+(sandbox apartment) is frozen by explicit user decision; Phase 11 (Work Mode
+/ Agent Mode) needs a dedicated safety/planning conversation before any code;
+Phase 12 (Live Voice Chat) is next, in planning. `handoff.md` has the fastest
+on-ramp and the open-items list.
 
 ## Docs map
 

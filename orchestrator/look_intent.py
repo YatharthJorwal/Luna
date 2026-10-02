@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import re
 import sys
+import time
 
 import camera
 import llm
@@ -75,13 +76,43 @@ _GENERIC_RE = re.compile(
     re.IGNORECASE | re.VERBOSE,
 )
 
+# A bare trailing "look" ("i am playing minecraft look") is a request to
+# look at the screen, but "look" is common speech, so it only counts at the
+# very end of a short message and never after a negation or a first-person
+# "I'll/let me" (the user looking, not asking her to).
+_TRAILING_LOOK_RE = re.compile(r"\b(?:take\s+a\s+|have\s+a\s+)?look\W*$", re.IGNORECASE)
+_TRAILING_LOOK_GUARD_RE = re.compile(
+    r"(?:n['’]?t|not|never|\bno|\bdont|\bcant|\bwont|i['’]?ll|\bill|i\s+will|let\s+me|lemme"
+    r"|we['’]?ll|i['’]?m\s+(?:gonna|going\s+to)|gonna|going\s+to)\s*$",
+    re.IGNORECASE,
+)
+_TRAILING_LOOK_MAX_CHARS = 100
+
+# Bare follow-ups that only make sense right after she looked ("now what is
+# it", "and now?", "what about now"). Matched against the WHOLE message and
+# only inside the follow-up window, and only when the last look was the
+# screen -- a stray "now?" must never reach for the camera.
+_FOLLOWUP_RE = re.compile(
+    r"""
+    ^\W*(?:(?:and|ok|okay|so|well|hm+|hey)\W+)?
+    (?:
+        now(?:\W+what(?:['’]?s|\ is)\ (?:it|that|this))?
+      | what(?:['’]?s|\ is)\ (?:it|that|this)(?:\ now)?
+      | (?:what|how)\ about\ now
+    )\W*$
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+FOLLOWUP_WINDOW_SECONDS = 240
+
 _last_target = "screen"
+_last_look_at = 0.0  # time.monotonic() of the last look she acted on
 
 
-def detect_look_target(user_text: str) -> str | None:
+def detect_look_target(user_text: str, now: float | None = None) -> str | None:
     """"screen", "camera", or None. Pure and synchronous -- no side effects
     (the last-target memory is only updated by maybe_look, once it actually
-    acts on a detection)."""
+    acts on a detection). `now` (monotonic seconds) is injectable for tests."""
     # Uploaded files/images arrive as a synthetic "(shared a ...)" user_text
     # whose body can be anything -- a code file that happens to contain
     # "look at the screen" must not trigger a capture.
@@ -93,6 +124,18 @@ def detect_look_target(user_text: str) -> str | None:
         return "screen"
     if _GENERIC_RE.search(user_text):
         return _last_target
+    if len(user_text) <= _TRAILING_LOOK_MAX_CHARS:
+        trailing = _TRAILING_LOOK_RE.search(user_text.strip())
+        if trailing and not _TRAILING_LOOK_GUARD_RE.search(user_text.strip()[: trailing.start()]):
+            return "screen"
+    now = time.monotonic() if now is None else now
+    if (
+        _last_target == "screen"
+        and _last_look_at
+        and now - _last_look_at <= FOLLOWUP_WINDOW_SECONDS
+        and _FOLLOWUP_RE.match(user_text.strip())
+    ):
+        return "screen"
     return None
 
 
@@ -103,11 +146,12 @@ async def maybe_look(user_text: str, websocket) -> str | None:
     failure (capture failed, camera not armed, vision model unreachable) --
     those become a hint telling her to say so plainly instead of guessing,
     which is the whole failure this exists to prevent."""
-    global _last_target
+    global _last_target, _last_look_at
     target = detect_look_target(user_text)
     if target is None:
         return None
     _last_target = target
+    _last_look_at = time.monotonic()
 
     where = "through their webcam" if target == "camera" else "at their screen"
     try:
@@ -137,7 +181,9 @@ async def maybe_look(user_text: str, websocket) -> str | None:
             "would have seen."
         )
 
-    print(f"[luna] look: {target} -> {description[:80]!r}", file=sys.stderr)
+    # 300 chars, not 80: the short version made it impossible to tell
+    # whether a wrong-sounding reply was the vision model's fault or hers.
+    print(f"[luna] look: {target} -> {description[:300]!r}", file=sys.stderr)
     return (
         f"You just looked {where} right now, because they asked. What you "
         f"saw: {description} Answer using only this -- do not add details "

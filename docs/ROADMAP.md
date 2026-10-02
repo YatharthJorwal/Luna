@@ -174,8 +174,12 @@ awaiting on-machine confirmation · ⬜ not started)
   display/no real Ollama in this sandbox" limit as everything else
   vision-related: the loop's timing, the VLM's actual on/off-task
   judgment quality, whether the new classifier actually fires
-  reliably, and whether a chide reads as natural rather than naggy are
-  all **not yet verified on the user's real machine.**
+  reliably, and whether a chide reads as natural rather than naggy were
+  unverified when written. **Confirmed since on the user's machine
+  (Oct 2026):** the classifier started a task from "working on this canva
+  template... keep a watch on me" (and not from "i am playing minecraft"),
+  and the next three checks correctly flagged YouTube / a Yahtzee game as
+  off-task, each answered with an in-character chide.
 - 🔶 **Phase 5 — Camera + game-assist polish.** Gated camera tool built
   (round 1) -- `capture_camera` follows `capture_screen`'s exact "pull,
   not push" tool-calling shape, per `docs/ARCHITECTURE.md`'s own spec:
@@ -191,10 +195,9 @@ awaiting on-machine confirmation · ⬜ not started)
   `resolve_pending_frame`, a new `request_camera_frame`/`camera_frame`
   message pair) rather than capturing directly like `capture_screen`
   does. 11 new tests (`orchestrator/test_camera.py` + dispatch tests in
-  `tools/test_tools.py`), 111 total passing. **Not yet verified on the
-  user's real machine** — the Rust side especially (a new tray icon
-  swap command, a new Cargo feature) has never been compiled, same "no
-  Rust toolchain in this sandbox" limit as every other `lib.rs` change.
+  `tools/test_tools.py`), 111 total passing. **Confirmed on the user's real machine:** camera capture, the
+  permission flow and the red-dot tray indicator (the Rust compiled and
+  ran).
   Still open: light game-context awareness (e.g. active-window
   detection), expression/emotion mapping refined.
 - ⬜ **Phase 6 — Personality & perf pass.** Optional split into two-pass
@@ -290,6 +293,23 @@ awaiting on-machine confirmation · ⬜ not started)
   closes the "frontend only structurally verified" gap noted above.
   Full reasoning: `docs/DECISIONS.md`'s "Phase 9: pastel reskin + persistent
   conversation-log panel" entry.
+- 🔶 **Phase 9.5 — Shell reliability round (closed; one unconfirmed bundle).**
+  The quick-action menu (Temp Chat, Camera, Upload, Continuous OCR, log) and
+  everything it exposed. Confirmed on the user's machine: Job Object +
+  startup sweep (ports 9880/8765 clear after Ctrl+C and End Task), explicit
+  look requests (`look_intent.py`), the task classifier, Task Guide Mode
+  end to end, Continuous OCR, voice input. Root-caused and fixed in the
+  closing bundle: replies cutting off mid-sentence were the **context
+  window** filling (`llm.num_ctx` on every call, size-based history fitting,
+  a cap on stacked unprompted comments, token counts in the turn log), and
+  Continuous OCR commenting on an unchanged screen (quiet rules moved into
+  code, paused during Task Guide). Also closed: bare trailing "look" and
+  screen follow-ups, the shell resending toggle state on reconnect. That
+  bundle is sandbox-verified only (240 tests, `tsc`, `vite build`); the
+  first real session confirms it -- `prompt_tokens=` / `num_ctx=` appear in
+  the per-turn log line. Reasoning: `docs/DECISIONS.md` ("Reply cutoffs were
+  the context window", the Continuous OCR bullet). Nothing further planned
+  in this phase.
 - 🔶 **Phase 10 — Environments.** Two of three requested pieces (VR was
   scoped out by the user as currently unachievable): (1) desktop companion
   mode (draggable corner presence, cursor interaction) — **not started**;
@@ -352,6 +372,32 @@ awaiting on-machine confirmation · ⬜ not started)
   context-budget lever, not a safety mechanism. Nothing in this phase is
   built yet — full reasoning in `docs/DECISIONS.md`'s "Reversing
   'observe-and-advise only' — Work Mode, Phase 11" entry.
+- ⬜ **Phase 12 — Live Voice Chat (planning stage, nothing built).** The
+  disabled "Live Voice Chat" menu row. Today's voice is push-to-talk: click
+  or F9 records one MediaRecorder clip (`src/mic.ts`), sent as `user_audio`
+  and transcribed by faster-whisper (`small`, CPU int8; ~1.7 s for a short
+  clip) into the same `_run_turn` as typed text; she answers sentence by
+  sentence through GPT-SoVITS and the frontend `SpeakQueue`; the stop button
+  cancels the turn and clears the queue. She already speaks unprompted
+  (Task Guide, Continuous OCR) under an `ambient_speak_lock`. Live chat
+  replaces "the user presses a key" with voice-activity detection and has to
+  make her own speech and the user's coexist. **Reusable as is:** STT call,
+  `_run_turn`, chunked speak pipeline, stop/cancel path, the ambient lock,
+  `temp_mode`. **Decide before any code** (a planning conversation, like
+  Phase 11): (1) half-duplex first (mic muted or VAD paused while she
+  speaks) versus true barge-in -- recommended order is half-duplex, then
+  barge-in via the existing stop path; (2) an always-open mic is a new
+  privacy surface: default off, an explicit tray/HUD indicator like the
+  camera's, a mute hotkey, nothing recorded to disk; (3) where VAD runs
+  (browser versus orchestrator) and which model -- it must be CPU-cheap,
+  the 12 GB VRAM is already spoken for; (4) echo of her own voice into the
+  mic (test whether the webview's `echoCancellation` is enough before
+  designing around it); (5) one arbiter for who may speak next, so ambient
+  remarks never talk over the user and a user utterance cancels or defers
+  them; (6) whether STT moves to GPU (the cuBLAS DLL blocker, Phase 2.5).
+  **Measure first:** add per-stage timings to the log (end of speech ->
+  transcript -> first LLM token -> first TTS audio) -- GPT-SoVITS is the
+  likely bottleneck and decides how "live" it can feel.
 
 ## Open decisions
 
@@ -363,15 +409,16 @@ for TTS cloning are on the user to confirm, not something this doc
 tracks.
 
 Still open:
-- **Replies cutting off mid-sentence on their own** (user did not press
-  stop) -- not root-caused; diagnostics added, see `docs/DECISIONS.md`'s
-  "Open bug" entry for what to look for in `orchestrator.log` first.
-- Unverified on the user's machine: the Windows Job Object + startup sweep
-  (orphaned GPT-SoVITS/orchestrator), `look_intent.py` (explicit look
-  requests), Continuous OCR's tuning, and Upload/Camera under real use.
-- Task Guide Mode tuning: whether `capture_interval_seconds` (90s
-  default) and the chide's tone feel right in real use — not yet
-  meaningfully tested (see Phase 4's own entry).
-- Phase 10 (sandbox apartment): see that phase's own entry above for
-  the current full list — not repeated here to avoid the two going out
-  of sync with each other.
+- Unconfirmed on the user's machine: the closing bundle of Phase 9.5 (the
+  context fixes and the new OCR quiet rules) -- see that entry. The first
+  session should show `prompt_tokens=` / `num_ctx=` in `orchestrator.log` and
+  no `reply stopped by 'length'` warning.
+- Tuning, not bugs: Continuous OCR's real-world frequency at the default 240 s
+  (the user's local `config.yaml` was left at 30 s for testing), Task Guide's
+  `capture_interval_seconds` (90 s default) and chide tone, and her habit of
+  embellishing past the vision description (details carried over from an
+  earlier screen).
+- Phase 12 (Live Voice Chat) planning decisions -- see its entry.
+- Phase 10 (sandbox apartment): frozen by the user; see that phase's own
+  entry above for the current full list -- not repeated here to avoid the
+  two going out of sync with each other.

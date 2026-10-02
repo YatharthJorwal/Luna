@@ -52,6 +52,7 @@ from typing import Any
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 
 import camera
+import context_budget
 import llm
 import look_intent
 import ocr_watch
@@ -226,6 +227,63 @@ async def _clear_transcript_log_safely() -> None:
         print(f"[luna] transcript log: clear failed: {exc}", file=sys.stderr)
 
 
+def _fit_for_llm(
+    messages: list[dict[str, Any]],
+    tools_list: list[dict[str, Any]] | None = None,
+    extra: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    """The messages actually sent to the model: `messages` with the oldest
+    history dropped (from this copy only) until prompt + reserved reply fit
+    llm.num_ctx. See context_budget.py for why -- replies were being cut off
+    with done_reason 'length' because nothing bounded the prompt by size."""
+    fitted, dropped, est_tokens, budget = context_budget.fit_messages(
+        messages,
+        num_ctx=CONFIG.llm.num_ctx,
+        reply_reserve=CONFIG.llm.max_tokens,
+        tools=tools_list,
+        extra=extra,
+    )
+    if dropped:
+        print(
+            f"[luna] context: left out the {dropped} oldest history message(s) this call "
+            f"to fit num_ctx={CONFIG.llm.num_ctx} (estimated prompt {est_tokens} tokens, "
+            f"budget {budget}).",
+            file=sys.stderr,
+        )
+    if budget and est_tokens > budget:
+        print(
+            f"[luna] WARNING: the persona prompt + memory block alone (~{est_tokens} tokens) "
+            f"exceed the prompt budget ({budget}) for num_ctx={CONFIG.llm.num_ctx}; raise "
+            "llm.num_ctx.",
+            file=sys.stderr,
+        )
+    return fitted
+
+
+def _record_unprompted(
+    history: list[dict[str, str]],
+    text: str,
+    temp_mode: bool,
+    temp_turn_flags: list[bool] | None,
+    unprompted: list[dict[str, str]] | None,
+) -> None:
+    """Appends one of her unprompted comments (a Task Guide chide or an OCR
+    remark -- an assistant turn with no user turn before it) to history,
+    keeps temp_turn_flags in lockstep, then caps how many such comments stay
+    in history (session.max_unprompted_in_history). `unprompted` None =
+    don't track or cap (direct callers/tests)."""
+    message = {"role": "assistant", "content": text}
+    history.append(message)
+    if temp_turn_flags is not None:
+        temp_turn_flags.append(temp_mode)
+    if unprompted is not None:
+        unprompted.append(message)
+        context_budget.cap_unprompted(
+            history, temp_turn_flags, unprompted, CONFIG.session.max_unprompted_in_history
+        )
+    _trim_history(history, temp_turn_flags)
+
+
 def _trim_history(history: list[dict[str, str]], temp_turn_flags: list[bool] | None = None) -> None:
     """Keeps the system prompt plus the last N (user, assistant) turns.
     Session memory only (Phase 3 adds durable memory), but still needs a
@@ -355,7 +413,8 @@ async def _run_turn(
         for _ in range(MAX_TOOL_ROUNDS):
             saw_tool_call = False
             async for event in llm.stream_reply_with_tools(
-                messages_for_llm + tool_messages, tools.TOOL_SCHEMAS
+                _fit_for_llm(messages_for_llm, tools.TOOL_SCHEMAS, tool_messages) + tool_messages,
+                tools.TOOL_SCHEMAS,
             ):
                 if event["type"] == "tool_calls":
                     saw_tool_call = True
@@ -504,11 +563,13 @@ def _drift_prompt(task_description: str, observation: str) -> str:
     )
 
 
-async def _run_task_guide_check(    websocket: WebSocket,
+async def _run_task_guide_check(
+    websocket: WebSocket,
     history: list[dict[str, str]],
     task_description: str,
     temp_mode: bool = False,
     temp_turn_flags: list[bool] | None = None,
+    unprompted: list[dict[str, str]] | None = None,
 ) -> None:
     """The scheduled half of Task Guide Mode actually doing its job: grab
     a screenshot, ask the VLM whether it still matches the tracked step
@@ -567,7 +628,9 @@ async def _run_task_guide_check(    websocket: WebSocket,
     prompt = _drift_prompt(task_description, result["note"] or "something unrelated is on screen")
     try:
         buffer = ""
-        async for delta in llm.stream_reply(history + [{"role": "user", "content": prompt}]):
+        async for delta in llm.stream_reply(
+            _fit_for_llm(history + [{"role": "user", "content": prompt}])
+        ):
             buffer += delta
     except llm.LLMUnreachableError as exc:
         print(f"[luna] task guide: LLM unreachable for chide, skipping: {exc}", file=sys.stderr)
@@ -586,10 +649,7 @@ async def _run_task_guide_check(    websocket: WebSocket,
     # 9's transcript-log panel shows it happened. Deliberately no
     # matching "user" turn precedes it -- nobody said anything -- which
     # is a legitimate shape for an unprompted comment, not a bug.
-    history.append({"role": "assistant", "content": " ".join(reply_parts)})
-    if temp_turn_flags is not None:
-        temp_turn_flags.append(temp_mode)
-    _trim_history(history, temp_turn_flags)
+    _record_unprompted(history, " ".join(reply_parts), temp_mode, temp_turn_flags, unprompted)
     await _log_transcript_turn_safely("", " ".join(apply_persona_pass(p) for p in reply_parts))
     await websocket.send_json({"type": "turn_end", "emotion": detected_emotion})
 
@@ -612,6 +672,7 @@ async def _run_ocr_watch_check(
     history: list[dict[str, str]],
     temp_mode: bool = False,
     temp_turn_flags: list[bool] | None = None,
+    unprompted: list[dict[str, str]] | None = None,
 ) -> None:
     """Continuous OCR's own scheduled check -- structurally the same
     shape as _run_task_guide_check above (grab a screenshot, ask the VLM
@@ -645,30 +706,40 @@ async def _run_ocr_watch_check(
         return
 
     previous_summary = ocr_watch.get_state().last_seen_summary
+    last_comment_at = ocr_watch.get_state().last_comment_at
     result = await ocr_watch.check_for_comment(previous_summary, image_b64)
     if result is None:
         print("[luna] ocr watch: check result didn't parse, skipping this check", file=sys.stderr)
         return
     ocr_watch.mark_checked(result["summary"])
-    # Logged unconditionally, same reasoning as task_guide's own check
-    # line: confirms the loop is alive without waiting for a real comment.
+    # The model's comment_worthy is necessary, not sufficient: code applies
+    # the quiet rules the prompt could not enforce (same screen as last
+    # time, minimum gap since she last spoke, an actual note to react to).
+    # The line below is logged unconditionally, same reasoning as
+    # task_guide's own check line: it confirms the loop is alive without
+    # waiting for a real comment, and says why a "yes" was overruled.
+    speak, reason = ocr_watch.decide_comment(
+        result,
+        previous_summary,
+        last_comment_at,
+        CONFIG.ocr_watch.min_comment_gap_seconds,
+        CONFIG.ocr_watch.same_screen_similarity,
+    )
+    suppressed = f" [no comment: {reason}]" if result["comment_worthy"] and not speak else ""
     print(
         f"[luna] ocr watch: checked -> comment_worthy={result['comment_worthy']} "
-        f"({result['summary'] or 'no summary'})",
+        f"({result['summary'] or 'no summary'}){suppressed}",
         file=sys.stderr,
     )
-    if not result["comment_worthy"]:
-        return
-    if not result["note"]:
-        # Said comment_worthy=true but gave no actual observation to react
-        # to -- nothing sensible to build a remark out of, so skip rather
-        # than have her react to an empty string.
+    if not speak:
         return
 
     prompt = _ambient_comment_prompt(result["note"])
     try:
         buffer = ""
-        async for delta in llm.stream_reply(history + [{"role": "user", "content": prompt}]):
+        async for delta in llm.stream_reply(
+            _fit_for_llm(history + [{"role": "user", "content": prompt}])
+        ):
             buffer += delta
     except llm.LLMUnreachableError as exc:
         print(f"[luna] ocr watch: LLM unreachable for comment, skipping: {exc}", file=sys.stderr)
@@ -685,10 +756,8 @@ async def _run_ocr_watch_check(
     # Same "unprompted comment, no preceding user turn" shape
     # _run_task_guide_check's own chide uses -- see its comment for why
     # that's legitimate here too, not a bug.
-    history.append({"role": "assistant", "content": " ".join(reply_parts)})
-    if temp_turn_flags is not None:
-        temp_turn_flags.append(temp_mode)
-    _trim_history(history, temp_turn_flags)
+    ocr_watch.mark_commented()
+    _record_unprompted(history, " ".join(reply_parts), temp_mode, temp_turn_flags, unprompted)
     await _log_transcript_turn_safely("", " ".join(apply_persona_pass(p) for p in reply_parts))
     await websocket.send_json({"type": "turn_end", "emotion": detected_emotion})
 
@@ -767,6 +836,10 @@ async def ws_endpoint(websocket: WebSocket) -> None:
     # that only briefly touched temp mode.
     temp_mode = False
     temp_turn_flags: list[bool] = []
+    # The unprompted comments (Task Guide chides, OCR remarks) currently in
+    # `history`, by identity, so context_budget.cap_unprompted can keep only
+    # the newest few. Per connection, like history itself.
+    unprompted_msgs: list[dict[str, str]] = []
     # The in-flight turn, if any -- run as its own task (not just awaited
     # inline) specifically so the main loop below can keep concurrently
     # watching for a "stop" message (or /shutdown) while generation is
@@ -828,13 +901,23 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 # guard just above.
                 continue
             async with ambient_speak_lock:
-                await _run_task_guide_check(websocket, history, state.description, temp_mode, temp_turn_flags)
+                await _run_task_guide_check(
+                    websocket, history, state.description, temp_mode, temp_turn_flags, unprompted_msgs
+                )
 
     async def _ocr_watch_loop() -> None:
         while True:
             await asyncio.sleep(OCR_WATCH_POLL_SECONDS)
             state = ocr_watch.get_state()
             if not state.active:
+                continue
+            if CONFIG.ocr_watch.pause_during_task and task_guide.get_state().active:
+                # Task Guide is already watching the screen; ambient remarks
+                # on top of its chides were redundant (both commented on the
+                # same Yahtzee screen within a minute in real use) and
+                # doubled the vision calls. Restart the clock so the first
+                # ambient check after the task ends is a full interval away.
+                ocr_watch.defer_check()
                 continue
             if not ocr_watch.due_for_check(state, CONFIG.ocr_watch.comment_interval_seconds):
                 continue
@@ -843,7 +926,9 @@ async def ws_endpoint(websocket: WebSocket) -> None:
             if ambient_speak_lock.locked():
                 continue
             async with ambient_speak_lock:
-                await _run_ocr_watch_check(websocket, history, temp_mode, temp_turn_flags)
+                await _run_ocr_watch_check(
+                    websocket, history, temp_mode, temp_turn_flags, unprompted_msgs
+                )
 
     task_guide_task: asyncio.Task | None = (
         asyncio.create_task(_task_guide_loop()) if is_driver else None
@@ -944,6 +1029,14 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 # this build doesn't even show, so no explicit gate is
                 # needed here either.
                 ocr_watch.set_active(bool(data.get("enabled")))
+                # Logged because the shell used to drop this message silently
+                # when its socket wasn't open yet, which looked exactly like
+                # "Continuous OCR does nothing"; a receipt line settles it.
+                print(
+                    f"[luna] ocr watch: {'enabled' if data.get('enabled') else 'disabled'} "
+                    f"by the shell (interval {CONFIG.ocr_watch.comment_interval_seconds}s)",
+                    file=sys.stderr,
+                )
                 continue
 
             if msg_type == "camera_frame":

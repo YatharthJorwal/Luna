@@ -48,6 +48,9 @@ class WatchState:
     # screenshot in isolation, which would make repeat comments about an
     # unchanging screen much more likely.
     last_seen_summary: str = ""
+    # When she last actually SPOKE an ambient remark (0 = never this watch).
+    # Drives the minimum gap in decide_comment().
+    last_comment_at: float = 0.0
 
 
 _state = WatchState()
@@ -72,6 +75,24 @@ def set_active(active: bool) -> None:
         _state = WatchState(active=False)
 
 
+def defer_check() -> None:
+    """Restarts the check clock without touching the summary or the
+    last-comment time. Called every poll while a Task Guide task is active
+    (ocr_watch.pause_during_task) so that, once the task ends, the first
+    ambient check is a full interval away instead of firing instantly with
+    a stale summary."""
+    global _state
+    if _state.active:
+        _state = replace(_state, last_check_at=time.time())
+
+
+def mark_commented() -> None:
+    """Called once an ambient remark has actually been spoken."""
+    global _state
+    if _state.active:
+        _state = replace(_state, last_comment_at=time.time())
+
+
 def due_for_check(state: WatchState, interval_seconds: float) -> bool:
     if not state.active:
         return False
@@ -88,6 +109,58 @@ def mark_checked(summary: str = "") -> None:
     global _state
     if _state.active:
         _state = replace(_state, last_check_at=time.time(), last_seen_summary=summary or _state.last_seen_summary)
+
+
+# Words that carry no information about WHAT is on screen; dropped before
+# comparing two summaries.
+_SUMMARY_STOPWORDS = frozenset(
+    "a an the with in on of and at to is are for by its it this that as from "
+    "showing shows displaying displays screen".split()
+)
+
+
+def _summary_tokens(text: str) -> frozenset[str]:
+    return frozenset(
+        t for t in re.findall(r"[a-z0-9']+", text.lower()) if len(t) > 1 and t not in _SUMMARY_STOPWORDS
+    )
+
+
+def summaries_match(previous: str, current: str, threshold: float) -> bool:
+    """True when two screen summaries describe essentially the same thing:
+    Jaccard overlap of their content words >= threshold. Deterministic on
+    purpose -- the 9b was told "do not comment unless the screen changed"
+    and said "worth a comment" five checks in a row about the identical
+    summary ("debugging a Python app with an anime avatar"). Empty on
+    either side = can't tell = not a match."""
+    a, b = _summary_tokens(previous), _summary_tokens(current)
+    if not a or not b:
+        return False
+    return len(a & b) / len(a | b) >= threshold
+
+
+def decide_comment(
+    result: dict,
+    previous_summary: str,
+    last_comment_at: float,
+    min_gap_seconds: float,
+    similarity_threshold: float,
+    now: float | None = None,
+) -> tuple[bool, str]:
+    """Final say on whether a check turns into a spoken remark: (speak,
+    reason-if-not). The model's comment_worthy is necessary but not
+    sufficient -- code enforces the quiet rules the prompt could not.
+    Order matters only for which reason gets logged."""
+    if not result.get("comment_worthy"):
+        return False, "model found nothing worth saying"
+    if not result.get("note"):
+        return False, "no observation to react to"
+    if summaries_match(previous_summary, result.get("summary", ""), similarity_threshold):
+        return False, "same screen as the last check"
+    now = time.time() if now is None else now
+    since = now - last_comment_at
+    if last_comment_at and since < min_gap_seconds:
+        return False, f"spoke {int(since)}s ago (minimum gap {int(min_gap_seconds)}s)"
+    return True, ""
 
 
 _WATCH_SYSTEM_PROMPT = """\

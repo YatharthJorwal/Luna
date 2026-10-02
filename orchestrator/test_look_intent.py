@@ -138,3 +138,105 @@ async def test_maybe_look_llm_unreachable_forbids_guessing(monkeypatch):
     monkeypatch.setattr(look_intent.vision, "describe_screen", failing_screen)
     hint = await look_intent.maybe_look("look at my screen", object())
     assert "Do NOT make up" in hint
+
+
+# ---------------------------------------------------------------------------
+# Bare trailing "look" and screen follow-ups. Both come from a real session:
+# "i am playing minecraft look" produced no `look:` line, and "now what is
+# it" (right after a successful look) was answered from the stale
+# description of the previous screen.
+# ---------------------------------------------------------------------------
+
+import time as _time
+
+
+@pytest.fixture
+def after_a_screen_look(monkeypatch):
+    monkeypatch.setattr(look_intent, "_last_target", "screen")
+    monkeypatch.setattr(look_intent, "_last_look_at", _time.monotonic())
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "i am playing minecraft look",
+        "look",
+        "Look!",
+        "take a look",
+        "have a look",
+        "can you look?",
+        "hey luna, look",
+    ],
+)
+def test_trailing_look_targets_the_screen(text):
+    assert look_intent.detect_look_target(text) == "screen"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "don't look",
+        "i can't look",
+        "never look",
+        "i'll take a look",
+        "let me look",
+        "i'm going to look",
+        "it looks nice",
+        "look at that dog outside the window and tell me a joke about it, then help me write the long email",
+    ],
+)
+def test_trailing_look_ignores_negations_first_person_and_long_text(text):
+    assert look_intent.detect_look_target(text) is None
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["now what is it", "and now?", "what about now", "what's that?", "now?", "ok now", "what is it now"],
+)
+def test_followups_re_look_the_screen_right_after_a_look(after_a_screen_look, text):
+    assert look_intent.detect_look_target(text) == "screen"
+
+
+@pytest.mark.parametrize(
+    "text",
+    ["what now?", "now I want to build a house", "and then?", "what is the capital of France now that we're here"],
+)
+def test_followup_pattern_does_not_swallow_ordinary_messages(after_a_screen_look, text):
+    assert look_intent.detect_look_target(text) is None
+
+
+def test_followups_do_nothing_without_a_recent_look(monkeypatch):
+    monkeypatch.setattr(look_intent, "_last_target", "screen")
+    monkeypatch.setattr(look_intent, "_last_look_at", 0.0)
+    assert look_intent.detect_look_target("now what is it") is None
+
+
+def test_followups_expire_after_the_window(monkeypatch):
+    monkeypatch.setattr(look_intent, "_last_target", "screen")
+    monkeypatch.setattr(look_intent, "_last_look_at", 1000.0)
+    inside = 1000.0 + look_intent.FOLLOWUP_WINDOW_SECONDS - 1
+    outside = 1000.0 + look_intent.FOLLOWUP_WINDOW_SECONDS + 1
+    assert look_intent.detect_look_target("and now?", now=inside) == "screen"
+    assert look_intent.detect_look_target("and now?", now=outside) is None
+
+
+def test_followups_never_reach_for_the_camera(monkeypatch):
+    monkeypatch.setattr(look_intent, "_last_target", "camera")
+    monkeypatch.setattr(look_intent, "_last_look_at", _time.monotonic())
+    assert look_intent.detect_look_target("and now?") is None
+
+
+def test_uploads_are_still_excluded_from_the_new_rules():
+    assert look_intent.detect_look_target("(shared a file) ... take a look") is None
+
+
+@pytest.mark.asyncio
+async def test_maybe_look_opens_the_followup_window(monkeypatch):
+    monkeypatch.setattr(look_intent, "_last_look_at", 0.0)
+
+    async def fake_describe():
+        return "a desktop"
+
+    monkeypatch.setattr(look_intent.vision, "describe_screen", fake_describe)
+    assert await look_intent.maybe_look("look at my screen", websocket=None) is not None
+    assert look_intent.detect_look_target("now what is it") == "screen"

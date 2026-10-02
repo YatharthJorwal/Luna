@@ -21,6 +21,16 @@ conversation's tool-calling loop, and describe_image() for vision.py's
 internal screenshot-to-text call. Neither touches stream_reply() above,
 which consolidation.py/forget.py's background LLM calls still use
 unchanged.
+
+Context window: every native-Ollama request goes through _ollama_options(),
+which stamps the same options.num_ctx (config.yaml's llm.num_ctx) on all of
+them -- chat, tool-calling, vision, the background classifiers. Left unset,
+the window is whatever the server defaults to, and once persona prompt +
+tool schemas + memory block + history outgrew it, Ollama ended replies after
+a handful of tokens with done_reason 'length' (docs/DECISIONS.md). Keeping
+the value identical across calls also matters on its own: Ollama reloads the
+model whenever two requests disagree on it. The OpenAI-compatible path has
+no per-request way to set it (use OLLAMA_CONTEXT_LENGTH on the server).
 """
 
 from __future__ import annotations
@@ -32,6 +42,36 @@ from typing import Any, AsyncIterator
 import httpx
 
 from config import CONFIG
+
+
+def _ollama_options(**overrides: Any) -> dict[str, Any]:
+    """The `options` block for every native-Ollama request. `overrides` may
+    change temperature/num_predict (the vision call wants its own), but
+    never num_ctx: that one value must be identical across all calls."""
+    options: dict[str, Any] = {
+        "temperature": CONFIG.llm.temperature,
+        "num_predict": CONFIG.llm.max_tokens,
+    }
+    options.update(overrides)
+    if CONFIG.llm.num_ctx is not None:
+        options["num_ctx"] = CONFIG.llm.num_ctx
+    return options
+
+
+def explain_length_stop(prompt_tokens: int | None, gen_tokens: int | None) -> str:
+    """Why a done_reason='length' reply stopped, from Ollama's own token
+    counts. Pure so it can be tested: a reply that ended far below
+    max_tokens can only have run out of context window."""
+    max_tokens = CONFIG.llm.max_tokens
+    num_ctx = CONFIG.llm.num_ctx
+    if gen_tokens is not None and gen_tokens >= max_tokens:
+        return f"hit the reply cap (llm.max_tokens={max_tokens})"
+    if prompt_tokens is not None and num_ctx and prompt_tokens + (gen_tokens or 0) >= num_ctx * 0.95:
+        return (
+            f"the context window filled (prompt {prompt_tokens} + reply "
+            f"{gen_tokens or 0} of num_ctx {num_ctx}) -- history is too big for it"
+        )
+    return "unknown -- stopped well under both max_tokens and num_ctx"
 
 
 class LLMUnreachableError(Exception):
@@ -102,10 +142,7 @@ async def stream_reply_with_tools(
         "messages": messages,
         "tools": tools,
         "stream": True,
-        "options": {
-            "temperature": CONFIG.llm.temperature,
-            "num_predict": CONFIG.llm.max_tokens,
-        },
+        "options": _ollama_options(),
     }
     if CONFIG.llm.think is not None:
         payload["think"] = CONFIG.llm.think
@@ -132,6 +169,10 @@ async def stream_reply_with_tools(
     done_seen = False
     done_reason: Any = None
     chars_streamed = 0
+    # Ollama reports real token counts on the final chunk; logging them is
+    # what turns "she cut off" from a guess into a diagnosis.
+    prompt_tokens: int | None = None
+    gen_tokens: int | None = None
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as client:
             async with client.stream("POST", url, json=payload) as response:
@@ -168,6 +209,8 @@ async def stream_reply_with_tools(
                     if chunk.get("done"):
                         done_seen = True
                         done_reason = chunk.get("done_reason")
+                        prompt_tokens = _int_or_none(chunk.get("prompt_eval_count"))
+                        gen_tokens = _int_or_none(chunk.get("eval_count"))
                         break
     except httpx.RequestError as exc:
         raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
@@ -175,9 +218,27 @@ async def stream_reply_with_tools(
         f"[luna] tool-calling: offered {tool_names}, replied directly "
         f"(saw_content={saw_any_content}, "
         f"'tool_calls' key ever present={saw_tool_calls_key}, "
-        f"done={done_seen}, done_reason={done_reason!r}, chars={chars_streamed})",
+        f"done={done_seen}, done_reason={done_reason!r}, chars={chars_streamed}, "
+        f"prompt_tokens={prompt_tokens}, gen_tokens={gen_tokens}, "
+        f"num_ctx={CONFIG.llm.num_ctx})",
         file=sys.stderr,
     )
+    if done_reason == "length":
+        print(
+            "[luna] WARNING: reply stopped by 'length' -- "
+            f"{explain_length_stop(prompt_tokens, gen_tokens)}",
+            file=sys.stderr,
+        )
+    elif (
+        CONFIG.llm.num_ctx
+        and prompt_tokens is not None
+        and prompt_tokens >= CONFIG.llm.num_ctx * 0.85
+    ):
+        print(
+            f"[luna] WARNING: context nearly full (prompt {prompt_tokens} of "
+            f"num_ctx {CONFIG.llm.num_ctx}) -- the next reply may be cut short.",
+            file=sys.stderr,
+        )
     if not done_seen or done_reason not in (None, "stop"):
         # The smoking gun for a reply that was cut off by the *model side*
         # rather than by the user or a bug in this app: either the stream
@@ -190,6 +251,10 @@ async def stream_reply_with_tools(
             "if she cut off mid-sentence, this is why.",
             file=sys.stderr,
         )
+
+
+def _int_or_none(value: Any) -> int | None:
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
 
 
 def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
@@ -251,7 +316,7 @@ async def describe_image(prompt: str, image_b64: str) -> str:
         "model": CONFIG.llm.model,
         "messages": [{"role": "user", "content": prompt, "images": [image_b64]}],
         "stream": False,
-        "options": {"temperature": 0.4, "num_predict": 400},
+        "options": _ollama_options(temperature=0.4, num_predict=400),
     }
     if CONFIG.llm.think is not None:
         payload["think"] = CONFIG.llm.think
@@ -312,10 +377,7 @@ async def _stream_ollama_native(messages: list[dict[str, str]]) -> AsyncIterator
         "model": CONFIG.llm.model,
         "messages": messages,
         "stream": True,
-        "options": {
-            "temperature": CONFIG.llm.temperature,
-            "num_predict": CONFIG.llm.max_tokens,
-        },
+        "options": _ollama_options(),
     }
     if CONFIG.llm.think is not None:
         payload["think"] = CONFIG.llm.think

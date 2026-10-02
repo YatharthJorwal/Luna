@@ -4,102 +4,104 @@
 > and goes stale on purpose. If it disagrees with `docs/ROADMAP.md` or
 > `docs/DECISIONS.md`, those win. `CLAUDE.md` has the standing rules.
 
-## Do this first (the user said they will run the latest bundle and report back)
+## Do this first
 
-1. **Merge may still be blocked.** The user's last `git merge` aborted because
-   their working tree had local edits to `src-tauri/Cargo.toml` and
-   `src-tauri/Cargo.lock` (cause unknown -- possibly the Tauri CLI rewriting
-   the manifest, or a plain `cargo` lock update). Ask whether the merge went
-   through and, if they saved it, what `git diff src-tauri/Cargo.toml` showed.
-2. **Their local `orchestrator/config.yaml` needs two sections** the code now
-   requires (missing = `KeyError` at startup; this already bit them once):
-   `task_guide:` (`capture_interval_seconds: 90`, `idle_timeout_seconds: 1800`)
-   and `ocr_watch:` (`comment_interval_seconds: 240`). Templates are in
-   `config.example.yaml`.
-3. **Collect results on what was built but never verified on their machine:**
-   - *Orphaned processes (Rust, never compiled):* the Tauri terminal should print
-     `[luna] kill-on-close job object ACTIVE`; after End Task / Ctrl+C,
-     `netstat -ano | findstr ":9880 :8765"` should be empty. A
-     `startup sweep: killed stale python process` line means it cleared an old
-     orphan. If `cargo` errors, get the message -- `install_kill_on_close_job`,
-     `kill_stale_listeners`, `is_python_process` are the new unverified code.
-   - *`look_intent.py`:* "look at my screen" should log `[luna] look: screen -> ...`.
-   - *Task classifier:* "use OCR" / "I'm playing X" must no longer start a task.
-   - *The open bug below.*
+The user is merging the **Phase 9.5 closing bundle** (`luna.bundle`). It is
+verified in the sandbox only (240 pytest, `tsc`, `vite build`; no cargo, GPU
+or Ollama here). Ask whether it merged, then collect what the first real
+session shows in `orchestrator.log`:
 
-## Open bug (top priority once the above is checked)
-
-**Her replies cut off mid-sentence on their own; the user did not press stop.**
-Not root-caused. Diagnostics were added (`done=` / `done_reason=` in the
-per-turn log line, a WARNING on abnormal stream end, a catch-all that prints a
-traceback in `_run_turn`). Have them reproduce it, then read `orchestrator.log`:
-`WARNING: LLM reply ended abnormally` = Ollama/model side (suspect: ambient
-vision calls from Task Guide / Continuous OCR competing with chat on one GPU);
-`turn failed with an unexpected error` + traceback = this app. Full reasoning in
-`docs/DECISIONS.md` ("Open bug"). Don't re-theorize before reading those lines.
+1. Each turn's `tool-calling:` line now ends with `prompt_tokens=`,
+   `gen_tokens=`, `num_ctx=8192`. **Compare `prompt_tokens` with the
+   estimate** in `context_budget.py` (chars/3.5) -- if Ollama's real number is
+   much higher than the estimate, lower `CHARS_PER_TOKEN`.
+2. No `WARNING: reply stopped by 'length'`. If it still appears, the line says
+   which limit was hit. `context: left out the N oldest history message(s)`
+   lines are normal on a long session -- they are the fix working.
+3. Continuous OCR: `ocr watch: checked -> ...` lines, with
+   `[no comment: ...]` when the code overruled the model. The user's **local**
+   `orchestrator/config.yaml` still has `comment_interval_seconds: 30` from
+   testing; the default is 240. Expect it to be much quieter at 240.
+4. VRAM: `num_ctx` 8192 next to GPT-SoVITS on the 12 GB card (`nvidia-smi`).
+5. Still untested live: "use OCR" must not start a task, "I'm done" must stop
+   one, and the startup sweep (needs an orphan to exist).
 
 ## State
 
-Phases 0-4, 7, 8, 9 done and confirmed on the user's machine. Phase 10 (sandbox
-apartment) is frozen by their decision -- don't touch `sandbox.ts`,
-`src/apartment/`, `camera-modes.ts`, `postfx.ts` unless asked. Phases 6 and 11
-not started; Phase 5 camera built and user-tested, game-context awareness not.
+Phases 0-4, 7, 8, 9 and 9.5 done and confirmed on the user's machine (see the
+9.5 entry in `docs/ROADMAP.md` for the list). Phase 10 (sandbox apartment) is
+frozen by their decision -- don't touch `sandbox.ts`, `src/apartment/`,
+`camera-modes.ts`, `postfx.ts` unless asked. Phases 5 (game-context
+awareness), 6 and 11 not started. **Agent Mode (Phase 11) and Live Voice Chat
+(Phase 12) are the two disabled "Soon" rows in the `+` menu.**
 
-Quick-action menu (the `+` button), all tested by the user except as noted:
-Temp Chat (works), Camera (works; red-dot tray indicator), Upload Image/File
-(works, attach-then-send), Continuous OCR (works; commented correctly on a
-wallpaper), Conversation Log + Cycle Test Expression (moved in from the HUD).
-**Live Voice Chat and Agent Mode are still disabled "Soon" rows.** New logo and
-the small flat status dot (colors sampled from the user's reference) are in.
+## Next: Phase 12, Live Voice Chat -- a planning conversation first
 
-## Queue, roughly in order
+The user's framing: it continues the "continuity" thread (she already speaks
+unprompted, so voice has to coexist with that). `docs/ROADMAP.md` Phase 12 has
+what exists today, what is reusable, and six decisions to settle before code:
+half-duplex vs barge-in, mic privacy (default off, visible indicator, mute
+hotkey, nothing saved to disk), where VAD runs, echo of her own voice, a
+single "who may speak next" arbiter shared with Task Guide and OCR, and STT on
+CPU vs GPU. **Propose answers and let the user choose; don't start code.**
+The one safe first step, once they agree, is per-stage latency logging (end of
+speech -> transcript -> first LLM token -> first TTS audio) -- GPT-SoVITS is
+the likely bottleneck and sets how "live" it can feel.
 
-- **Agent Mode:** planning conversation *before any code* -- it reverses the
-  "observe-and-advise only" constraint in `CLAUDE.md`; needs a confirmation
-  design that can't be bypassed by on-screen text, a clear definition of
-  "modifying," and a cursor mechanism. The user wants hard confirmation on file
-  changes (example task: "open browser and pull some cat pics").
-- **Live Voice Chat:** a new architecture (voice-activity detection instead of
-  push-to-talk, and she initiates speech). Not a toggle.
-- **Upload gaps:** PDF, Word, and video (mp4) are deliberately unsupported.
-- Task Guide / OCR interval tuning; temp-mode resets on websocket reconnect
-  (known gap); Phase 5 game-context awareness; Phases 6 and 11.
+## Queue after that
+
+- **Agent Mode (Phase 11):** planning conversation *before any code* -- it
+  reverses "observe-and-advise only"; needs a confirmation design that can't be
+  bypassed by on-screen text, a clear definition of "modifying," and a cursor
+  mechanism. The user wants hard confirmation on file changes.
+- Upload gaps (PDF, Word, mp4 are deliberately unsupported); Phase 5
+  game-context awareness; Phase 6.
+- Tuning: OCR frequency at 240 s, Task Guide interval/tone, and her habit of
+  embellishing past the vision description (e.g. carrying "cake" into the next
+  screen's answer). Not bugs.
 
 ## Hard-won lessons (details in `docs/DECISIONS.md`)
 
 - **qwen3.5:9b is reliable at "read a short prompt, emit one JSON object" and
-  unreliable at "decide mid-reply whether to call a tool."** Proven three times
-  (`set_active_task`, camera re-invocation, `capture_screen`). Where intent is
-  unambiguous, decide in Python (classifier or regex gate), keep native
-  tool-calling only as a fallback. Don't try prompt-strengthening first again.
-- The sandbox has no cargo, GPU, browser, or Ollama. Rust, vision, TTS and
-  anything timing-related are only ever verified by the user's real machine --
-  say "unverified" plainly, and don't reason your way to "confirmed."
-- Orphaned GPT-SoVITS on port 9880 recurred three times; the fix is OS-level
-  (Job Object + startup sweep), not more detection. The user closes Luna with
-  End Task / Ctrl+C, not tray Quit.
-- A "make it look like X" request with no attachment: build the smallest literal
-  thing, not an embellished one (the orb cost an extra round).
+  unreliable at "decide mid-reply whether to act" or "follow a don't-repeat-
+  yourself rule."** Proven four times now (`set_active_task`, camera
+  re-invocation, `capture_screen`, OCR commenting on an unchanged screen five
+  times running). Decide in Python (classifier, regex gate, similarity check),
+  keep the prompt as the fallback. Don't try prompt-strengthening first.
+- `done_reason='length'` far below `max_tokens` means the **context window**,
+  not the output cap. Anything that appends to history on a timer needs a bound
+  by size, not by count.
+- The sandbox has no cargo, GPU, browser, or Ollama. Rust, vision, TTS, VRAM and
+  timing are only verified on the user's machine -- say "unverified" plainly.
+  A crate added to `Cargo.toml` leaves `Cargo.lock` stale here; the user's first
+  build rewrites it, and that dirty tree can abort the next merge (commit the
+  lockfile first). `Cargo.toml` can also look modified from LF/CRLF alone.
+- Orphaned GPT-SoVITS recurred three times; the OS-level fix (Job Object +
+  startup sweep) is confirmed. The user closes Luna with End Task / Ctrl+C.
+- New config keys must have code defaults: a missing key in the user's own
+  `config.yaml` was a startup `KeyError` once. This round's keys all default.
+- A "make it look like X" request with no attachment: build the smallest
+  literal thing, not an embellished one.
 
 ## Working notes
 
-- The user's merge routine is three PowerShell lines per bundle, in this form:
-  `git fetch "C:\Users\User\Downloads\<name>.bundle" main:main-mirror`, then
-  `git merge main-mirror`, then `git push origin main`. Repo is at
-  `D:\AI\Project Luna\luna-phase1\luna`. There is no direct push from the sandbox;
-  work ships as a git bundle in `/mnt/user-data/outputs`.
+- Merge routine, three PowerShell lines per bundle, repo at
+  `D:\AI\Project Luna\luna-phase1\luna`, bundles in `C:\Users\User\Downloads\`:
+  `git fetch "C:\Users\User\Downloads\luna.bundle" main:main-mirror`, then
+  `git merge main-mirror`, then `git push origin main`. No direct push from the
+  sandbox; work ships as a git bundle. Re-pull `origin/main` before building
+  the next one -- the user commits on their side too (`Cargo.lock`).
 - The user wants **lean docs**: decisions + why + lessons only, no per-session
-  narrative. `CLAUDE.md` stays short; history goes in `DECISIONS.md`, status in
-  `ROADMAP.md`. Both were trimmed once already (about 5,800 -> about 2,900 lines
-  combined) -- don't let them re-bloat.
-- Tests: `orchestrator/` pytest (161 passing), `npx tsc --noEmit`, `npx vite
-  build`. The frontend has no test runner; `ws_endpoint`'s message loop has no
-  direct tests (a known, long-standing gap, not a regression).
-- The sandbox's `orchestrator/config.yaml` is a gitignored local copy of the
-  example, only there so tests import `config.py`.
+  narrative. `CLAUDE.md` stays short. Don't let them re-bloat.
+- Tests: `orchestrator/` pytest (240 passing), `npx tsc --noEmit`, `npx vite
+  build`. No frontend test runner; `ws_endpoint`'s message loop has no direct
+  tests (long-standing gap), but the ambient-comment path now has app-level
+  tests with faked capture/VLM/LLM/TTS (`test_app_ambient.py`).
+- The sandbox's `orchestrator/config.yaml` is a gitignored copy of the example,
+  only there so tests can import `config.py`.
 
 ## Ask the user, don't assume
 
-Did the last bundle merge and push? Did the app build (any Rust error text)? Did
-the confirm recipe in README's troubleshooting section show what it should? Any
-local edits made on their machine that these docs wouldn't know about?
+Did the bundle merge and push? Anything in `orchestrator.log` that looks wrong
+(paste the `tool-calling:` lines and any `WARNING`)? Did the app start with no
+config error? Which Live Voice Chat decisions do they want to make first?

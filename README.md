@@ -464,6 +464,19 @@ Still applies from Phase 1 -- unchanged:
   model's proportions -- see "Putting your VRoid model in" above for
   which constant to nudge for which symptom. Adjust and let Vite
   hot-reload.
+- **Her replies stop mid-sentence without you pressing stop:** look in
+  `orchestrator.log` for `WARNING: reply stopped by 'length'`. The per-turn
+  line shows `prompt_tokens=` and `num_ctx=`; if the prompt is close to
+  `num_ctx`, the context window is full -- raise `llm.num_ctx` in
+  `orchestrator/config.yaml` (default 8192; it applies even if the key isn't
+  in your file) and restart. `turn failed with an unexpected error` plus a
+  traceback means a bug instead -- send that traceback.
+- **Continuous OCR seems silent:** every check logs
+  `ocr watch: checked -> comment_worthy=...`, and a check that was overruled
+  says why (`[no comment: same screen as the last check]`). No such lines at
+  all means the toggle never reached the backend: look for
+  `ocr watch: enabled by the shell`. The default interval is 240 s;
+  `comment_interval_seconds: 30` is for testing only.
 - **Mouth never moves while she talks, or she never blinks:** your VRM
   export is likely missing the standard `aa`/`blink` expression presets
   the lipsync/blink code depends on -- check in an online VRM viewer

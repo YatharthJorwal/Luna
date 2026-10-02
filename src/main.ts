@@ -716,6 +716,18 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
   const client = new WsClient({
     surface: "shell",
     onStateChange: setState,
+    // Resend UI-held toggle state whenever the socket (re)opens: the send
+    // helpers drop messages while the socket isn't OPEN, so a toggle clicked
+    // during startup or a reconnect never reached the orchestrator. Temp
+    // Chat is per-connection server-side (defaults off, so only "on" needs
+    // sending); Continuous OCR is process-wide, so its current value is sent
+    // either way and the menu badge and the backend always agree. Both
+    // variables are declared further down -- fine, this only runs after the
+    // socket opens, long after setup has finished.
+    onOpen: () => {
+      if (tempModeEnabled) client.sendSetTempMode(true);
+      client.sendSetOcrWatch(ocrWatchEnabled);
+    },
     onSpeak: (msg: SpeakMessage) => {
       // A chunk from the turn we already stopped, arriving late (see
       // turnStopped's own comment above) -- drop it silently rather
