@@ -80,7 +80,30 @@ class LLMUnreachableError(Exception):
     """The configured LLM server couldn't be reached or returned an error
     response -- most likely it just isn't running yet. Kept distinct from
     other exceptions so app.py can give an in-character, specific reply
-    instead of the connection crashing silently."""
+    instead of the connection crashing silently.
+
+    The two subclasses below say what actually happened, because "I can't
+    reach my own brain, is the server even running?" was being said for a
+    server that was up and had the model loaded (an HTTP error or a slow
+    cold load), with nothing in the log to tell which. Everything that
+    catches this base class keeps working."""
+
+
+class LLMServerError(LLMUnreachableError):
+    """The server was reached and answered with an HTTP error (a 400/500 --
+    out of memory, an unsupported parameter, a crashed runner...). The body
+    is in the message."""
+
+
+class LLMTimeoutError(LLMUnreachableError):
+    """The server was reached but didn't answer in time -- typically the
+    first request after startup, while an 8 GB model is still loading."""
+
+
+def _request_error(url: str, exc: httpx.RequestError) -> LLMUnreachableError:
+    if isinstance(exc, httpx.TimeoutException):
+        return LLMTimeoutError(f"timed out waiting for {url}: {type(exc).__name__}")
+    return LLMUnreachableError(f"couldn't reach {url}: {exc}")
 
 
 async def stream_reply(messages: list[dict[str, str]]) -> AsyncIterator[str]:
@@ -195,7 +218,7 @@ async def stream_reply_with_tools(
                                 file=sys.stderr,
                             )
                             continue
-                        raise LLMUnreachableError(
+                        raise LLMServerError(
                             f"{response.status_code} from {url}: {body[:300]!r}"
                         )
                     async for line in response.aiter_lines():
@@ -230,7 +253,7 @@ async def stream_reply_with_tools(
                             gen_tokens = _int_or_none(chunk.get("eval_count"))
                             break
         except httpx.RequestError as exc:
-            raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
+            raise _request_error(url, exc) from exc
         break  # finished normally; only the no-tools retry above `continue`s
     # Raw estimate for exactly what was sent, logged beside Ollama's real
     # count and fed to the calibration (context_budget.observe).
@@ -358,6 +381,42 @@ async def model_capabilities(model: str) -> list[str] | None:
     return [str(c) for c in caps] if isinstance(caps, list) else None
 
 
+async def warm_up_model() -> None:
+    """Loads the chat model into VRAM at startup (an empty-prompt
+    /api/generate is Ollama's documented way to do that) with the SAME
+    num_ctx every real request uses, so the first message doesn't pay for an
+    8 GB cold load -- which is long enough to hit the request timeout and was
+    the likely cause of the first message after startup answering "I can't
+    reach my own brain" while the model finished loading in the background.
+    Best-effort and silent on success apart from one log line; never raises."""
+    if CONFIG.llm.api_style != "ollama_native" or not CONFIG.llm.warm_up_on_start:
+        return
+    url = f"{CONFIG.llm.base_url.rstrip('/')}/api/generate"
+    payload = {
+        "model": CONFIG.llm.model,
+        "prompt": "",
+        "stream": False,
+        "options": _ollama_options(),
+    }
+    started = time.monotonic()
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(300.0, connect=5.0)) as client:
+            response = await client.post(url, json=payload)
+        if response.status_code >= 400:
+            print(
+                f"[luna] warm-up: {response.status_code} from {url}: {response.text[:300]!r}",
+                file=sys.stderr,
+            )
+            return
+        print(
+            f"[luna] warm-up: '{CONFIG.llm.model}' loaded in {time.monotonic() - started:.1f}s "
+            f"(num_ctx {CONFIG.llm.num_ctx})",
+            file=sys.stderr,
+        )
+    except Exception as exc:  # noqa: BLE001 -- best-effort; the first real turn will surface a real problem
+        print(f"[luna] warm-up skipped: {type(exc).__name__}: {exc}", file=sys.stderr)
+
+
 async def report_model_capabilities() -> None:
     """Startup check: prints what Ollama says the configured model(s) can do
     and warns about the mismatches that would otherwise only show up as
@@ -461,12 +520,12 @@ async def describe_image(prompt: str, image_b64: str) -> str:
                         f" -- '{model}' probably has no vision support; set llm.vision_model "
                         "in config.yaml to a model that can read images"
                     )
-                raise LLMUnreachableError(
+                raise LLMServerError(
                     f"{response.status_code} from {url}: {response.text[:300]!r}{hint}"
                 )
             data = response.json()
     except httpx.RequestError as exc:
-        raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
+        raise _request_error(url, exc) from exc
     print(_vision_timing_summary(model, image_b64, time.monotonic() - started, data), file=sys.stderr)
 
     message = data.get("message")
@@ -491,7 +550,7 @@ async def _stream_openai(messages: list[dict[str, str]]) -> AsyncIterator[str]:
             async with client.stream("POST", url, json=payload, headers=headers) as response:
                 if response.status_code >= 400:
                     body = await response.aread()
-                    raise LLMUnreachableError(
+                    raise LLMServerError(
                         f"{response.status_code} from {url}: {body[:300]!r}"
                     )
                 async for line in response.aiter_lines():
@@ -505,7 +564,7 @@ async def _stream_openai(messages: list[dict[str, str]]) -> AsyncIterator[str]:
                     if delta:
                         yield delta
     except httpx.RequestError as exc:
-        raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
+        raise _request_error(url, exc) from exc
 
 
 async def _stream_ollama_native(messages: list[dict[str, str]]) -> AsyncIterator[str]:
@@ -524,7 +583,7 @@ async def _stream_ollama_native(messages: list[dict[str, str]]) -> AsyncIterator
             async with client.stream("POST", url, json=payload) as response:
                 if response.status_code >= 400:
                     body = await response.aread()
-                    raise LLMUnreachableError(
+                    raise LLMServerError(
                         f"{response.status_code} from {url}: {body[:300]!r}"
                     )
                 async for line in response.aiter_lines():
@@ -540,7 +599,7 @@ async def _stream_ollama_native(messages: list[dict[str, str]]) -> AsyncIterator
                     if chunk.get("done"):
                         break
     except httpx.RequestError as exc:
-        raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
+        raise _request_error(url, exc) from exc
 
 
 def _parse_json(data: str) -> dict[str, Any] | None:

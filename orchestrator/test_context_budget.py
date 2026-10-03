@@ -276,3 +276,11 @@ def test_estimate_prompt_is_raw_and_ignores_calibration(fresh_calibration):
     before = cb.estimate_prompt(messages, TOOLS)
     cb.observe(6500, 5431)
     assert cb.estimate_prompt(messages, TOOLS) == before  # observe() compares like with like
+
+
+def test_older_config_without_warm_up_still_loads_and_defaults_on(tmp_path: pathlib.Path):
+    raw = yaml.safe_load((pathlib.Path(config.__file__).parent / "config.example.yaml").read_text(encoding="utf-8"))
+    raw["llm"].pop("warm_up_on_start", None)
+    path = tmp_path / "old.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    assert config.load_config(path).llm.warm_up_on_start is True

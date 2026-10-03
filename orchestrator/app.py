@@ -68,13 +68,19 @@ from persona import SYSTEM_PROMPT, apply_persona_pass, extract_emotion_tag
 from tools import vision
 from tts import synthesize
 
+async def _startup_model_checks() -> None:
+    """Capability report first (cheap, answers fast), then the warm-up load."""
+    await llm.report_model_capabilities()
+    await llm.warm_up_model()
+
+
 @contextlib.asynccontextmanager
 async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """One diagnostic at boot: what Ollama says the configured chat/vision
     models can do, with a plain warning when e.g. the model has no vision.
     Runs as a background task so a slow or absent Ollama never delays
     startup; never raises."""
-    asyncio.create_task(llm.report_model_capabilities())
+    asyncio.create_task(_startup_model_checks())
     yield
 
 
@@ -136,6 +142,21 @@ LLM_UNREACHABLE_LINE = (
     "even running? Check the orchestrator terminal and try again."
 )
 
+# The server answered, but with an HTTP error (out of memory, an unsupported
+# parameter, a crashed runner...). The status and body are in the log.
+LLM_SERVER_ERROR_LINE = (
+    "H-hey -- my brain answered, but with an error instead of words. The "
+    "details are in the orchestrator terminal. Try again, and if it keeps "
+    "happening, tell Yatharth."
+)
+
+# The server was reached but didn't answer in time -- usually the first
+# message after startup while a big model is still loading.
+LLM_TIMEOUT_LINE = (
+    "Ugh -- my brain took too long to wake up. Give it a few seconds and say "
+    "that again."
+)
+
 # Said if STT itself throws -- most likely stt.device: "cuda" in
 # config.yaml but the CUDA cuBLAS/cuDNN DLLs aren't on PATH (see README's
 # troubleshooting section), or a corrupted first-time model download.
@@ -164,6 +185,18 @@ UPLOAD_VISION_UNREACHABLE_LINE = (
 # failure path), so there's no model-generated [tag] to extract either
 # way -- this is app-level knowledge, not something to fake a tag for.
 EMOTION_LLM_UNREACHABLE = "sad"
+
+
+def llm_failure_line(exc: Exception) -> str:
+    """The in-character line for an LLM failure, by what actually went wrong.
+    Previously every failure -- including a server that was up and had the
+    model loaded -- said "is the model server even running?", which sent the
+    user to check the wrong thing."""
+    if isinstance(exc, llm.LLMTimeoutError):
+        return LLM_TIMEOUT_LINE
+    if isinstance(exc, llm.LLMServerError):
+        return LLM_SERVER_ERROR_LINE
+    return LLM_UNREACHABLE_LINE
 EMOTION_STT_UNREACHABLE = "sad"
 EMOTION_UPLOAD_VISION_UNREACHABLE = "sad"
 
@@ -483,9 +516,14 @@ async def _run_turn(
             # is fine, she just never got to a real answer.
             await _send_speak(websocket, TOOL_STUCK_LINE)
             spoken_parts.append(TOOL_STUCK_LINE)
-    except llm.LLMUnreachableError:
-        await _send_speak(websocket, LLM_UNREACHABLE_LINE)
-        spoken_parts.append(LLM_UNREACHABLE_LINE)
+    except llm.LLMUnreachableError as exc:
+        # Logged: this branch used to swallow the exception completely, so a
+        # 400/500 or a timeout from a server that was running looked exactly
+        # like "server not running" and left nothing to diagnose from.
+        print(f"[luna] LLM call failed ({type(exc).__name__}): {exc}", file=sys.stderr)
+        line = llm_failure_line(exc)
+        await _send_speak(websocket, line)
+        spoken_parts.append(line)
         detected_emotion = EMOTION_LLM_UNREACHABLE
     except Exception:  # noqa: BLE001 -- deliberate catch-all, see below
         # Anything else (a TTS failure, a socket error, a plain bug) used to

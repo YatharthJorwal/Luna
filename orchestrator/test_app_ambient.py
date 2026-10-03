@@ -125,3 +125,22 @@ def test_fit_for_llm_trims_a_flooded_history_and_says_so(capsys):
     assert fitted[0] is messages[0] and fitted[-1] is messages[-1]
     assert len(fitted) < len(messages)
     assert "left out the" in capsys.readouterr().err
+
+
+# --- what she says when the LLM call fails ------------------------------------
+
+
+def test_each_llm_failure_gets_its_own_line():
+    import llm
+
+    assert app.llm_failure_line(llm.LLMTimeoutError("slow")) == app.LLM_TIMEOUT_LINE
+    assert app.llm_failure_line(llm.LLMServerError("500 boom")) == app.LLM_SERVER_ERROR_LINE
+    assert app.llm_failure_line(llm.LLMUnreachableError("refused")) == app.LLM_UNREACHABLE_LINE
+
+
+def test_only_a_real_connection_failure_blames_the_server_not_running():
+    # The original bug: a server that was up (and had the model loaded) still
+    # got "is the model server even running?".
+    assert "even running" in app.LLM_UNREACHABLE_LINE
+    assert "even running" not in app.LLM_SERVER_ERROR_LINE
+    assert "even running" not in app.LLM_TIMEOUT_LINE

@@ -42,6 +42,10 @@ class LLMConfig:
     # stay in VRAM next to `model` and GPT-SoVITS: if the two don't fit
     # together, Ollama swaps them per request and every look pays a reload.
     vision_model: str | None = None
+    # Load the chat model into VRAM when the orchestrator starts, so the first
+    # message isn't a multi-second (or, for a big quant, request-timing-out)
+    # cold load. Defaulted so an older config.yaml keeps loading.
+    warm_up_on_start: bool = True
 
 
 @dataclass(frozen=True)

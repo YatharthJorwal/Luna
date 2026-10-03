@@ -422,13 +422,17 @@ New in this round:
   bug -- that's `transcript` coming back empty, meaning the mic picked up
   silence or nothing intelligible. Try speaking a bit louder/closer, or
   check the right input device is selected at the OS level.
-- **She says "I can't reach my own brain right now":** that's the actual
-  in-character fallback line, not a crash -- it means the orchestrator
-  couldn't reach the LLM server at all. Check `ollama serve` is actually
-  running (`ollama list` in another terminal should work if it is), and
-  that `orchestrator/config.yaml`'s `llm.base_url` matches wherever it's
-
-  listening.
+- **She says "I can't reach my own brain right now":** that's the in-character
+  fallback for *not reaching* the model server at all. Check `ollama serve` is
+  running (`ollama list` works if it is) and that `llm.base_url` in
+  `orchestrator/config.yaml` matches. If the server IS running (`ollama ps`
+  shows your model), you will have heard one of the other two lines instead
+  -- "my brain answered, but with an error" (an HTTP error; the status and
+  body are in the log as `[luna] LLM call failed (LLMServerError): ...`) or
+  "took too long to wake up" (a timeout, usually the first message while a
+  big model was still loading; the orchestrator now loads it at startup --
+  look for `[luna] warm-up: ... loaded in Ns`). Older builds said "can't reach
+  my own brain" for all three and logged nothing.
 - **Long pause, then a wrong-sounding error, or nothing at all:** check the
   orchestrator terminal for a traceback -- most likely the model name in
   `config.yaml` (`qwen3.5:9b` by default) doesn't match what you actually

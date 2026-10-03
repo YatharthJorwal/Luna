@@ -59,6 +59,10 @@ llm:
   # the 12GB 3060 pair a ~7GB chat model with at most a ~2GB vision model
   # (qwen3.5:2b-q4_K_M, 1.9GB), or use ONE multimodal model for everything.
   vision_model: null
+  # Load the chat model into VRAM when the orchestrator starts so the first
+  # message doesn't pay for the cold load (a 7+ GB model can take long enough
+  # to time the first request out). Optional (defaults to true).
+  warm_up_on_start: true
 
 tts:
   # "pyttsx3" (current active default) or "gpt_sovits" (flip this once your

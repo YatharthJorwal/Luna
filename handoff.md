@@ -6,26 +6,26 @@
 
 ## Do this first
 
-The user switched to a community GGUF (`hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K`).
-This round's bundle (**mouth cap 0.8, model-switch safety, screenshot downscale,
-self-calibrating context estimate**) is sandbox-verified only (263 pytest, 13
-`npm run test:fe`, `tsc`, `vite build`; no GPU/Ollama here). Ask whether it
-merged, then collect from `orchestrator.log` at startup and after a few turns:
+The user is now on `hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K` (capabilities
+confirmed: tools, thinking, completion, vision; `ollama ps` 7.3 GB, 100% GPU,
+ctx 8192). Their first message after switching got "I can't reach my own brain"
+with nothing in the log (the handler swallowed the exception). The current
+bundle logs the real error, classifies failures, and warms the model at startup
+(sandbox-verified only: 273 pytest, 13 `npm run test:fe`, `tsc`, `vite build`;
+no GPU or Ollama here). Ask whether it merged, then collect:
 
-1. `[luna] model capabilities:` at startup. The user already ran `ollama show` on
-   the Q6_K tag: vision, tools, thinking and completion are all present, so no
-   separate vision model is needed (my earlier "probably text-only" guess was
-   wrong). The open question is VRAM: Q6_K + projector + KV + GPT-SoVITS on 12 GB
-   -- ask for `nvidia-smi` with everything running; fallback is Q5_K_M.
-2. `[luna] vision: model= image= total= load= prompt_tokens= ...` per look -- is
-   `load` large (the model being evicted and reloaded), or `prompt_eval` (image too big)? Is 1024 px
-   legible enough for glances (`vision.ambient_max_long_edge`)?
-3. `tool-calling:` lines now carry `est_prompt_tokens=` and `calibration=`; the
-   calibration should settle near 0.8. Any `doesn't support tool-calling` warning
-   means the GGUF's template has no tools (chat is fine; regex gate covers looks).
-4. Still unconfirmed live from earlier rounds: OCR quieter at 240 s (their local
-   `config.yaml` may still say 30), "use OCR" not starting a task, "I'm done"
-   stopping one, and how the mouth looks at 0.8.
+1. At startup: `[luna] warm-up: '...' loaded in Ns`. If N is large, the cold load
+   (not a bug) is what timed the first request out. Any `LLM call failed (...)`
+   line is the real error -- paste it.
+2. A few chat turns: `tool-calling:` lines (`calibration=` near 0.8), no reasoning
+   text leaking into replies with this GGUF (`think: false` unverified on it).
+3. Any look: the `[luna] vision:` line (`load=`, `prompt_eval=`, `gen=`) to judge
+   whether the screenshot downscale fixed the slow OCR.
+4. With Minecraft running: `ollama ps` must still say `100% GPU` and
+   `nvidia-smi` stay under 12288 MiB (Q6_K + projector leaves ~1 GB idle). Fallback
+   is Q5_K_M (they may have pulled it).
+5. Still unconfirmed live: OCR quieter at 240 s, "use OCR" not starting a task,
+   "I'm done" stopping one, mouth at 0.8.
 
 ## State
 
@@ -106,7 +106,7 @@ the likely bottleneck and sets how "live" it can feel.
   the next one -- the user commits on their side too (`Cargo.lock`).
 - The user wants **lean docs**: decisions + why + lessons only, no per-session
   narrative. `CLAUDE.md` stays short. Don't let them re-bloat.
-- Tests: `orchestrator/` pytest (263 passing), `npm run test:fe` (13, pure
+- Tests: `orchestrator/` pytest (273 passing), `npm run test:fe` (13, pure
   frontend logic via esbuild + node:test, no new deps), `npx tsc --noEmit`,
   `npx vite build`. `ws_endpoint`'s message loop has no direct
   tests (long-standing gap), but the ambient-comment path now has app-level

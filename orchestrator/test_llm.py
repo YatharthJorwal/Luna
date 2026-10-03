@@ -371,3 +371,110 @@ async def test_turn_log_pairs_the_estimate_with_the_real_count_and_calibrates(mo
     assert "est_prompt_tokens=" in err and "prompt_tokens=3300" in err and "calibration=0.77" in err
     assert context_budget.calibration_ratio() < 1.0
     context_budget.reset_calibration()
+
+
+# --- failure classes, so "can't reach my own brain" stops lying -------------
+
+
+@pytest.mark.asyncio
+async def test_http_error_from_a_running_server_is_a_server_error_with_the_body(monkeypatch):
+    _patch_llm_config(monkeypatch, model="m")
+    llm._NO_TOOLS_MODELS.clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text='{"error":"CUDA error: out of memory"}')
+
+    _mock_http(monkeypatch, handler)
+    with pytest.raises(llm.LLMServerError) as err:
+        _ = [e async for e in llm.stream_reply_with_tools([{"role": "user", "content": "x"}], [])]
+    assert "500" in str(err.value) and "out of memory" in str(err.value)
+    assert isinstance(err.value, llm.LLMUnreachableError)  # existing handlers still catch it
+
+
+@pytest.mark.asyncio
+async def test_a_slow_cold_load_is_a_timeout_error_not_unreachable(monkeypatch):
+    _patch_llm_config(monkeypatch, model="m")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("model still loading")
+
+    _mock_http(monkeypatch, handler)
+    with pytest.raises(llm.LLMTimeoutError):
+        _ = [e async for e in llm.stream_reply_with_tools([{"role": "user", "content": "x"}], [])]
+
+
+@pytest.mark.asyncio
+async def test_a_refused_connection_stays_plain_unreachable(monkeypatch):
+    _patch_llm_config(monkeypatch, model="m")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    _mock_http(monkeypatch, handler)
+    with pytest.raises(llm.LLMUnreachableError) as err:
+        _ = [e async for e in llm.stream_reply_with_tools([{"role": "user", "content": "x"}], [])]
+    assert not isinstance(err.value, (llm.LLMServerError, llm.LLMTimeoutError))
+
+
+@pytest.mark.asyncio
+async def test_describe_image_http_error_is_a_server_error(monkeypatch):
+    _patch_llm_config(monkeypatch, vision_model=None, model="m")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="boom")
+
+    _mock_http(monkeypatch, handler)
+    with pytest.raises(llm.LLMServerError):
+        await llm.describe_image("x", "aGk=")
+
+
+# --- warm-up ---------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_warm_up_loads_the_model_with_the_same_num_ctx(monkeypatch, capsys):
+    _patch_llm_config(monkeypatch, model="big-model", num_ctx=8192, warm_up_on_start=True)
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["path"] = request.url.path
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(200, json={"done": True})
+
+    _mock_http(monkeypatch, handler)
+    await llm.warm_up_model()
+    assert seen["path"] == "/api/generate"
+    assert seen["payload"]["prompt"] == ""  # empty prompt = just load it
+    assert seen["payload"]["model"] == "big-model"
+    assert seen["payload"]["options"]["num_ctx"] == 8192  # a different value would force a reload
+    assert "warm-up: 'big-model' loaded" in capsys.readouterr().err
+
+
+@pytest.mark.asyncio
+async def test_warm_up_can_be_disabled(monkeypatch):
+    _patch_llm_config(monkeypatch, warm_up_on_start=False)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError("must not call the server")
+
+    _mock_http(monkeypatch, handler)
+    await llm.warm_up_model()
+
+
+@pytest.mark.asyncio
+async def test_warm_up_never_raises(monkeypatch, capsys):
+    _patch_llm_config(monkeypatch, warm_up_on_start=True)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("ollama not started yet")
+
+    _mock_http(monkeypatch, handler)
+    await llm.warm_up_model()
+    assert "warm-up skipped" in capsys.readouterr().err
+
+    def handler500(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="no memory")
+
+    _mock_http(monkeypatch, handler500)
+    await llm.warm_up_model()
+    assert "warm-up: 500" in capsys.readouterr().err
