@@ -33,11 +33,12 @@
 // cap the opening at MOUTH_MAX_OPEN (full "aa" is never reached), and ease
 // toward the target with a fast attack and a slower release.
 //
-// These are first-guess numbers: there is no renderer in the dev sandbox, so
-// nobody has seen the result on the real model. Tune MOUTH_MAX_OPEN first.
+// These numbers were tuned by eye on the real model only for MOUTH_MAX_OPEN
+// (0.6 read slightly small, so 0.8); the rest are untouched first guesses.
 
-/** Highest "aa" weight ever applied. 1.0 shows teeth and tongue on this model. */
-export const MOUTH_MAX_OPEN = 0.6;
+/** Highest "aa" weight ever applied. 1.0 shows teeth and tongue on this model; 0.6 was
+ * a touch too small in use, so 0.8 (the user's call). */
+export const MOUTH_MAX_OPEN = 0.8;
 /** Below this RMS (room tone, codec noise, the tail of a word) the mouth stays shut. */
 export const MOUTH_NOISE_GATE = 0.02;
 /** RMS that maps to a fully-open (= MOUTH_MAX_OPEN) mouth. Typical loud speech sits near 0.2. */

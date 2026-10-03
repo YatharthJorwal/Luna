@@ -54,7 +54,7 @@ def test_capture_screen_wraps_grab_failure():
 
 @pytest.mark.asyncio
 async def test_describe_screen_passes_capture_to_llm(monkeypatch):
-    monkeypatch.setattr(vision, "capture_screen", lambda: "fake_b64_png")
+    monkeypatch.setattr(vision, "capture_screen", lambda *_a, **_k: "fake_b64_png")
 
     captured = {}
 
@@ -229,3 +229,57 @@ async def test_dispatch_capture_camera_tool_unavailable_surfaces_cleanly(monkeyp
     result = await tools.dispatch_tool_call("capture_camera", {}, websocket=object())
     assert "unavailable" in result.lower()
     assert "armed" in result.lower()
+
+
+# ---------------------------------------------------------------------------
+# Screenshot size -- a full-resolution PNG went to the vision model for every
+# glance, which is what made Continuous OCR and Task Guide slow.
+# ---------------------------------------------------------------------------
+
+import io as _io
+
+from PIL import Image as _Image
+
+
+def _screen(width, height):
+    return _Image.new("RGB", (width, height), (30, 90, 160))
+
+
+def test_shrink_for_model_scales_the_long_edge_and_keeps_aspect():
+    out = vision.shrink_for_model(_screen(2560, 1440), 1024)
+    assert max(out.size) == 1024
+    assert abs(out.size[0] / out.size[1] - 2560 / 1440) < 0.01
+
+
+def test_shrink_for_model_never_upscales_and_zero_means_native():
+    small = _screen(800, 600)
+    assert vision.shrink_for_model(small, 1024) is small
+    big = _screen(2560, 1440)
+    assert vision.shrink_for_model(big, 0) is big
+
+
+def test_capture_screen_with_a_size_returns_a_smaller_jpeg():
+    with patch("PIL.ImageGrab.grab", return_value=_screen(2560, 1440)):
+        scaled = base64.b64decode(vision.capture_screen(1024))
+        native = base64.b64decode(vision.capture_screen())
+    assert scaled[:2] == b"\xff\xd8"  # JPEG
+    assert native[:8] == b"\x89PNG\r\n\x1a\n"  # unscaled path is unchanged
+    assert max(_Image.open(_io.BytesIO(scaled)).size) == 1024
+    assert len(scaled) < len(native)
+
+
+@pytest.mark.asyncio
+async def test_describe_screen_uses_the_explicit_look_size(monkeypatch):
+    seen = {}
+
+    def fake_capture(max_long_edge=None):
+        seen["edge"] = max_long_edge
+        return "b64"
+
+    async def fake_describe(prompt, image_b64):
+        return "a desktop"
+
+    monkeypatch.setattr(vision, "capture_screen", fake_capture)
+    monkeypatch.setattr(vision.llm, "describe_image", fake_describe)
+    await vision.describe_screen()
+    assert seen["edge"] == vision.CONFIG.vision.look_max_long_edge

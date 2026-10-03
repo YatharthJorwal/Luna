@@ -8,7 +8,7 @@ engine.
 from __future__ import annotations
 
 import pathlib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
@@ -35,6 +35,13 @@ class LLMConfig:
     # 'length' once the history outgrew an unknown default -- see
     # docs/DECISIONS.md). Only honored with api_style: ollama_native.
     num_ctx: int | None = 8192
+    # Optional separate model for everything that looks at an image (screen
+    # looks, Continuous OCR, Task Guide, camera, uploads). None = use `model`
+    # (the single-model setup). Needed when `model` is a text-only build, e.g.
+    # a community GGUF without the vision projector. Keep it small enough to
+    # stay in VRAM next to `model` and GPT-SoVITS: if the two don't fit
+    # together, Ollama swaps them per request and every look pays a reload.
+    vision_model: str | None = None
 
 
 @dataclass(frozen=True)
@@ -127,6 +134,23 @@ class OCRWatchConfig:
 
 
 @dataclass(frozen=True)
+class VisionConfig:
+    """How big a screenshot is when the model sees it. Image cost grows with
+    pixel count (a 1080p PNG is ~2.6k image tokens and a slow encode); the
+    original code sent every capture at full resolution as PNG, which made
+    Continuous OCR and Task Guide slow. All defaulted so an older config.yaml
+    keeps loading."""
+
+    # Longest side, in pixels, for background glances (Continuous OCR, Task
+    # Guide) -- enough to tell what app and roughly what is on screen.
+    ambient_max_long_edge: int = 1024
+    # Longest side for an explicit "look at my screen" -- sharper, so small
+    # text is more readable. 0 = never downscale.
+    look_max_long_edge: int = 1600
+    jpeg_quality: int = 85
+
+
+@dataclass(frozen=True)
 class Config:
     llm: LLMConfig
     tts: TTSConfig
@@ -135,6 +159,9 @@ class Config:
     memory: MemoryConfig
     task_guide: TaskGuideConfig
     ocr_watch: OCRWatchConfig
+    # Last and defaulted: a config.yaml written before this section existed
+    # must keep loading.
+    vision: VisionConfig = field(default_factory=VisionConfig)
 
 
 def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
@@ -178,6 +205,7 @@ def load_config(path: pathlib.Path = _CONFIG_PATH) -> Config:
         memory=MemoryConfig(**raw_memory),
         task_guide=TaskGuideConfig(**raw["task_guide"]),
         ocr_watch=OCRWatchConfig(**raw["ocr_watch"]),
+        vision=VisionConfig(**(raw.get("vision") or {})),
     )
 
 

@@ -464,6 +464,14 @@ Still applies from Phase 1 -- unchanged:
   model's proportions -- see "Putting your VRoid model in" above for
   which constant to nudge for which symptom. Adjust and let Vite
   hot-reload.
+- **After switching models, looking at the screen / Continuous OCR / the
+  camera / image uploads fail (or "describe_image failed" in the log):** the
+  new model probably has no vision. The orchestrator prints
+  `[luna] model capabilities: ...` at startup; if `vision` is missing, set
+  `llm.vision_model` in `orchestrator/config.yaml` to a model that has it
+  (see `docs/MODELS.md`). Looks that work but feel slow: the `[luna] vision:`
+  log line shows whether the time went to `load` (model swapped in), reading
+  the image (`prompt_eval`) or the answer (`gen`).
 - **Her replies stop mid-sentence without you pressing stop:** look in
   `orchestrator.log` for `WARNING: reply stopped by 'length'`. The per-turn
   line shows `prompt_tokens=` and `num_ctx=`; if the prompt is close to
@@ -478,7 +486,7 @@ Still applies from Phase 1 -- unchanged:
   `ocr watch: enabled by the shell`. The default interval is 240 s;
   `comment_interval_seconds: 30` is for testing only.
 - **Her mouth opens too wide (teeth/tongue showing) or flaps:** the opening
-  is capped by `MOUTH_MAX_OPEN` in `src/lipsync.ts` (0.6). Lower it a little
+  is capped by `MOUTH_MAX_OPEN` in `src/lipsync.ts` (0.8). Lower it a little
   and reload; if it still looks off, the `aa` shape itself is edited in VRoid
   Studio. The devtools console also prints a `[luna] VRM report` at startup
   (expressions, gaze, bones) -- paste it when planning avatar motion.

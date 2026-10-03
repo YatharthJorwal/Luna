@@ -46,6 +46,7 @@ import subprocess
 import sys
 import time
 import traceback
+from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
@@ -67,7 +68,17 @@ from persona import SYSTEM_PROMPT, apply_persona_pass, extract_emotion_tag
 from tools import vision
 from tts import synthesize
 
-app = FastAPI()
+@contextlib.asynccontextmanager
+async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    """One diagnostic at boot: what Ollama says the configured chat/vision
+    models can do, with a plain warning when e.g. the model has no vision.
+    Runs as a background task so a slow or absent Ollama never delays
+    startup; never raises."""
+    asyncio.create_task(llm.report_model_capabilities())
+    yield
+
+
+app = FastAPI(lifespan=_lifespan)
 
 HOST = "127.0.0.1"
 PORT = 8765
@@ -603,7 +614,7 @@ async def _run_task_guide_check(
     """
     task_guide.mark_checked()
     try:
-        image_b64 = await asyncio.to_thread(vision.capture_screen)
+        image_b64 = await asyncio.to_thread(vision.capture_screen, CONFIG.vision.ambient_max_long_edge)
     except vision.ToolUnavailableError as exc:
         print(f"[luna] task guide: capture failed, skipping this check: {exc}", file=sys.stderr)
         return
@@ -700,7 +711,7 @@ async def _run_ocr_watch_check(
     never more than a missed check.
     """
     try:
-        image_b64 = await asyncio.to_thread(vision.capture_screen)
+        image_b64 = await asyncio.to_thread(vision.capture_screen, CONFIG.vision.ambient_max_long_edge)
     except vision.ToolUnavailableError as exc:
         print(f"[luna] ocr watch: capture failed, skipping this check: {exc}", file=sys.stderr)
         return

@@ -21,8 +21,13 @@ from __future__ import annotations
 
 import base64
 import io
+from typing import TYPE_CHECKING
 
 import llm
+from config import CONFIG
+
+if TYPE_CHECKING:
+    from PIL import Image
 
 
 class ToolUnavailableError(Exception):
@@ -34,9 +39,27 @@ class ToolUnavailableError(Exception):
     crashing the turn."""
 
 
-def capture_screen() -> str:
-    """Takes a screenshot right now and returns it as a base64-encoded
-    PNG -- the *raw* capture, not the text description (that's
+def shrink_for_model(image: "Image.Image", max_long_edge: int) -> "Image.Image":
+    """Returns `image` scaled down so its longest side is at most
+    `max_long_edge` pixels (aspect ratio kept), or `image` itself if it is
+    already small enough or max_long_edge is 0/negative. Vision-language
+    models pay per pixel (a full 1080p capture is ~2.6k image tokens, and
+    1440p/4K far more -- enough to crowd a small context window), so
+    unconditionally sending native resolution was the main reason a screen
+    read took seconds. LANCZOS keeps small text as legible as a downscale can."""
+    from PIL import Image
+
+    longest = max(image.size)
+    if max_long_edge <= 0 or longest <= max_long_edge:
+        return image
+    scale = max_long_edge / longest
+    new_size = (max(1, round(image.size[0] * scale)), max(1, round(image.size[1] * scale)))
+    return image.resize(new_size, Image.Resampling.LANCZOS)
+
+
+def capture_screen(max_long_edge: int | None = None) -> str:
+    """Takes a screenshot right now and returns it base64-encoded -- the
+    *raw* capture, not the text description (that's
     describe_screen() below, which is what's actually registered as a
     tool). Split out on its own so the pure-capture part stays plain and
     synchronously unit-testable (mock PIL.ImageGrab, no event loop or LLM
@@ -70,7 +93,14 @@ def capture_screen() -> str:
         raise ToolUnavailableError(f"screen capture failed: {exc}") from exc
 
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    if max_long_edge is None:
+        # Unscaled, lossless: the original behavior (and what the unit tests
+        # pin). Callers that feed a model pass a size -- see the config's
+        # `vision:` section.
+        image.save(buffer, format="PNG")
+    else:
+        image = shrink_for_model(image, max_long_edge).convert("RGB")
+        image.save(buffer, format="JPEG", quality=CONFIG.vision.jpeg_quality)
     return base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
@@ -80,7 +110,7 @@ async def describe_screen() -> str:
     the internal VLM call that turns it into text. Kept separate from
     capture_screen() itself precisely so that function can stay
     synchronously unit-testable without needing to stub the LLM too."""
-    image_b64 = capture_screen()
+    image_b64 = capture_screen(CONFIG.vision.look_max_long_edge)
     prompt = (
         "Describe what's currently on this computer screen. Focus on: "
         "what application or website is open, any visible text that "

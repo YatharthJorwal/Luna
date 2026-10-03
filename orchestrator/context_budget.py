@@ -41,8 +41,51 @@ MESSAGE_OVERHEAD_TOKENS = 6
 SAFETY_TOKENS = 400
 
 
+# Self-calibration. chars/3.5 over-counts for this model (a real session
+# measured ~4.1-4.4 chars per token on her replies), which made the fit drop
+# history while the real prompt was only ~66% of the window. Ollama reports
+# the true prompt size on every reply, so llm.py feeds (estimate, actual)
+# pairs to observe() and the estimate is scaled by a smoothed ratio. Clamped
+# so one odd sample (a big image, a huge tool result) can never make the
+# estimate wildly optimistic; it can only ever shave off the over-count.
+MIN_RATIO = 0.7
+MAX_RATIO = 1.05
+_RATIO_SMOOTHING = 0.3
+_ratio = 1.0
+_have_sample = False
+
+
+def calibration_ratio() -> float:
+    return _ratio
+
+
+def reset_calibration() -> None:
+    global _ratio, _have_sample
+    _ratio, _have_sample = 1.0, False
+
+
+def observe(estimated_tokens: int, actual_tokens: int | None) -> None:
+    """Records one real prompt size against the raw (uncalibrated) estimate
+    for the same messages. Ignores nonsense (no actual count, tiny prompts)."""
+    global _ratio, _have_sample
+    if not actual_tokens or estimated_tokens < 200:
+        return
+    sample = min(MAX_RATIO, max(MIN_RATIO, actual_tokens / estimated_tokens))
+    if not _have_sample:
+        _ratio, _have_sample = sample, True
+    else:
+        _ratio = (1 - _RATIO_SMOOTHING) * _ratio + _RATIO_SMOOTHING * sample
+
+
 def estimate_tokens(text: str) -> int:
+    """Raw chars/3.5 estimate -- NOT calibrated (calibration is applied once,
+    to the totals in fit_messages, so observe() compares like with like)."""
     return math.ceil(len(text) / CHARS_PER_TOKEN)
+
+
+def estimate_prompt(messages: list[dict[str, Any]], tools: list[dict[str, Any]] | None = None) -> int:
+    """Raw, uncalibrated estimate for a whole request: messages + tools."""
+    return sum(message_tokens(m) for m in messages) + tools_tokens(tools)
 
 
 def message_tokens(message: dict[str, Any]) -> int:
@@ -78,16 +121,17 @@ def fit_messages(
     too big for num_ctx. num_ctx None (server default, unknown) = no-op.
     """
     if not num_ctx:
-        return list(messages), 0, sum(message_tokens(m) for m in messages), 0
+        return list(messages), 0, math.ceil(sum(message_tokens(m) for m in messages) * _ratio), 0
 
+    ratio = _ratio
     budget = (
         num_ctx
         - reply_reserve
         - SAFETY_TOKENS
-        - tools_tokens(tools)
-        - sum(message_tokens(m) for m in (extra or []))
+        - math.ceil(tools_tokens(tools) * ratio)
+        - math.ceil(sum(message_tokens(m) for m in (extra or [])) * ratio)
     )
-    sizes = [message_tokens(m) for m in messages]
+    sizes = [math.ceil(message_tokens(m) * ratio) for m in messages]
     total = sum(sizes)
     last = len(messages) - 1
     droppable = [i for i, m in enumerate(messages) if m.get("role") != "system" and i != last]

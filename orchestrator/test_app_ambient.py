@@ -40,7 +40,7 @@ def _isolate(monkeypatch):
     monkeypatch.setattr(app, "_send_speak", fake_send_speak)
     monkeypatch.setattr(app, "_log_transcript_turn_safely", fake_log)
     monkeypatch.setattr(app.llm, "stream_reply", fake_stream)
-    monkeypatch.setattr(app.vision, "capture_screen", lambda: "b64")
+    monkeypatch.setattr(app.vision, "capture_screen", lambda *_a, **_k: "b64")
     yield spoken
     ocr_watch.set_active(False)
 

@@ -201,3 +201,78 @@ def test_example_config_documents_every_new_key():
     for key in ("num_ctx", "max_unprompted_in_history", "min_comment_gap_seconds",
                 "same_screen_similarity", "pause_during_task"):
         assert key in text
+
+
+def test_older_config_without_vision_settings_still_loads(tmp_path: pathlib.Path):
+    raw = yaml.safe_load((pathlib.Path(config.__file__).parent / "config.example.yaml").read_text(encoding="utf-8"))
+    raw["llm"].pop("vision_model", None)
+    raw.pop("vision", None)
+    path = tmp_path / "old.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    cfg = config.load_config(path)
+    assert cfg.llm.vision_model is None
+    assert cfg.vision.ambient_max_long_edge == 1024
+    assert cfg.vision.look_max_long_edge == 1600
+    assert cfg.vision.jpeg_quality == 85
+
+
+def test_example_config_documents_the_vision_keys():
+    text = (pathlib.Path(config.__file__).parent / "config.example.yaml").read_text(encoding="utf-8")
+    for key in ("vision_model", "ambient_max_long_edge", "look_max_long_edge", "jpeg_quality"):
+        assert key in text
+
+
+# --- self-calibrating estimate ------------------------------------------------
+# The raw chars/3.5 estimate over-counted this model (real replies measured
+# ~4.1-4.4 chars/token), so the fit dropped history while the real prompt was
+# only ~66% of the window. Ollama's real prompt_eval_count corrects it.
+
+
+@pytest.fixture
+def fresh_calibration():
+    cb.reset_calibration()
+    yield
+    cb.reset_calibration()
+
+
+def test_calibration_starts_neutral(fresh_calibration):
+    assert cb.calibration_ratio() == 1.0
+
+
+def test_observe_pulls_the_ratio_toward_the_real_count(fresh_calibration):
+    cb.observe(6500, 5431)  # a real pair from the user's log: est ~6.5k, actual 5431
+    assert 0.8 < cb.calibration_ratio() < 0.86
+    for _ in range(10):
+        cb.observe(6500, 5431)
+    assert abs(cb.calibration_ratio() - 5431 / 6500) < 0.01
+
+
+def test_observe_is_clamped_both_ways(fresh_calibration):
+    cb.observe(10_000, 1_000)  # absurdly low actual
+    assert cb.calibration_ratio() == cb.MIN_RATIO
+    cb.reset_calibration()
+    cb.observe(1_000, 50_000)  # absurdly high actual (e.g. a big image in the prompt)
+    assert cb.calibration_ratio() == cb.MAX_RATIO
+
+
+def test_observe_ignores_missing_or_tiny_samples(fresh_calibration):
+    cb.observe(5000, None)
+    cb.observe(5000, 0)
+    cb.observe(50, 40)
+    assert cb.calibration_ratio() == 1.0
+
+
+def test_calibration_keeps_more_history_but_still_fits(fresh_calibration):
+    messages = [SYSTEM] + _hist(60, size=400)
+    _, dropped_raw, _, _ = cb.fit_messages(messages, num_ctx=8192, reply_reserve=512, tools=TOOLS)
+    cb.observe(6500, 5431)
+    fitted, dropped_cal, est, budget = cb.fit_messages(messages, num_ctx=8192, reply_reserve=512, tools=TOOLS)
+    assert dropped_cal < dropped_raw  # the over-count no longer evicts history needlessly
+    assert est <= budget  # and the calibrated estimate still fits the window
+
+
+def test_estimate_prompt_is_raw_and_ignores_calibration(fresh_calibration):
+    messages = [SYSTEM] + _hist(4)
+    before = cb.estimate_prompt(messages, TOOLS)
+    cb.observe(6500, 5431)
+    assert cb.estimate_prompt(messages, TOOLS) == before  # observe() compares like with like

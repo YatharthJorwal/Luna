@@ -189,3 +189,185 @@ async def test_stream_reply_with_tools_warns_when_context_nearly_full(monkeypatc
     )
     _ = [e async for e in llm.stream_reply_with_tools([{"role": "user", "content": "x"}], [])]
     assert "context nearly full" in capsys.readouterr().err
+
+
+# --- separate vision model, no-tools fallback, capability report ------------
+
+
+def _patch_llm_config(monkeypatch, **llm_overrides):
+    cfg = dataclasses.replace(
+        llm.CONFIG, llm=dataclasses.replace(llm.CONFIG.llm, **llm_overrides)
+    )
+    monkeypatch.setattr(llm, "CONFIG", cfg)
+
+
+_REAL_ASYNC_CLIENT = httpx.AsyncClient  # captured once: a second patch must not wrap the first
+
+
+def _mock_http(monkeypatch, handler):
+    monkeypatch.setattr(
+        llm.httpx,
+        "AsyncClient",
+        lambda **kw: _REAL_ASYNC_CLIENT(transport=httpx.MockTransport(handler), **kw),
+    )
+
+
+def test_vision_model_name_falls_back_to_the_chat_model(monkeypatch):
+    _patch_llm_config(monkeypatch, vision_model=None, model="chat-model")
+    assert llm.vision_model_name() == "chat-model"
+    _patch_llm_config(monkeypatch, vision_model="small-vlm", model="chat-model")
+    assert llm.vision_model_name() == "small-vlm"
+
+
+@pytest.mark.asyncio
+async def test_describe_image_sends_the_vision_model_and_logs_timing(monkeypatch, capsys):
+    _patch_llm_config(monkeypatch, vision_model="small-vlm", model="chat-model")
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["payload"] = json.loads(request.content)
+        return httpx.Response(
+            200,
+            json={
+                "message": {"content": " a cake "},
+                "load_duration": 2_500_000_000,
+                "prompt_eval_count": 2650,
+                "prompt_eval_duration": 3_100_000_000,
+                "eval_count": 40,
+                "eval_duration": 900_000_000,
+            },
+        )
+
+    _mock_http(monkeypatch, handler)
+    assert await llm.describe_image("what is this", "aGVsbG8=") == "a cake"
+    assert seen["payload"]["model"] == "small-vlm"
+    err = capsys.readouterr().err
+    assert "[luna] vision: model=small-vlm" in err
+    assert "load=2.5s" in err and "prompt_tokens=2650" in err and "prompt_eval=3.1s" in err
+
+
+@pytest.mark.asyncio
+async def test_describe_image_explains_a_model_without_vision(monkeypatch):
+    _patch_llm_config(monkeypatch, vision_model=None, model="text-only")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text='{"error":"this model is missing data required for image input"}')
+
+    _mock_http(monkeypatch, handler)
+    with pytest.raises(llm.LLMUnreachableError) as err:
+        await llm.describe_image("x", "aGk=")
+    assert "llm.vision_model" in str(err.value)
+
+
+@pytest.mark.asyncio
+async def test_tool_calling_retries_without_tools_when_the_model_has_none(monkeypatch, capsys):
+    _patch_llm_config(monkeypatch, model="community-gguf")
+    llm._NO_TOOLS_MODELS.clear()
+    payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        payloads.append(body)
+        if "tools" in body:
+            return httpx.Response(400, text='{"error":"registry.ollama.ai/x does not support tools"}')
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {"message": {"content": "Hello."}, "done": False},
+                {"done": True, "done_reason": "stop", "prompt_eval_count": 100, "eval_count": 3},
+            ),
+        )
+
+    _mock_http(monkeypatch, handler)
+    tools = [{"type": "function", "function": {"name": "t", "description": "d", "parameters": {}}}]
+    first = [e async for e in llm.stream_reply_with_tools([{"role": "user", "content": "hi"}], tools)]
+    assert first == [{"type": "content", "text": "Hello."}]
+    assert "tools" in payloads[0] and "tools" not in payloads[1]  # retried without them
+    assert "doesn't support tool-calling" in capsys.readouterr().err
+
+    # remembered: the next turn doesn't pay for the failed attempt again
+    payloads.clear()
+    second = [e async for e in llm.stream_reply_with_tools([{"role": "user", "content": "again"}], tools)]
+    assert second == [{"type": "content", "text": "Hello."}]
+    assert len(payloads) == 1 and "tools" not in payloads[0]
+    llm._NO_TOOLS_MODELS.clear()
+
+
+@pytest.mark.asyncio
+async def test_other_400s_are_still_errors_not_silent_retries(monkeypatch):
+    _patch_llm_config(monkeypatch, model="community-gguf")
+    llm._NO_TOOLS_MODELS.clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text='{"error":"something else is wrong"}')
+
+    _mock_http(monkeypatch, handler)
+    with pytest.raises(llm.LLMUnreachableError):
+        _ = [e async for e in llm.stream_reply_with_tools([{"role": "user", "content": "x"}], [{"type": "function", "function": {"name": "t"}}])]
+    assert "community-gguf" not in llm._NO_TOOLS_MODELS
+
+
+def test_capability_warnings_flag_missing_vision_and_tools():
+    warnings = llm.capability_warnings("chat", ["completion"], "chat", ["completion"])
+    assert any("no 'vision' capability" in w and "llm.vision_model" in w for w in warnings)
+    assert any("no 'tools' capability" in w for w in warnings)
+
+
+def test_capability_warnings_quiet_when_all_is_present_or_unknown():
+    assert llm.capability_warnings("m", ["completion", "vision", "tools"], "m", ["completion", "vision", "tools"]) == []
+    assert llm.capability_warnings("m", None, "m", None) == []  # old Ollama: say nothing
+
+
+@pytest.mark.asyncio
+async def test_model_capabilities_reads_api_show(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/api/show"
+        return httpx.Response(200, json={"capabilities": ["completion", "vision", "tools"]})
+
+    _mock_http(monkeypatch, handler)
+    assert await llm.model_capabilities("qwen3.5:9b") == ["completion", "vision", "tools"]
+
+
+@pytest.mark.asyncio
+async def test_model_capabilities_unreachable_or_old_server_is_none(monkeypatch):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"license": "x"})  # older Ollama: no field
+
+    _mock_http(monkeypatch, handler)
+    assert await llm.model_capabilities("m") is None
+
+    def boom(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("refused")
+
+    _mock_http(monkeypatch, boom)
+    assert await llm.model_capabilities("m") is None
+
+
+def test_vision_timing_summary_tolerates_missing_fields():
+    line = llm._vision_timing_summary("m", "a" * 2048, 4.2, {})
+    assert "model=m" in line and "image=2KB" in line and "load=?" in line
+
+
+@pytest.mark.asyncio
+async def test_turn_log_pairs_the_estimate_with_the_real_count_and_calibrates(monkeypatch, capsys):
+    import context_budget
+
+    context_budget.reset_calibration()
+    _with_num_ctx(monkeypatch, 8192)
+    big = [{"role": "system", "content": "p" * 9000}, {"role": "user", "content": "u" * 6000}]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {"message": {"content": "ok"}, "done": False},
+                {"done": True, "done_reason": "stop", "prompt_eval_count": 3300, "eval_count": 2},
+            ),
+        )
+
+    _mock_http(monkeypatch, handler)
+    _ = [e async for e in llm.stream_reply_with_tools(big, [])]
+    err = capsys.readouterr().err
+    assert "est_prompt_tokens=" in err and "prompt_tokens=3300" in err and "calibration=0.77" in err
+    assert context_budget.calibration_ratio() < 1.0
+    context_budget.reset_calibration()

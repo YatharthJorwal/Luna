@@ -37,10 +37,12 @@ from __future__ import annotations
 
 import json
 import sys
+import time
 from typing import Any, AsyncIterator
 
 import httpx
 
+import context_budget
 from config import CONFIG
 
 
@@ -146,6 +148,8 @@ async def stream_reply_with_tools(
     }
     if CONFIG.llm.think is not None:
         payload["think"] = CONFIG.llm.think
+    if CONFIG.llm.model in _NO_TOOLS_MODELS:
+        payload.pop("tools", None)
 
     # Debug visibility while this is still unverified against a real
     # server (see this function's own docstring) -- one line per call,
@@ -173,54 +177,74 @@ async def stream_reply_with_tools(
     # what turns "she cut off" from a guess into a diagnosis.
     prompt_tokens: int | None = None
     gen_tokens: int | None = None
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as client:
-            async with client.stream("POST", url, json=payload) as response:
-                if response.status_code >= 400:
-                    body = await response.aread()
-                    raise LLMUnreachableError(
-                        f"{response.status_code} from {url}: {body[:300]!r}"
-                    )
-                async for line in response.aiter_lines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    chunk = _parse_json(line)
-                    if chunk is None:
-                        continue
-                    message = chunk.get("message")
-                    if isinstance(message, dict):
-                        if "tool_calls" in message:
-                            saw_tool_calls_key = True
-                        calls = _normalize_tool_calls(message.get("tool_calls"))
-                        if calls:
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as client:
+                async with client.stream("POST", url, json=payload) as response:
+                    if response.status_code >= 400:
+                        body = await response.aread()
+                        if attempt == 0 and "tools" in payload and _is_no_tools_error(body):
+                            _NO_TOOLS_MODELS.add(CONFIG.llm.model)
+                            payload.pop("tools", None)
+                            tool_names = []
                             print(
-                                f"[luna] tool-calling: model called "
-                                f"{[c['name'] for c in calls]}",
+                                f"[luna] WARNING: '{CONFIG.llm.model}' doesn't support tool-calling "
+                                "(Ollama said so); retrying this turn without tools and not "
+                                "offering them again. Look/camera requests still work via the "
+                                "regex gate.",
                                 file=sys.stderr,
                             )
-                            yield {"type": "tool_calls", "calls": calls}
-                            return
-                        content = message.get("content") or ""
-                        if content:
-                            saw_any_content = True
-                            chars_streamed += len(content)
-                            yield {"type": "content", "text": content}
-                    if chunk.get("done"):
-                        done_seen = True
-                        done_reason = chunk.get("done_reason")
-                        prompt_tokens = _int_or_none(chunk.get("prompt_eval_count"))
-                        gen_tokens = _int_or_none(chunk.get("eval_count"))
-                        break
-    except httpx.RequestError as exc:
-        raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
+                            continue
+                        raise LLMUnreachableError(
+                            f"{response.status_code} from {url}: {body[:300]!r}"
+                        )
+                    async for line in response.aiter_lines():
+                        line = line.strip()
+                        if not line:
+                            continue
+                        chunk = _parse_json(line)
+                        if chunk is None:
+                            continue
+                        message = chunk.get("message")
+                        if isinstance(message, dict):
+                            if "tool_calls" in message:
+                                saw_tool_calls_key = True
+                            calls = _normalize_tool_calls(message.get("tool_calls"))
+                            if calls:
+                                print(
+                                    f"[luna] tool-calling: model called "
+                                    f"{[c['name'] for c in calls]}",
+                                    file=sys.stderr,
+                                )
+                                yield {"type": "tool_calls", "calls": calls}
+                                return
+                            content = message.get("content") or ""
+                            if content:
+                                saw_any_content = True
+                                chars_streamed += len(content)
+                                yield {"type": "content", "text": content}
+                        if chunk.get("done"):
+                            done_seen = True
+                            done_reason = chunk.get("done_reason")
+                            prompt_tokens = _int_or_none(chunk.get("prompt_eval_count"))
+                            gen_tokens = _int_or_none(chunk.get("eval_count"))
+                            break
+        except httpx.RequestError as exc:
+            raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
+        break  # finished normally; only the no-tools retry above `continue`s
+    # Raw estimate for exactly what was sent, logged beside Ollama's real
+    # count and fed to the calibration (context_budget.observe).
+    sent_tools = payload.get("tools")
+    raw_estimate = context_budget.estimate_prompt(messages, sent_tools)
+    context_budget.observe(raw_estimate, prompt_tokens)
     print(
         f"[luna] tool-calling: offered {tool_names}, replied directly "
         f"(saw_content={saw_any_content}, "
         f"'tool_calls' key ever present={saw_tool_calls_key}, "
         f"done={done_seen}, done_reason={done_reason!r}, chars={chars_streamed}, "
         f"prompt_tokens={prompt_tokens}, gen_tokens={gen_tokens}, "
-        f"num_ctx={CONFIG.llm.num_ctx})",
+        f"num_ctx={CONFIG.llm.num_ctx}, est_prompt_tokens={raw_estimate}, "
+        f"calibration={context_budget.calibration_ratio():.2f})",
         file=sys.stderr,
     )
     if done_reason == "length":
@@ -251,6 +275,107 @@ async def stream_reply_with_tools(
             "if she cut off mid-sentence, this is why.",
             file=sys.stderr,
         )
+
+
+# Models Ollama has told us can't do tool-calling (HTTP 400 "does not support
+# tools" -- typical of a community GGUF pulled with `hf.co/...`, whose chat
+# template Ollama can't map to its tools format). Without this, such a model
+# makes EVERY chat turn fail with an LLM-unreachable error. Remembered per
+# model for the process so only the first turn pays for the retry.
+_NO_TOOLS_MODELS: set[str] = set()
+
+
+def _is_no_tools_error(body: bytes | str) -> bool:
+    text = body.decode("utf-8", "replace") if isinstance(body, bytes) else body
+    return "does not support tools" in text.lower()
+
+
+def _vision_timing_summary(model: str, image_b64: str, elapsed_s: float, data: dict[str, Any]) -> str:
+    """One log line for a vision call, from Ollama's own timing fields
+    (nanoseconds). Separates the three possible reasons a look is slow:
+    `load` = the model had to be (re)loaded into VRAM, `prompt_tokens` /
+    `prompt_eval` = how much the image cost to read (image tokens grow with
+    pixel count), `gen` = writing the answer."""
+
+    def secs(key: str) -> str:
+        value = data.get(key)
+        return f"{value / 1e9:.1f}s" if isinstance(value, (int, float)) else "?"
+
+    return (
+        f"[luna] vision: model={model} image={len(image_b64) // 1024}KB total={elapsed_s:.1f}s "
+        f"load={secs('load_duration')} prompt_tokens={data.get('prompt_eval_count')} "
+        f"prompt_eval={secs('prompt_eval_duration')} gen_tokens={data.get('eval_count')} "
+        f"gen={secs('eval_duration')}"
+    )
+
+
+def vision_model_name() -> str:
+    """The model that reads images: llm.vision_model when set, else the chat
+    model (the original single-model setup)."""
+    return CONFIG.llm.vision_model or CONFIG.llm.model
+
+
+def capability_warnings(
+    chat_model: str,
+    chat_caps: list[str] | None,
+    vision_model: str,
+    vision_caps: list[str] | None,
+) -> list[str]:
+    """Human-readable problems from `ollama show` capability lists (None =
+    unknown, e.g. an older Ollama that doesn't report them: say nothing)."""
+    out: list[str] = []
+    if vision_caps is not None and "vision" not in vision_caps:
+        out.append(
+            f"'{vision_model}' reports no 'vision' capability, so looking at the screen, "
+            "Continuous OCR, Task Guide, the camera and image uploads will fail. Set "
+            "llm.vision_model in config.yaml to a model that can read images "
+            "(e.g. qwen3.5:4b), or use a build of your model that includes vision."
+        )
+    if chat_caps is not None and "tools" not in chat_caps:
+        out.append(
+            f"'{chat_model}' reports no 'tools' capability. Chat still works (Luna retries "
+            "without tools) and look/camera requests are handled by the regex gate, but the "
+            "model can't call tools on its own."
+        )
+    return out
+
+
+async def model_capabilities(model: str) -> list[str] | None:
+    """Ollama's capability list for `model` (e.g. completion, vision, tools,
+    thinking) via POST /api/show, or None if the server is unreachable or too
+    old to report them. Diagnostic only -- never raises."""
+    if CONFIG.llm.api_style != "ollama_native":
+        return None
+    url = f"{CONFIG.llm.base_url.rstrip('/')}/api/show"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(10.0, connect=3.0)) as client:
+            response = await client.post(url, json={"model": model})
+            if response.status_code >= 400:
+                return None
+            caps = response.json().get("capabilities")
+    except (httpx.RequestError, ValueError):
+        return None
+    return [str(c) for c in caps] if isinstance(caps, list) else None
+
+
+async def report_model_capabilities() -> None:
+    """Startup check: prints what Ollama says the configured model(s) can do
+    and warns about the mismatches that would otherwise only show up as
+    mysterious failures mid-conversation. Never raises."""
+    try:
+        chat = CONFIG.llm.model
+        vision = vision_model_name()
+        chat_caps = await model_capabilities(chat)
+        vision_caps = chat_caps if vision == chat else await model_capabilities(vision)
+        print(
+            f"[luna] model capabilities: chat '{chat}' = {chat_caps if chat_caps is not None else 'unknown'}"
+            + ("" if vision == chat else f"; vision '{vision}' = {vision_caps if vision_caps is not None else 'unknown'}"),
+            file=sys.stderr,
+        )
+        for warning in capability_warnings(chat, chat_caps, vision, vision_caps):
+            print(f"[luna] WARNING: {warning}", file=sys.stderr)
+    except Exception as exc:  # noqa: BLE001 -- diagnostics must never stop startup
+        print(f"[luna] model capability check skipped: {exc}", file=sys.stderr)
 
 
 def _int_or_none(value: Any) -> int | None:
@@ -301,9 +426,11 @@ async def describe_image(prompt: str, image_b64: str) -> str:
     "images": [base64...] field on a message, which isn't part of the
     generic OpenAI-compatible shape this project also supports.
 
-    **Not verified against a real server**: qwen3.5:9b is documented as
-    natively multimodal (see config.yaml's llm.model comment), but this
-    exact request shape has never actually been sent to it.
+    Uses llm.vision_model when set, else llm.model (see vision_model_name).
+    Every image path -- screen looks, Continuous OCR, Task Guide, camera,
+    image uploads -- goes through here; the main chat model never receives
+    pixels, so it can be a text-only model. Logs a `[luna] vision:` timing
+    line per call (model, image size, load / prompt-eval / generation time).
     """
     if CONFIG.llm.api_style != "ollama_native":
         raise LLMUnreachableError(
@@ -312,8 +439,9 @@ async def describe_image(prompt: str, image_b64: str) -> str:
         )
 
     url = f"{CONFIG.llm.base_url.rstrip('/')}/api/chat"
+    model = vision_model_name()
     payload: dict[str, Any] = {
-        "model": CONFIG.llm.model,
+        "model": model,
         "messages": [{"role": "user", "content": prompt, "images": [image_b64]}],
         "stream": False,
         "options": _ollama_options(temperature=0.4, num_predict=400),
@@ -321,16 +449,25 @@ async def describe_image(prompt: str, image_b64: str) -> str:
     if CONFIG.llm.think is not None:
         payload["think"] = CONFIG.llm.think
 
+    started = time.monotonic()
     try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=5.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as client:
             response = await client.post(url, json=payload)
             if response.status_code >= 400:
+                hint = ""
+                lowered = response.text.lower()
+                if "image" in lowered or "vision" in lowered or "mmproj" in lowered:
+                    hint = (
+                        f" -- '{model}' probably has no vision support; set llm.vision_model "
+                        "in config.yaml to a model that can read images"
+                    )
                 raise LLMUnreachableError(
-                    f"{response.status_code} from {url}: {response.text[:300]!r}"
+                    f"{response.status_code} from {url}: {response.text[:300]!r}{hint}"
                 )
             data = response.json()
     except httpx.RequestError as exc:
         raise LLMUnreachableError(f"couldn't reach {url}: {exc}") from exc
+    print(_vision_timing_summary(model, image_b64, time.monotonic() - started, data), file=sys.stderr)
 
     message = data.get("message")
     if not isinstance(message, dict):

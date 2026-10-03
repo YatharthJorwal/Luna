@@ -472,6 +472,9 @@ Still open:
   `capture_interval_seconds` (90 s default) and chide tone, and her habit of
   embellishing past the vision description (details carried over from an
   earlier screen).
+- Perception tiers (idea): window title -> real OCR text -> VLM only when needed,
+  so Task Guide / Continuous OCR cost almost nothing most of the time; see the
+  last DECISIONS entry. Not scheduled.
 - Phase 12 (Live Voice Chat) planning decisions -- see its entry.
 - Phase 13 (Living avatar) planning -- see its entry; its first step needs the
   VRM report output from the user's machine (devtools console, `[luna] VRM report`).

@@ -7,6 +7,24 @@ one thing to keep loaded in VRAM. Serve it through **Ollama or a llama.cpp
 server** (OpenAI-compatible endpoint + tool calling), so the model is a config
 value, not something wired deep into the code.
 
+## Using a different or community model
+
+- Set `llm.model` to the exact tag Ollama lists (`ollama list`); for a
+  Hugging Face GGUF that is `hf.co/<user>/<repo>:<quant>`.
+- Check what it can do: `ollama show <tag>` lists capabilities, and the
+  orchestrator prints `[luna] model capabilities: ...` at startup with a
+  warning if `vision` or `tools` is missing.
+- **No vision** (some community GGUFs ship without the projector; check the
+  capabilities list, don't guess from the model card): set `llm.vision_model`
+  to a small model that does (the main model never sees pixels). Both models
+  must fit in VRAM together with GPT-SoVITS, or Ollama swaps them per request.
+  On the 12GB card that means a ~2GB vision model next to a ~7GB chat model
+  (`qwen3.5:2b-q4_K_M`), or just one multimodal model for everything.
+- **No tools:** chat still works (retried without tools); look/camera
+  requests are caught by the regex gate in `look_intent.py`.
+- Keep `llm.num_ctx` identical for all calls (it already is) and size it to
+  the VRAM left over: a bigger window costs KV cache.
+
 ## Locked default for this build
 
 **RTX 3060 12GB, i5-14400F, 32GB DDR5-4800 → Qwen3.5-9B**, replacing the

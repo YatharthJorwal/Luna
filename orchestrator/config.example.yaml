@@ -49,6 +49,16 @@ llm:
   # OLLAMA_CONTEXT_LENGTH on the server instead). app.py trims the oldest
   # history to fit this window before each call (context_budget.py).
   num_ctx: 8192
+  # Optional: a separate model for everything that reads an image (screen
+  # looks, Continuous OCR, Task Guide, camera, uploads). null = use `model`
+  # above. REQUIRED if `model` has no vision -- e.g. a community GGUF pulled
+  # with `hf.co/...` that ships text-only (the startup log prints what Ollama
+  # says each model can do: grep "model capabilities"). The main chat model
+  # never receives pixels, so it may be text-only. Both models have to fit in
+  # VRAM together with GPT-SoVITS or Ollama swaps them on every request: on
+  # the 12GB 3060 pair a ~7GB chat model with at most a ~2GB vision model
+  # (qwen3.5:2b-q4_K_M, 1.9GB), or use ONE multimodal model for everything.
+  vision_model: null
 
 tts:
   # "pyttsx3" (current active default) or "gpt_sovits" (flip this once your
@@ -179,3 +189,17 @@ ocr_watch:
   # Skip ambient checks while a Task Guide task is active (Task Guide is
   # already watching the screen). Optional (defaults to true).
   pause_during_task: true
+
+# How big a screenshot is when the model sees it. A vision model pays per
+# pixel (a full 1080p capture is ~2.6k image tokens), and the original code
+# sent every capture at native resolution as PNG, which made Continuous OCR
+# and Task Guide slow. Both whole section and every key are optional.
+vision:
+  # Longest side in pixels for background glances (Continuous OCR, Task
+  # Guide): enough to tell what app is open and roughly what is on screen,
+  # not to read small print. Raise it if glances miss things you care about.
+  ambient_max_long_edge: 1024
+  # Longest side for an explicit "look at my screen" request -- sharper so
+  # small text is readable. 0 = never downscale.
+  look_max_long_edge: 1600
+  jpeg_quality: 85
