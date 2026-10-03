@@ -100,6 +100,58 @@ class LLMTimeoutError(LLMUnreachableError):
     first request after startup, while an 8 GB model is still loading."""
 
 
+def fold_system_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Returns `messages` with every system message after the first folded
+    into a user message, so the only system message is the one at index 0.
+
+    Why: app.py splices the per-turn context (memory recall, the screen
+    description from a look, task / forget hints, her room) in as a system
+    message just before the user's latest message. Ollama's own template for
+    the stock qwen3.5 tolerates that, but a GGUF pulled from Hugging Face
+    brings the model authors' Jinja chat template, and Qwen3.5's raises
+    "System message must be at the beginning" -- an HTTP 500 on every turn
+    that had any context (observed on hf.co/Abiray/Qwen3.5-9B-abliterated-
+    GGUF). Folding is valid for every template and changes only the copy
+    being sent, never `history`.
+
+    A late system message joins the next user message after it (that is where
+    app.py puts it: right before the user's turn), else the nearest earlier
+    one; with no user message at all it is appended to the leading system
+    message. Input is not mutated; a conversation that is already valid is
+    returned as an equal copy.
+    """
+    anchor = 0 if messages and messages[0].get("role") == "system" else None
+    late = [i for i, m in enumerate(messages) if m.get("role") == "system" and i != anchor]
+    if not late:
+        return list(messages)
+
+    out = [dict(m) for m in messages]
+    drop: set[int] = set()
+    notes: dict[int, list[str]] = {}
+    for i in late:
+        text = str(out[i].get("content") or "").strip()
+        target = next((k for k in range(i + 1, len(out)) if out[k].get("role") == "user"), None)
+        if target is None:
+            target = next((k for k in range(i - 1, -1, -1) if out[k].get("role") == "user"), None)
+        if target is not None:
+            drop.add(i)
+            if text:
+                notes.setdefault(target, []).append(text)
+        elif anchor is not None:
+            drop.add(i)
+            if text:
+                out[anchor]["content"] = f"{out[anchor].get('content') or ''}\n\n{text}"
+        else:
+            out[i]["role"] = "user"  # a lone system message and nothing else to attach it to
+    for target, texts in notes.items():
+        block = " ".join(texts)
+        out[target]["content"] = (
+            f"[Context for this reply, not part of what the user said: {block}]\n\n"
+            f"{out[target].get('content') or ''}"
+        )
+    return [m for k, m in enumerate(out) if k not in drop]
+
+
 def _request_error(url: str, exc: httpx.RequestError) -> LLMUnreachableError:
     if isinstance(exc, httpx.TimeoutException):
         return LLMTimeoutError(f"timed out waiting for {url}: {type(exc).__name__}")
@@ -161,6 +213,7 @@ async def stream_reply_with_tools(
             "the openai-compatible path"
         )
 
+    messages = fold_system_messages(messages)
     url = f"{CONFIG.llm.base_url.rstrip('/')}/api/chat"
     payload: dict[str, Any] = {
         "model": CONFIG.llm.model,
@@ -535,6 +588,7 @@ async def describe_image(prompt: str, image_b64: str) -> str:
 
 
 async def _stream_openai(messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    messages = fold_system_messages(messages)
     url = f"{CONFIG.llm.base_url.rstrip('/')}/v1/chat/completions"
     payload = {
         "model": CONFIG.llm.model,
@@ -568,6 +622,7 @@ async def _stream_openai(messages: list[dict[str, str]]) -> AsyncIterator[str]:
 
 
 async def _stream_ollama_native(messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    messages = fold_system_messages(messages)
     url = f"{CONFIG.llm.base_url.rstrip('/')}/api/chat"
     payload: dict[str, Any] = {
         "model": CONFIG.llm.model,

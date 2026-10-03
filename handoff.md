@@ -6,25 +6,25 @@
 
 ## Do this first
 
-The user is now on `hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K` (capabilities
-confirmed: tools, thinking, completion, vision; `ollama ps` 7.3 GB, 100% GPU,
-ctx 8192). Their first message after switching got "I can't reach my own brain"
-with nothing in the log (the handler swallowed the exception). The current
-bundle logs the real error, classifies failures, and warms the model at startup
-(sandbox-verified only: 273 pytest, 13 `npm run test:fe`, `tsc`, `vite build`;
-no GPU or Ollama here). Ask whether it merged, then collect:
+The user runs `hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K` (tools, thinking,
+completion, vision confirmed; `ollama ps` 7.3 GB, 100% GPU, ctx 8192; warm-up
+loads it in 28 s). Their first messages failed with an HTTP 500 that the
+previous bundle finally logged: the GGUF's Jinja template forbids a system
+message after the first, and `_run_turn` splices the per-turn context in as
+one. This bundle folds it into the user turn (`llm.fold_system_messages`).
+Sandbox-verified only (282 pytest incl. a mock strict-template server, 13
+`npm run test:fe`, `tsc`, `vite build`). Ask whether it merged, then collect:
 
-1. At startup: `[luna] warm-up: '...' loaded in Ns`. If N is large, the cold load
-   (not a bug) is what timed the first request out. Any `LLM call failed (...)`
-   line is the real error -- paste it.
-2. A few chat turns: `tool-calling:` lines (`calibration=` near 0.8), no reasoning
-   text leaking into replies with this GGUF (`think: false` unverified on it).
-3. Any look: the `[luna] vision:` line (`load=`, `prompt_eval=`, `gen=`) to judge
-   whether the screenshot downscale fixed the slow OCR.
-4. With Minecraft running: `ollama ps` must still say `100% GPU` and
-   `nvidia-smi` stay under 12288 MiB (Q6_K + projector leaves ~1 GB idle). Fallback
-   is Q5_K_M (they may have pulled it).
-5. Still unconfirmed live: OCR quieter at 240 s, "use OCR" not starting a task,
+1. Does chat work now? Any `LLM call failed (...)` line is the real error.
+2. Does she still *use* the injected context -- memory facts, and especially a
+   screen description after "look at my screen" -- now that it sits in the user
+   turn? Does she ever echo the `[Context for this reply...]` bracket?
+3. The first look on this model: `[luna] vision:` line (`load=`, `prompt_eval=`,
+   `gen=`). The image path on a Jinja-template multimodal model is unverified.
+4. Reasoning text leaking into replies (`think: false` unverified on this GGUF);
+   `tool-calling:` lines (`calibration=` near 0.8).
+5. With Minecraft running: `ollama ps` still `100% GPU`, `nvidia-smi` < 12288 MiB.
+6. Still unconfirmed live: OCR quieter at 240 s, "use OCR" not starting a task,
    "I'm done" stopping one, mouth at 0.8.
 
 ## State
@@ -106,7 +106,7 @@ the likely bottleneck and sets how "live" it can feel.
   the next one -- the user commits on their side too (`Cargo.lock`).
 - The user wants **lean docs**: decisions + why + lessons only, no per-session
   narrative. `CLAUDE.md` stays short. Don't let them re-bloat.
-- Tests: `orchestrator/` pytest (273 passing), `npm run test:fe` (13, pure
+- Tests: `orchestrator/` pytest (282 passing), `npm run test:fe` (13, pure
   frontend logic via esbuild + node:test, no new deps), `npx tsc --noEmit`,
   `npx vite build`. `ws_endpoint`'s message loop has no direct
   tests (long-standing gap), but the ambient-comment path now has app-level

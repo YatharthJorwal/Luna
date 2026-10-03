@@ -428,7 +428,10 @@ New in this round:
   `orchestrator/config.yaml` matches. If the server IS running (`ollama ps`
   shows your model), you will have heard one of the other two lines instead
   -- "my brain answered, but with an error" (an HTTP error; the status and
-  body are in the log as `[luna] LLM call failed (LLMServerError): ...`) or
+  body are in the log as `[luna] LLM call failed (LLMServerError): ...`; a
+  `Jinja Exception ... System message must be at the beginning` there was the
+  template of a community GGUF rejecting a mid-conversation system message,
+  fixed by `llm.fold_system_messages`) or
   "took too long to wake up" (a timeout, usually the first message while a
   big model was still loading; the orchestrator now loads it at startup --
   look for `[luna] warm-up: ... loaded in Ns`). Older builds said "can't reach

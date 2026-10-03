@@ -478,3 +478,141 @@ async def test_warm_up_never_raises(monkeypatch, capsys):
     _mock_http(monkeypatch, handler500)
     await llm.warm_up_model()
     assert "warm-up: 500" in capsys.readouterr().err
+
+
+# --- strict chat templates: only ONE system message, at the start ------------
+# Real failure (hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF, whose Jinja template
+# says "System message must be at the beginning"): app.py splices the per-turn
+# context in as a system message before the user's turn, so EVERY turn with
+# any context came back HTTP 500 and she said "my brain answered, but with an
+# error". The stock qwen3.5's Go template tolerated it.
+
+STRICT_TEMPLATE_ERROR = (
+    '{"error":"{\\"error\\":{\\"code\\":500,\\"message\\":\\"While executing CallExpression: '
+    "raise_exception('System message must be at the beginning.')\\\"}}\"}"
+)
+
+
+def _strict_template_server(seen: list):
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        seen.append(body)
+        roles = [m["role"] for m in body["messages"]]
+        if "system" in roles[1:] or ("system" in roles and roles[0] != "system"):
+            return httpx.Response(500, text=STRICT_TEMPLATE_ERROR)
+        return httpx.Response(
+            200,
+            content=_ndjson(
+                {"message": {"content": "Hi."}, "done": False},
+                {"done": True, "done_reason": "stop", "prompt_eval_count": 500, "eval_count": 2},
+            ),
+        )
+
+    return handler
+
+
+SPLICED = [
+    {"role": "system", "content": "PERSONA"},
+    {"role": "user", "content": "earlier"},
+    {"role": "assistant", "content": "reply"},
+    {"role": "system", "content": "You remember: likes tea. The screen shows a cake."},
+    {"role": "user", "content": "hii"},
+]
+
+
+def test_fold_moves_a_late_system_message_into_the_next_user_message():
+    out = llm.fold_system_messages(SPLICED)
+    assert [m["role"] for m in out] == ["system", "user", "assistant", "user"]
+    assert out[0]["content"] == "PERSONA"
+    assert out[-1]["content"].endswith("\n\nhii")
+    assert "likes tea. The screen shows a cake." in out[-1]["content"]
+    assert out[1]["content"] == "earlier"  # other turns untouched
+
+
+def test_fold_does_not_mutate_its_input_and_leaves_valid_input_alone():
+    before = json.loads(json.dumps(SPLICED))
+    llm.fold_system_messages(SPLICED)
+    assert SPLICED == before  # history itself must never be rewritten
+    valid = [{"role": "system", "content": "p"}, {"role": "user", "content": "x"}]
+    assert llm.fold_system_messages(valid) == valid
+
+
+def test_fold_joins_several_late_system_messages_in_order():
+    msgs = [
+        {"role": "system", "content": "P"},
+        {"role": "system", "content": "first"},
+        {"role": "system", "content": "second"},
+        {"role": "user", "content": "q"},
+    ]
+    out = llm.fold_system_messages(msgs)
+    assert [m["role"] for m in out] == ["system", "user"]
+    assert "first second" in out[1]["content"] and out[1]["content"].endswith("\n\nq")
+
+
+def test_fold_attaches_to_the_user_turn_even_when_tool_messages_follow():
+    msgs = SPLICED + [
+        {"role": "assistant", "content": "", "tool_calls": [{"function": {"name": "capture_screen", "arguments": {}}}]},
+        {"role": "tool", "content": "a desktop", "tool_name": "capture_screen"},
+    ]
+    out = llm.fold_system_messages(msgs)
+    assert [m["role"] for m in out] == ["system", "user", "assistant", "user", "assistant", "tool"]
+    assert "cake" in out[3]["content"]  # the user turn, not the tool result
+    assert out[4]["tool_calls"] == msgs[5]["tool_calls"] and out[5]["tool_name"] == "capture_screen"
+
+
+def test_fold_keeps_other_keys_such_as_images():
+    msgs = [
+        {"role": "system", "content": "P"},
+        {"role": "system", "content": "ctx"},
+        {"role": "user", "content": "look", "images": ["aGk="]},
+    ]
+    out = llm.fold_system_messages(msgs)
+    assert out[1]["images"] == ["aGk="] and "ctx" in out[1]["content"]
+
+
+def test_fold_edge_cases_never_lose_the_text():
+    only_system = [{"role": "system", "content": "P"}, {"role": "system", "content": "extra"}]
+    out = llm.fold_system_messages(only_system)
+    assert [m["role"] for m in out] == ["system"] and "extra" in out[0]["content"]
+
+    no_lead = [{"role": "user", "content": "q"}, {"role": "system", "content": "late"}]
+    out = llm.fold_system_messages(no_lead)
+    assert [m["role"] for m in out] == ["user"] and "late" in out[0]["content"]
+
+    assert llm.fold_system_messages([]) == []
+
+
+@pytest.mark.asyncio
+async def test_tool_calling_request_survives_a_strict_template(monkeypatch):
+    _patch_llm_config(monkeypatch, model="hf.co/some/strict-gguf")
+    llm._NO_TOOLS_MODELS.clear()
+    seen = []
+    _mock_http(monkeypatch, _strict_template_server(seen))
+    events = [e async for e in llm.stream_reply_with_tools(SPLICED, [])]
+    assert events == [{"type": "content", "text": "Hi."}]
+    roles = [m["role"] for m in seen[0]["messages"]]
+    assert roles.count("system") == 1 and roles[0] == "system"
+    assert "cake" in seen[0]["messages"][-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_plain_streaming_request_survives_a_strict_template(monkeypatch):
+    _patch_llm_config(monkeypatch, model="hf.co/some/strict-gguf", api_style="ollama_native")
+    seen = []
+    _mock_http(monkeypatch, _strict_template_server(seen))
+    text = "".join([d async for d in llm.stream_reply(SPLICED)])
+    assert text == "Hi."
+    assert [m["role"] for m in seen[0]["messages"]].count("system") == 1
+
+
+@pytest.mark.asyncio
+async def test_token_estimate_is_taken_from_what_was_actually_sent(monkeypatch, capsys):
+    import context_budget
+
+    context_budget.reset_calibration()
+    _patch_llm_config(monkeypatch, model="m")
+    _mock_http(monkeypatch, _strict_template_server([]))
+    _ = [e async for e in llm.stream_reply_with_tools(SPLICED, [])]
+    folded_estimate = context_budget.estimate_prompt(llm.fold_system_messages(SPLICED), [])
+    assert f"est_prompt_tokens={folded_estimate}" in capsys.readouterr().err
+    context_budget.reset_calibration()

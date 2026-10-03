@@ -20,6 +20,11 @@ value, not something wired deep into the code.
   must fit in VRAM together with GPT-SoVITS, or Ollama swaps them per request.
   On the 12GB card that means a ~2GB vision model next to a ~7GB chat model
   (`qwen3.5:2b-q4_K_M`), or just one multimodal model for everything.
+- **Chat template:** a model pulled from Hugging Face brings its authors' own
+  Jinja template, which can be stricter than Ollama's. Luna sends exactly one
+  system message (first); per-turn context rides inside the user message. If
+  you ever see `Jinja Exception` in a `LLM call failed` line, that's the
+  template objecting to the message layout -- send me the line.
 - **No tools:** chat still works (retried without tools); look/camera
   requests are caught by the regex gate in `look_intent.py`.
 - Keep `llm.num_ctx` identical for all calls (it already is) and size it to
