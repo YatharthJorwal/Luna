@@ -2280,3 +2280,13 @@ Cause: the consolidation prompt's "tools/stack/games mentioned" matched a passin
 4. Visibility: the per-turn log line carries `prompt_tokens=`, `gen_tokens=` and `num_ctx=` (Ollama's real counts from the final chunk), a `length` stop says which limit it hit, and a warning fires at 85% of the window.
 
 **Rules this leaves:** a `length` stop far below `max_tokens` means the window. Anything that appends to history on a timer needs a bound by size, not by count. **Unverified:** the chars/3.5 estimate against Ollama's real `prompt_eval_count` (compare the two in the first session), and 8192 on the 12 GB card next to GPT-SoVITS.
+
+## Mouth snapping fully open (fangs and tongue visible) was the lip-sync driver, not the model
+
+A screenshot caught her mid-sentence with the mouth wide open, teeth and tongue showing. That is simply what VRoid's `aa` shape looks like at full weight, so editing the model's teeth would not have helped. The old driver (`lipsync.ts`) read an `AnalyserNode` buffer of only `frequencyBinCount` = 128 samples (a few milliseconds), computed `min(1, rms * 4)` (ordinary TTS speech hits 1.0 at RMS 0.25), and applied it raw every frame: it flapped between shut and fully open and was capped by nothing. One frame at the peak looks like a scream.
+
+**Fix:** 1024-sample window; noise gate below RMS 0.02; a soft curve up to a hard cap `MOUTH_MAX_OPEN = 0.6` (full `aa` is unreachable); frame-rate-independent easing, fast attack (28/s) and slower release (14/s), done once per frame in `getMouthOpenValue()` so the mouth also eases shut between sentence clips instead of snapping. The pure math is tested under `npm run test:fe` (alternating loud/quiet input swings ~0.07 instead of 0..1; the cap holds for any RMS). `sandbox-hud.ts` calls the same function, so the sandbox gets it too without being edited. **Unverified by eye** -- 0.6 is a first guess; tune `MOUTH_MAX_OPEN` first. If it still looks wrong, the second lever is the `aa` shape itself in VRoid Studio. The closed eyes in that frame were either a blink or the `happy` preset (0.8, known to shut VRoid eyes); one frame can't tell which, and the emotion-hold behavior is Phase 13 step 3.
+
+**Frontend tests exist now:** `npm run test:fe` bundles `tests-fe/*.test.mjs` with the esbuild that vite already installs and runs Node's built-in runner -- no new dependency, no lockfile change. Pure logic only; anything needing WebGL, the DOM or audio is judged on the real machine.
+
+**VRM report:** `vrm-report.ts` logs the model's expressions, gaze driver, bones and spring-joint count to the devtools console at boot (also `window.__lunaVrmReport`), changing nothing visible. It exists so Phase 13 is planned from what this model really exports, not from guesses.

@@ -6,25 +6,25 @@
 
 ## Do this first
 
-The user is merging the **Phase 9.5 closing bundle** (`luna.bundle`). It is
-verified in the sandbox only (240 pytest, `tsc`, `vite build`; no cargo, GPU
-or Ollama here). Ask whether it merged, then collect what the first real
-session shows in `orchestrator.log`:
+The Phase 9.5 closing bundle is merged and pushed. This round's bundle
+(**mouth fix + VRM report + frontend tests + Phase 13 plan**) is
+sandbox-verified only (240 pytest, 13 `npm run test:fe`, `tsc`, `vite build`;
+no renderer, GPU, cargo or Ollama here). Ask whether it merged, then collect:
 
-1. Each turn's `tool-calling:` line now ends with `prompt_tokens=`,
-   `gen_tokens=`, `num_ctx=8192`. **Compare `prompt_tokens` with the
-   estimate** in `context_budget.py` (chars/3.5) -- if Ollama's real number is
-   much higher than the estimate, lower `CHARS_PER_TOKEN`.
-2. No `WARNING: reply stopped by 'length'`. If it still appears, the line says
-   which limit was hit. `context: left out the N oldest history message(s)`
-   lines are normal on a long session -- they are the fix working.
-3. Continuous OCR: `ocr watch: checked -> ...` lines, with
-   `[no comment: ...]` when the code overruled the model. The user's **local**
-   `orchestrator/config.yaml` still has `comment_interval_seconds: 30` from
-   testing; the default is 240. Expect it to be much quieter at 240.
-4. VRAM: `num_ctx` 8192 next to GPT-SoVITS on the 12 GB card (`nvidia-smi`).
-5. Still untested live: "use OCR" must not start a task, "I'm done" must stop
-   one, and the startup sweep (needs an orphan to exist).
+1. **What her mouth looks like now** while she talks. `MOUTH_MAX_OPEN` (0.6) in
+   `src/lipsync.ts` is a first guess nobody has seen; lower/raise it from what
+   they report. If it is still wrong at low caps, the `aa` shape is a VRoid
+   Studio edit, not code.
+2. **The `[luna] VRM report`** from the shell's devtools console at startup
+   (right-click -> Inspect, Console tab; also `window.__lunaVrmReport`). It
+   lists the model's expressions, gaze driver, missing bones and spring-joint
+   count -- Phase 13 step 0 needs it before any avatar-motion code.
+3. From the Phase 9.5 bundle, still unconfirmed live: the `tool-calling:` log
+   line's `prompt_tokens=` / `num_ctx=8192` vs the chars/3.5 estimate in
+   `context_budget.py` (lower `CHARS_PER_TOKEN` if the real count is much
+   higher); no `reply stopped by 'length'`; Continuous OCR quieter at the
+   default 240 s (their local `config.yaml` was left at 30 s for testing);
+   "use OCR" must not start a task and "I'm done" must stop one.
 
 ## State
 
@@ -34,6 +34,18 @@ frozen by their decision -- don't touch `sandbox.ts`, `src/apartment/`,
 `camera-modes.ts`, `postfx.ts` unless asked. Phases 5 (game-context
 awareness), 6 and 11 not started. **Agent Mode (Phase 11) and Live Voice Chat
 (Phase 12) are the two disabled "Soon" rows in the `+` menu.**
+
+## Two planned phases (neither started; both are planning conversations)
+
+- **Phase 13, Living avatar** (the user's idea, shell body: natural idles,
+  breathing, gaze, expression cycles, occasional yawn / look-around / pout).
+  `docs/ROADMAP.md` Phase 13 has the layered design and seven small steps.
+  Start with step 0 (the VRM report above) and step 1 (procedural breathing and
+  sway, no clips). Notes worth knowing: the last emotion currently stays on
+  her face until the next tagged reply; the sandbox already plays curated VRMA
+  clips but the user found some idles weird, so clips need an audition/keep
+  list first; `sandbox.ts` stays frozen unless they allow extracting its loader.
+  Its `listening | thinking | speaking` state is the same signal Phase 12 needs.
 
 ## Next: Phase 12, Live Voice Chat -- a planning conversation first
 
@@ -93,8 +105,9 @@ the likely bottleneck and sets how "live" it can feel.
   the next one -- the user commits on their side too (`Cargo.lock`).
 - The user wants **lean docs**: decisions + why + lessons only, no per-session
   narrative. `CLAUDE.md` stays short. Don't let them re-bloat.
-- Tests: `orchestrator/` pytest (240 passing), `npx tsc --noEmit`, `npx vite
-  build`. No frontend test runner; `ws_endpoint`'s message loop has no direct
+- Tests: `orchestrator/` pytest (240 passing), `npm run test:fe` (13, pure
+  frontend logic via esbuild + node:test, no new deps), `npx tsc --noEmit`,
+  `npx vite build`. `ws_endpoint`'s message loop has no direct
   tests (long-standing gap), but the ambient-comment path now has app-level
   tests with faked capture/VLM/LLM/TTS (`test_app_ambient.py`).
 - The sandbox's `orchestrator/config.yaml` is a gitignored copy of the example,

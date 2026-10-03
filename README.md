@@ -477,6 +477,11 @@ Still applies from Phase 1 -- unchanged:
   all means the toggle never reached the backend: look for
   `ocr watch: enabled by the shell`. The default interval is 240 s;
   `comment_interval_seconds: 30` is for testing only.
+- **Her mouth opens too wide (teeth/tongue showing) or flaps:** the opening
+  is capped by `MOUTH_MAX_OPEN` in `src/lipsync.ts` (0.6). Lower it a little
+  and reload; if it still looks off, the `aa` shape itself is edited in VRoid
+  Studio. The devtools console also prints a `[luna] VRM report` at startup
+  (expressions, gaze, bones) -- paste it when planning avatar motion.
 - **Mouth never moves while she talks, or she never blinks:** your VRM
   export is likely missing the standard `aa`/`blink` expression presets
   the lipsync/blink code depends on -- check in an online VRM viewer
@@ -615,6 +620,9 @@ python -m pytest -v
 ```
 (or narrow it to one file/directory, e.g. `python -m pytest
 memory/test_memory.py -v`, same as before)
+
+Frontend pure-logic tests (lip-sync math, the VRM report) need nothing
+extra: from the repo root, `npm run test:fe`.
 
 ## Next
 

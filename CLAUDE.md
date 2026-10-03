@@ -40,7 +40,8 @@ follow-up look requests) is **sandbox-verified only** until the user's next
 session. Phase 5 game-context awareness and Phase 6 are not started; Phase 10
 (sandbox apartment) is frozen by explicit user decision; Phase 11 (Work Mode
 / Agent Mode) needs a dedicated safety/planning conversation before any code;
-Phase 12 (Live Voice Chat) is next, in planning. `handoff.md` has the fastest
+Phase 12 (Live Voice Chat) and Phase 13 (Living avatar: breathing, gaze,
+idles, yawn/pout) are next, both in planning. `handoff.md` has the fastest
 on-ramp and the open-items list.
 
 ## Docs map

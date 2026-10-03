@@ -398,6 +398,60 @@ awaiting on-machine confirmation · ⬜ not started)
   **Measure first:** add per-stage timings to the log (end of speech ->
   transcript -> first LLM token -> first TTS audio) -- GPT-SoVITS is the
   likely bottleneck and decides how "live" it can feel.
+- ⬜ **Phase 13 — Living avatar (shell body presence; planning stage, nothing
+  built).** Today the shell body is: a fixed arms-down pose
+  (`applyIdlePose`), a blink loop, six emotion presets eased by
+  `updateEmotion`, and `aa` for the mouth. No breathing, no gaze, no idle
+  motion, and the last emotion **stays on her face until the next tagged
+  reply** (a `happy` at 0.8 squeezes the eyes shut and `angry` never relaxes).
+  The sandbox (frozen) already plays curated VRMA clips through
+  `@pixiv/three-vrm-animation` (the 113-clip Hanami pack in
+  `public/vrm-animations/`, 56 MB, Apache-2.0/CC0/MIT -- `NOTICE.md` must
+  ship with any redistribution), and the user found some of its idles weird.
+  Goal: natural idles, breathing, expression cycles, gaze, and occasional
+  yawn / look-around / pout, driven by what she is doing.
+  **Architecture (agreed direction, not yet built):** per frame, in this order
+  -- base layer (relaxed pose, or a VRMA clip via `AnimationMixer`) -> small
+  *additive* procedural layers on the normalized bones (breathing, weight
+  shift, head/neck noise) -> expression layers (emotion easing, blink, gaze,
+  micro-variation) -> lip sync on top -> `vrm.update`. A **behavior director**
+  picks what happens from a small state (`idle | listening | thinking |
+  speaking | ambient-remark | drowsy`) plus the clock and time since the last
+  user input; all of that is frontend-local, no protocol change. The same
+  state is what Phase 12 needs for its listening indicator, so build it once.
+  **Steps, each one a small bundle the user judges by eye:**
+  0. *Inspect* -- the VRM report (shipped in the Phase 9.5 follow-up) prints
+     what this model actually exports (expressions, gaze driver, bones, spring
+     joints). Decide from it what needs authoring in VRoid Studio.
+  1. *Procedural base:* breathing (~0.2-0.3 Hz chest/shoulder), slow weight
+     shift, head/neck noise; replace the stiff pose. No clips.
+  2. *Eyes:* a gaze target with micro-saccades and occasional glances; blink
+     variety (double blink, slow blink when relaxed, blink with a gaze shift,
+     fewer blinks while speaking).
+  3. *Expression life:* hold-then-decay to a neutral baseline after a reply,
+     slow micro-drift, intensity per emotion instead of a fixed weight;
+     optional extra visemes (`oh`/`ih`/`ou`) chosen from audio band energy.
+  4. *Clip layer:* a **curated** VRMA pool -- first an audition view to mark
+     keep/reject per clip (the weird ones are the reason), then idle and
+     talking-idle pools with crossfades and the emotion gestures; procedural
+     layers stay on top at reduced weight. Extract the loader out of the
+     frozen `sandbox.ts` into its own module (needs the user's OK to touch
+     it); ship only the chosen clips, not 56 MB.
+  5. *Behavior director:* yawn (long idle, late hour, long task), stretch,
+     look around (`LookAround.vrma` or gaze wander), pout/sulk (ignored for a
+     long time, after teasing), fidgets -- with cooldowns, never during
+     speech, always interruptible, and a calm setting.
+  6. *Tuning pass:* a debug menu that triggers any behavior on demand (like the
+     emotion-test button), intensity sliders, frame-time check.
+  **Known constraints:** no renderer in the dev sandbox, so every step is
+  "unverified until the user sees it" -- ship small, with a trigger for each
+  behavior. VRoid exports usually have no pout or yawn expression; they must
+  be authored in VRoid Studio or approximated by composites (as `teasing`
+  already is). Body motion drives the hair spring bones -- check for jitter.
+  Procedural offsets fight clips unless applied as small additive deltas
+  after the mixer. New config keys need code defaults (a missing key once
+  crashed startup). Pure logic (schedulers, noise, blink timing) goes under
+  `npm run test:fe`.
 
 ## Open decisions
 
@@ -419,6 +473,8 @@ Still open:
   embellishing past the vision description (details carried over from an
   earlier screen).
 - Phase 12 (Live Voice Chat) planning decisions -- see its entry.
+- Phase 13 (Living avatar) planning -- see its entry; its first step needs the
+  VRM report output from the user's machine (devtools console, `[luna] VRM report`).
 - Phase 10 (sandbox apartment): frozen by the user; see that phase's own
   entry above for the current full list -- not repeated here to avoid the
   two going out of sync with each other.

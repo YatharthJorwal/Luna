@@ -3,6 +3,7 @@ import { GLTFLoader } from "three/examples/jsm/loaders/GLTFLoader.js";
 import { VRMLoaderPlugin, VRMUtils, type VRM } from "@pixiv/three-vrm";
 import { listen } from "@tauri-apps/api/event";
 import { WsClient, type ConnectionState, type SpeakMessage, type TranscriptMessage, type LogMessage } from "./ws-client";import { speakWithLipsync, getMouthOpenValue, getSpeechProgress } from "./lipsync";
+import { logVrmReport } from "./vrm-report";
 import { MicInput, blobToBase64 } from "./mic";
 import { CameraInput } from "./camera";
 import { classifyFile, resizeImageToBase64Jpeg, readTextFile } from "./file-upload";
@@ -171,6 +172,7 @@ async function boot(): Promise<void> {
   VRMUtils.combineMorphs(vrm);
 
   applyIdlePose(vrm);
+  logVrmReport(vrm);
 
   scene.add(vrm.scene);
 
