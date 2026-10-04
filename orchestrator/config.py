@@ -46,6 +46,18 @@ class LLMConfig:
     # message isn't a multi-second (or, for a big quant, request-timing-out)
     # cold load. Defaulted so an older config.yaml keeps loading.
     warm_up_on_start: bool = True
+    # Sampling, sent explicitly on every native request. The stock Ollama tag
+    # `qwen3.5:9b` ships a params file (presence_penalty 1.5, temperature 1,
+    # top_k 20, top_p 0.95) that a model pulled from Hugging Face does NOT
+    # get -- `ollama show` on the GGUF has no Parameters section -- so the
+    # same code sampled the two differently (repeated "second takes" inside
+    # replies on the GGUF). These defaults are the stock tag's, so switching
+    # models no longer changes the sampling. None = don't send (use whatever
+    # the model or server defaults to). Temperature stays the `temperature`
+    # key above. Defaulted so an older config.yaml keeps loading.
+    top_p: float | None = 0.95
+    top_k: int | None = 20
+    presence_penalty: float | None = 1.5
 
 
 @dataclass(frozen=True)
@@ -108,6 +120,15 @@ class TaskGuideConfig:
     # tracked, the task is silently dropped (no chide) rather than kept
     # active forever nagging someone who has stepped away.
     idle_timeout_seconds: int
+    # May the chat model itself start/stop task tracking through the
+    # set_active_task tool? Default NO: the dedicated classifier
+    # (task_guide.detect_task_change, run on every user turn) owns that. The
+    # tool was the fallback for a model that never called tools; the
+    # abliterated GGUF called it on a bare "hi" with a task description from
+    # a remembered conversation, and Task Guide then nagged about it for the
+    # whole session (and paused Continuous OCR). Defaulted so an older
+    # config.yaml keeps loading.
+    model_can_start_tasks: bool = False
 
 
 @dataclass(frozen=True)

@@ -63,6 +63,15 @@ llm:
   # message doesn't pay for the cold load (a 7+ GB model can take long enough
   # to time the first request out). Optional (defaults to true).
   warm_up_on_start: true
+  # Sampling, sent on EVERY request so the model you pick doesn't change it.
+  # These are the stock `qwen3.5:9b` tag's own built-in values (its Ollama
+  # params file: presence_penalty 1.5, top_k 20, top_p 0.95, temperature 1);
+  # a model pulled from Hugging Face has no such file, so without sending
+  # them it sampled differently and repeated itself inside replies. null =
+  # don't send. Optional (default to the values below).
+  top_p: 0.95
+  top_k: 20
+  presence_penalty: 1.5
 
 tts:
   # "pyttsx3" (current active default) or "gpt_sovits" (flip this once your
@@ -172,6 +181,12 @@ task_guide:
   # than kept active forever nagging someone who has stepped away.
   # 1800 = 30 minutes.
   idle_timeout_seconds: 1800
+  # May the chat model itself start/stop tracking through the set_active_task
+  # tool? false (default): only the per-turn classifier does, from what you
+  # actually say. A model that calls the tool on its own started a phantom
+  # task from a remembered conversation on a bare "hi", which then nagged you
+  # and paused Continuous OCR. Optional.
+  model_can_start_tasks: false
 
 ocr_watch:
   # Quick-action menu's Continuous OCR toggle (ocr_watch.py) -- how often,

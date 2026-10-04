@@ -145,7 +145,7 @@ def test_due_for_check_false_within_interval():
 
 @pytest.mark.asyncio
 async def test_check_task_progress_on_task(monkeypatch):
-    async def fake_describe_image(prompt, image_b64):
+    async def fake_describe_image(prompt, image_b64, **_kw):
         assert "writing the game loop" in prompt
         return '{"on_task": true, "note": "A Python file is open in an editor."}'
 
@@ -156,7 +156,7 @@ async def test_check_task_progress_on_task(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_check_task_progress_off_task(monkeypatch):
-    async def fake_describe_image(prompt, image_b64):
+    async def fake_describe_image(prompt, image_b64, **_kw):
         return '{"on_task": false, "note": "A video streaming site is open."}'
 
     monkeypatch.setattr(task_guide.llm, "describe_image", fake_describe_image)
@@ -166,7 +166,7 @@ async def test_check_task_progress_off_task(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_check_task_progress_llm_unreachable_returns_none(monkeypatch):
-    async def failing_describe_image(prompt, image_b64):
+    async def failing_describe_image(prompt, image_b64, **_kw):
         raise task_guide.llm.LLMUnreachableError("no server")
 
     monkeypatch.setattr(task_guide.llm, "describe_image", failing_describe_image)
@@ -176,7 +176,7 @@ async def test_check_task_progress_llm_unreachable_returns_none(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_check_task_progress_unparseable_returns_none(monkeypatch):
-    async def fake_describe_image(prompt, image_b64):
+    async def fake_describe_image(prompt, image_b64, **_kw):
         return "sure, it looks fine I guess"
 
     monkeypatch.setattr(task_guide.llm, "describe_image", fake_describe_image)
@@ -312,3 +312,31 @@ def test_detect_prompt_keeps_command_to_the_ai_out_of_tasks():
     assert "directed at the AI" in prompt
     assert '"use OCR"' in prompt
     assert "I'm playing Minecraft" in prompt
+
+
+# --- structured output + raw logging for the on-task check ----------------------
+
+
+@pytest.mark.asyncio
+async def test_check_sends_the_schema(monkeypatch):
+    seen = {}
+
+    async def fake_describe_image(prompt, image_b64, json_schema=None):
+        seen["schema"] = json_schema
+        return '{"on_task": false, "note": "a game"}'
+
+    monkeypatch.setattr(task_guide.llm, "describe_image", fake_describe_image)
+    result = await task_guide.check_task_progress("write the essay", "b64")
+    assert seen["schema"] == task_guide.CHECK_SCHEMA
+    assert result == {"on_task": False, "note": "a game"}
+    assert task_guide.CHECK_SCHEMA["required"] == ["on_task", "note"]
+
+
+@pytest.mark.asyncio
+async def test_unparseable_output_is_logged_raw(monkeypatch, capsys):
+    async def prose(prompt, image_b64, json_schema=None):
+        return "The user appears to be playing a racing game right now."
+
+    monkeypatch.setattr(task_guide.llm, "describe_image", prose)
+    assert await task_guide.check_task_progress("write the essay", "b64") is None
+    assert "unparseable check output: 'The user appears to be playing a racing game" in capsys.readouterr().err

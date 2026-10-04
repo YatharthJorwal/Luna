@@ -193,6 +193,18 @@ check): __PREVIOUS_SUMMARY__\
 """
 
 
+# Structured-output schema for the check (see task_guide.CHECK_SCHEMA).
+WATCH_SCHEMA: dict = {
+    "type": "object",
+    "properties": {
+        "comment_worthy": {"type": "boolean"},
+        "summary": {"type": "string"},
+        "note": {"type": "string"},
+    },
+    "required": ["comment_worthy", "summary", "note"],
+}
+
+
 async def check_for_comment(previous_summary: str, image_b64: str) -> dict | None:
     """One-shot VLM call judging whether the current screen is worth an
     unprompted remark, given a brief note on what was there last time.
@@ -208,10 +220,14 @@ async def check_for_comment(previous_summary: str, image_b64: str) -> dict | Non
     # own tests, not by inspection).
     prompt = _WATCH_SYSTEM_PROMPT.replace("__PREVIOUS_SUMMARY__", repr(previous_summary or "(nothing yet)"))
     try:
-        raw_output = await llm.describe_image(prompt, image_b64)
-    except llm.LLMUnreachableError:
+        raw_output = await llm.describe_image(prompt, image_b64, json_schema=WATCH_SCHEMA)
+    except llm.LLMUnreachableError as exc:
+        print(f"[luna] ocr watch: vision call failed ({type(exc).__name__}): {exc}", file=sys.stderr)
         return None
-    return _parse_watch_result(raw_output)
+    result = _parse_watch_result(raw_output)
+    if result is None:
+        print(f"[luna] ocr watch: unparseable check output: {raw_output[:300]!r}", file=sys.stderr)
+    return result
 
 
 def _parse_watch_result(raw_output: str) -> dict | None:

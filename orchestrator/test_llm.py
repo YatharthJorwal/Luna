@@ -616,3 +616,99 @@ async def test_token_estimate_is_taken_from_what_was_actually_sent(monkeypatch, 
     folded_estimate = context_budget.estimate_prompt(llm.fold_system_messages(SPLICED), [])
     assert f"est_prompt_tokens={folded_estimate}" in capsys.readouterr().err
     context_budget.reset_calibration()
+
+
+# --- sampling parity, structured output for the image checks ------------------
+# The stock qwen3.5:9b tag bakes in presence_penalty 1.5 / top_k 20 / top_p 0.95
+# (its Ollama params file); a Hugging Face GGUF gets none of it (`ollama show`
+# has no Parameters section), so the same code sampled the two differently.
+
+
+def test_sampling_options_are_sent_explicitly(monkeypatch):
+    _patch_llm_config(monkeypatch, top_p=0.95, top_k=20, presence_penalty=1.5)
+    o = llm._ollama_options()
+    assert (o["top_p"], o["top_k"], o["presence_penalty"]) == (0.95, 20, 1.5)
+
+
+def test_sampling_options_can_be_left_to_the_server(monkeypatch):
+    _patch_llm_config(monkeypatch, top_p=None, top_k=None, presence_penalty=None)
+    o = llm._ollama_options()
+    assert not {"top_p", "top_k", "presence_penalty"} & set(o)
+
+
+def test_per_call_overrides_beat_the_configured_sampling(monkeypatch):
+    _patch_llm_config(monkeypatch, presence_penalty=1.5)
+    assert llm._ollama_options(presence_penalty=0.0)["presence_penalty"] == 0.0
+
+
+SCHEMA = {"type": "object", "properties": {"on_task": {"type": "boolean"}}, "required": ["on_task"]}
+
+
+@pytest.mark.asyncio
+async def test_image_check_sends_the_schema_and_strict_sampling(monkeypatch):
+    _patch_llm_config(monkeypatch, vision_model=None, model="m", presence_penalty=1.5)
+    llm._NO_FORMAT_MODELS.clear()
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["p"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": '{"on_task": true}'}})
+
+    _mock_http(monkeypatch, handler)
+    assert await llm.describe_image("check", "aGk=", json_schema=SCHEMA) == '{"on_task": true}'
+    assert seen["p"]["format"] == SCHEMA
+    assert seen["p"]["options"]["temperature"] == 0.2
+    assert seen["p"]["options"]["presence_penalty"] == 0.0  # would punish JSON's repeated quotes/braces
+
+
+@pytest.mark.asyncio
+async def test_plain_look_sends_no_schema(monkeypatch):
+    _patch_llm_config(monkeypatch, vision_model=None, model="m")
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen["p"] = json.loads(request.content)
+        return httpx.Response(200, json={"message": {"content": "a desktop"}})
+
+    _mock_http(monkeypatch, handler)
+    await llm.describe_image("what is this", "aGk=")
+    assert "format" not in seen["p"] and seen["p"]["options"]["temperature"] == 0.4
+
+
+@pytest.mark.asyncio
+async def test_schema_rejected_by_the_server_is_dropped_and_remembered(monkeypatch, capsys):
+    _patch_llm_config(monkeypatch, vision_model=None, model="picky")
+    llm._NO_FORMAT_MODELS.clear()
+    payloads = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = json.loads(request.content)
+        payloads.append(body)
+        if "format" in body:
+            return httpx.Response(500, text="grammar error")
+        return httpx.Response(200, json={"message": {"content": "ok"}})
+
+    _mock_http(monkeypatch, handler)
+    assert await llm.describe_image("c", "aGk=", json_schema=SCHEMA) == "ok"
+    assert "format" in payloads[0] and "format" not in payloads[1]
+    assert "rejected the structured-output schema" in capsys.readouterr().err
+
+    payloads.clear()
+    await llm.describe_image("c", "aGk=", json_schema=SCHEMA)
+    assert len(payloads) == 1 and "format" not in payloads[0]  # remembered
+    llm._NO_FORMAT_MODELS.clear()
+
+
+@pytest.mark.asyncio
+async def test_a_failure_that_is_not_the_schema_is_not_blamed_on_it(monkeypatch):
+    _patch_llm_config(monkeypatch, vision_model=None, model="text-only")
+    llm._NO_FORMAT_MODELS.clear()
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, text="this model is missing data required for image input")
+
+    _mock_http(monkeypatch, handler)
+    with pytest.raises(llm.LLMServerError) as err:
+        await llm.describe_image("c", "aGk=", json_schema=SCHEMA)
+    assert "llm.vision_model" in str(err.value)
+    assert "text-only" not in llm._NO_FORMAT_MODELS  # the retry failed too: schema wasn't the problem

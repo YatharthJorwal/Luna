@@ -20,6 +20,14 @@ value, not something wired deep into the code.
   must fit in VRAM together with GPT-SoVITS, or Ollama swaps them per request.
   On the 12GB card that means a ~2GB vision model next to a ~7GB chat model
   (`qwen3.5:2b-q4_K_M`), or just one multimodal model for everything.
+- **Sampling:** the stock Ollama tag ships its own parameters; a Hugging Face
+  GGUF usually has none (`ollama show` prints no Parameters section). Luna
+  sends `top_p`, `top_k` and `presence_penalty` on every request (config
+  `llm:`; defaults are the stock tag's), so a model swap doesn't silently
+  change how she samples.
+- **Tool-calling temperament:** models differ in how eagerly they call tools.
+  Luna only offers the read-only ones (screen, clipboard, camera); starting a
+  tracked task is decided by code reading what you said, not by the model.
 - **Chat template:** a model pulled from Hugging Face brings its authors' own
   Jinja template, which can be stricter than Ollama's. Luna sends exactly one
   system message (first); per-turn context rides inside the user message. If

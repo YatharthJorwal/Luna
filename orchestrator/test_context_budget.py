@@ -284,3 +284,16 @@ def test_older_config_without_warm_up_still_loads_and_defaults_on(tmp_path: path
     path = tmp_path / "old.yaml"
     path.write_text(yaml.safe_dump(raw), encoding="utf-8")
     assert config.load_config(path).llm.warm_up_on_start is True
+
+
+def test_older_config_without_sampling_or_task_tool_keys_still_loads(tmp_path: pathlib.Path):
+    raw = yaml.safe_load((pathlib.Path(config.__file__).parent / "config.example.yaml").read_text(encoding="utf-8"))
+    for key in ("top_p", "top_k", "presence_penalty"):
+        raw["llm"].pop(key, None)
+    raw["task_guide"].pop("model_can_start_tasks", None)
+    path = tmp_path / "old.yaml"
+    path.write_text(yaml.safe_dump(raw), encoding="utf-8")
+    cfg = config.load_config(path)
+    # defaults equal the stock qwen3.5 tag's own baked-in values
+    assert (cfg.llm.top_p, cfg.llm.top_k, cfg.llm.presence_penalty) == (0.95, 20, 1.5)
+    assert cfg.task_guide.model_can_start_tasks is False

@@ -149,8 +149,21 @@ async def test_dispatch_ignores_hallucinated_arguments(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def model_may_start_tasks(monkeypatch):
+    """These tests exercise the set_active_task handler itself, which is
+    refused by default (task_guide.model_can_start_tasks is off)."""
+    import dataclasses
+
+    cfg = tools.CONFIG
+    monkeypatch.setattr(
+        tools, "CONFIG",
+        dataclasses.replace(cfg, task_guide=dataclasses.replace(cfg.task_guide, model_can_start_tasks=True)),
+    )
+
+
 @pytest.mark.asyncio
-async def test_dispatch_set_active_task_starts_tracking():
+async def test_dispatch_set_active_task_starts_tracking(model_may_start_tasks):
     import task_guide  # local import: avoid module-load-order surprises
 
     task_guide.clear_active_task()
@@ -163,7 +176,7 @@ async def test_dispatch_set_active_task_starts_tracking():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_set_active_task_stops_tracking():
+async def test_dispatch_set_active_task_stops_tracking(model_may_start_tasks):
     import task_guide
 
     task_guide.set_active_task(True, "something")
@@ -173,7 +186,7 @@ async def test_dispatch_set_active_task_stops_tracking():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_set_active_task_missing_active_defaults_false():
+async def test_dispatch_set_active_task_missing_active_defaults_false(model_may_start_tasks):
     import task_guide
 
     task_guide.set_active_task(True, "something")
@@ -283,3 +296,33 @@ async def test_describe_screen_uses_the_explicit_look_size(monkeypatch):
     monkeypatch.setattr(vision.llm, "describe_image", fake_describe)
     await vision.describe_screen()
     assert seen["edge"] == vision.CONFIG.vision.look_max_long_edge
+
+
+
+# --- the chat model is not offered set_active_task by default -------------------
+# A model that called it on its own turned a bare "hi" into a phantom task
+# (description recalled from an old conversation); Task Guide then nagged all
+# session and paused Continuous OCR. The per-turn classifier owns start/stop.
+
+
+def _names(schemas):
+    return [s["function"]["name"] for s in schemas]
+
+
+def test_task_tool_is_not_offered_by_default():
+    assert "set_active_task" not in _names(tools.offered_schemas())
+    assert set(_names(tools.offered_schemas())) == {"capture_screen", "read_clipboard", "capture_camera"}
+
+
+def test_task_tool_is_offered_when_explicitly_enabled(model_may_start_tasks):
+    assert "set_active_task" in _names(tools.offered_schemas())
+
+
+@pytest.mark.asyncio
+async def test_a_task_tool_call_is_refused_by_default_and_changes_nothing():
+    import task_guide
+
+    task_guide.clear_active_task()
+    result = await tools.dispatch_tool_call("set_active_task", {"active": True, "description": "fix the browser"})
+    assert "automatically" in result
+    assert task_guide.get_state().active is False

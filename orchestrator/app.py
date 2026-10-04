@@ -453,12 +453,13 @@ async def _run_turn(
     spoken_parts: list[str] = []
     detected_emotion: str | None = None
     tool_messages: list[dict[str, Any]] = []
+    offered_tools = tools.offered_schemas()
     try:
         for _ in range(MAX_TOOL_ROUNDS):
             saw_tool_call = False
             async for event in llm.stream_reply_with_tools(
-                _fit_for_llm(messages_for_llm, tools.TOOL_SCHEMAS, tool_messages) + tool_messages,
-                tools.TOOL_SCHEMAS,
+                _fit_for_llm(messages_for_llm, offered_tools, tool_messages) + tool_messages,
+                offered_tools,
             ):
                 if event["type"] == "tool_calls":
                     saw_tool_call = True
@@ -955,12 +956,28 @@ async def ws_endpoint(websocket: WebSocket) -> None:
                 )
 
     async def _ocr_watch_loop() -> None:
+        pause_announced = False
         while True:
             await asyncio.sleep(OCR_WATCH_POLL_SECONDS)
             state = ocr_watch.get_state()
             if not state.active:
+                pause_announced = False
                 continue
-            if CONFIG.ocr_watch.pause_during_task and task_guide.get_state().active:
+            paused = CONFIG.ocr_watch.pause_during_task and task_guide.get_state().active
+            if paused and not pause_announced:
+                # Said once, because "Continuous OCR does nothing" was
+                # reported when it was really paused by a (phantom) task.
+                print(
+                    f"[luna] ocr watch: paused while Task Guide tracks "
+                    f"'{task_guide.get_state().description}' (ocr_watch.pause_during_task); "
+                    "it resumes when that task ends.",
+                    file=sys.stderr,
+                )
+                pause_announced = True
+            elif not paused and pause_announced:
+                print("[luna] ocr watch: resumed (no task being tracked)", file=sys.stderr)
+                pause_announced = False
+            if paused:
                 # Task Guide is already watching the screen; ambient remarks
                 # on top of its chides were redundant (both commented on the
                 # same Yahtzee screen within a minute in real use) and

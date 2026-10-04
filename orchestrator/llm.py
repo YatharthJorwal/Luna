@@ -54,6 +54,10 @@ def _ollama_options(**overrides: Any) -> dict[str, Any]:
         "temperature": CONFIG.llm.temperature,
         "num_predict": CONFIG.llm.max_tokens,
     }
+    for key in ("top_p", "top_k", "presence_penalty"):
+        value = getattr(CONFIG.llm, key)
+        if value is not None:
+            options[key] = value
     options.update(overrides)
     if CONFIG.llm.num_ctx is not None:
         options["num_ctx"] = CONFIG.llm.num_ctx
@@ -360,6 +364,11 @@ async def stream_reply_with_tools(
 # model for the process so only the first turn pays for the retry.
 _NO_TOOLS_MODELS: set[str] = set()
 
+# Same idea for structured output (the `format` JSON schema on image checks):
+# if a model/server rejects it, the call is retried once without and the
+# model remembered, so the old best-effort prompt-only behavior is the floor.
+_NO_FORMAT_MODELS: set[str] = set()
+
 
 def _is_no_tools_error(body: bytes | str) -> bool:
     text = body.decode("utf-8", "replace") if isinstance(body, bytes) else body
@@ -523,7 +532,9 @@ def _normalize_tool_calls(raw_calls: Any) -> list[dict[str, Any]]:
     return calls
 
 
-async def describe_image(prompt: str, image_b64: str) -> str:
+async def describe_image(
+    prompt: str, image_b64: str, json_schema: dict[str, Any] | None = None
+) -> str:
     """One-shot, non-streaming multimodal call -- used internally by
     tools/vision.py's describe_screen() to turn a screenshot into the
     text description ARCHITECTURE.md's vision-tools section calls for
@@ -543,6 +554,16 @@ async def describe_image(prompt: str, image_b64: str) -> str:
     image uploads -- goes through here; the main chat model never receives
     pixels, so it can be a text-only model. Logs a `[luna] vision:` timing
     line per call (model, image size, load / prompt-eval / generation time).
+
+    json_schema: when given (the Task Guide and Continuous OCR checks, which
+    must come back as one small JSON object), it is sent as Ollama's
+    structured-output `format`, which constrains decoding so the reply parses
+    whatever the model's habits are -- the abliterated GGUF ignored "reply
+    with ONLY a JSON object" on 15 of 16 checks. Sampling is also made
+    stricter for these calls (low temperature, no presence penalty, which
+    punishes the repeated quotes and braces JSON is made of). If the server
+    rejects `format`, the call is retried once without it and the model
+    remembered; the old prompt-only behavior is the floor.
     """
     if CONFIG.llm.api_style != "ollama_native":
         raise LLMUnreachableError(
@@ -552,12 +573,19 @@ async def describe_image(prompt: str, image_b64: str) -> str:
 
     url = f"{CONFIG.llm.base_url.rstrip('/')}/api/chat"
     model = vision_model_name()
+    use_schema = json_schema is not None and model not in _NO_FORMAT_MODELS
     payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": prompt, "images": [image_b64]}],
         "stream": False,
-        "options": _ollama_options(temperature=0.4, num_predict=400),
+        "options": (
+            _ollama_options(temperature=0.2, num_predict=400, presence_penalty=0.0)
+            if json_schema is not None
+            else _ollama_options(temperature=0.4, num_predict=400, presence_penalty=0.0)
+        ),
     }
+    if use_schema:
+        payload["format"] = json_schema
     if CONFIG.llm.think is not None:
         payload["think"] = CONFIG.llm.think
 
@@ -565,6 +593,22 @@ async def describe_image(prompt: str, image_b64: str) -> str:
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(120.0, connect=5.0)) as client:
             response = await client.post(url, json=payload)
+            if response.status_code >= 400 and use_schema:
+                first_error = f"{response.status_code}: {response.text[:200]!r}"
+                payload.pop("format", None)
+                response = await client.post(url, json=payload)
+                if response.status_code < 400:
+                    # Only blame (and stop sending) the schema if dropping it
+                    # is what made the call work; a different failure, e.g.
+                    # a model with no vision, fails the retry too and is
+                    # reported below as itself.
+                    _NO_FORMAT_MODELS.add(model)
+                    print(
+                        f"[luna] WARNING: '{model}' rejected the structured-output schema "
+                        f"({first_error}); it worked without it, so the schema won't be sent "
+                        "again. The prompt alone has to produce the JSON.",
+                        file=sys.stderr,
+                    )
             if response.status_code >= 400:
                 hint = ""
                 lowered = response.text.lower()

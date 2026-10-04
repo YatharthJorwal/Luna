@@ -6,26 +6,28 @@
 
 ## Do this first
 
-The user runs `hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K` (tools, thinking,
-completion, vision confirmed; `ollama ps` 7.3 GB, 100% GPU, ctx 8192; warm-up
-loads it in 28 s). Their first messages failed with an HTTP 500 that the
-previous bundle finally logged: the GGUF's Jinja template forbids a system
-message after the first, and `_run_turn` splices the per-turn context in as
-one. This bundle folds it into the user turn (`llm.fold_system_messages`).
-Sandbox-verified only (282 pytest incl. a mock strict-template server, 13
-`npm run test:fe`, `tsc`, `vite build`). Ask whether it merged, then collect:
+The user is on `hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K` (chat works since the
+system-message fold; looks ~3 s at 787 image tokens; calibration ~0.81). Their
+first real session surfaced a phantom task started by the model's own
+`set_active_task` call, Continuous OCR silently paused by it, 15/16 Task Guide
+checks unparseable, and replies repeating themselves. This bundle: withholds the
+task tool from the model, logs OCR pauses, sends the two image checks as
+structured output (schema) with stricter sampling and raw-output logging, and
+sends `top_p/top_k/presence_penalty` explicitly (the GGUF had none). Sandbox-
+verified only (297 pytest, 13 `npm run test:fe`, `tsc`, `vite build`). Ask
+whether it merged, then collect from `orchestrator.log`:
 
-1. Does chat work now? Any `LLM call failed (...)` line is the real error.
-2. Does she still *use* the injected context -- memory facts, and especially a
-   screen description after "look at my screen" -- now that it sits in the user
-   turn? Does she ever echo the `[Context for this reply...]` bracket?
-3. The first look on this model: `[luna] vision:` line (`load=`, `prompt_eval=`,
-   `gen=`). The image path on a Jinja-template multimodal model is unverified.
-4. Reasoning text leaking into replies (`think: false` unverified on this GGUF);
-   `tool-calling:` lines (`calibration=` near 0.8).
-5. With Minecraft running: `ollama ps` still `100% GPU`, `nvidia-smi` < 12288 MiB.
-6. Still unconfirmed live: OCR quieter at 240 s, "use OCR" not starting a task,
-   "I'm done" stopping one, mouth at 0.8.
+1. Any `task guide: unparseable check output:` / `ocr watch: unparseable ...`
+   line (the raw text), and any `rejected the structured-output schema` warning
+   (then the schema isn't working on this model and prompt-only is the floor).
+2. Does Continuous OCR now log `ocr watch: checked -> ...` lines (with no task
+   active), and `paused while Task Guide tracks ...` when one genuinely is?
+3. No `tool-calling: model called ['set_active_task']`. Repetition inside a
+   reply ("[tag] second take") gone or reduced? Compare `model:` stock vs GGUF
+   under the same settings before deciding the GGUF is worse.
+4. Still unconfirmed: reasoning text leaking (`think: false` on this GGUF), mouth
+   at 0.8, OCR quieter at 240 s, "use OCR" not starting a task, "I'm done"
+   stopping one, `nvidia-smi` < 12288 MiB with Minecraft running.
 
 ## State
 
@@ -106,7 +108,7 @@ the likely bottleneck and sets how "live" it can feel.
   the next one -- the user commits on their side too (`Cargo.lock`).
 - The user wants **lean docs**: decisions + why + lessons only, no per-session
   narrative. `CLAUDE.md` stays short. Don't let them re-bloat.
-- Tests: `orchestrator/` pytest (282 passing), `npm run test:fe` (13, pure
+- Tests: `orchestrator/` pytest (297 passing), `npm run test:fe` (13, pure
   frontend logic via esbuild + node:test, no new deps), `npx tsc --noEmit`,
   `npx vite build`. `ws_endpoint`'s message loop has no direct
   tests (long-standing gap), but the ambient-comment path now has app-level

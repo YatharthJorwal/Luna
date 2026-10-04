@@ -486,6 +486,11 @@ Still applies from Phase 1 -- unchanged:
   `orchestrator/config.yaml` (default 8192; it applies even if the key isn't
   in your file) and restart. `turn failed with an unexpected error` plus a
   traceback means a bug instead -- send that traceback.
+- **Continuous OCR does nothing while Task Guide is tracking a task:** by
+  design (both comment on the same screen otherwise); the log says
+  `ocr watch: paused while Task Guide tracks '...'`. If you never started a
+  task, ask her to stop it or restart Luna; set `ocr_watch.pause_during_task:
+  false` to keep both running.
 - **Continuous OCR seems silent:** every check logs
   `ocr watch: checked -> comment_worthy=...`, and a check that was overruled
   says why (`[no comment: same screen as the last check]`). No such lines at

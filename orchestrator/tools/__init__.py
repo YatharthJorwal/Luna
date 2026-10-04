@@ -14,6 +14,7 @@ from typing import Any, Awaitable, Callable
 
 import camera
 import task_guide
+from config import CONFIG
 from tools import vision
 
 TOOL_SCHEMAS: list[dict[str, Any]] = [
@@ -120,7 +121,21 @@ async def _read_clipboard_tool(**_ignored: Any) -> str:
     return await asyncio.to_thread(vision.read_clipboard)
 
 
+def offered_schemas() -> list[dict[str, Any]]:
+    """The tool schemas the chat model is actually offered. set_active_task is
+    withheld unless task_guide.model_can_start_tasks is on: the classifier
+    (task_guide.detect_task_change) decides when a task starts or stops, and a
+    model that calls the tool on its own started a phantom task from a
+    remembered conversation on a bare "hi"."""
+    if CONFIG.task_guide.model_can_start_tasks:
+        return list(TOOL_SCHEMAS)
+    return [s for s in TOOL_SCHEMAS if s["function"]["name"] != "set_active_task"]
+
+
 async def _set_active_task_tool(active: bool = False, description: str = "", **_ignored: Any) -> str:
+    if not CONFIG.task_guide.model_can_start_tasks:
+        # Not offered, but a model can still emit a tool it wasn't given.
+        return "(task tracking is started and stopped automatically from what the user says; it isn't a tool you can call)"
     # Plain in-memory dict update (task_guide.py) -- no blocking I/O, so
     # unlike read_clipboard above this doesn't need asyncio.to_thread.
     return task_guide.set_active_task(bool(active), str(description or ""))

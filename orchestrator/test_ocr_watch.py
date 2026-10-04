@@ -114,7 +114,7 @@ def test_due_for_check_false_within_interval():
 
 @pytest.mark.asyncio
 async def test_check_for_comment_worthy(monkeypatch):
-    async def fake_describe_image(prompt, image_b64):
+    async def fake_describe_image(prompt, image_b64, **_kw):
         assert "nothing yet" in prompt
         return '{"comment_worthy": true, "summary": "a browser open to a game store page", "note": "looks like they are eyeing a new game"}'
 
@@ -129,7 +129,7 @@ async def test_check_for_comment_worthy(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_check_for_comment_not_worthy(monkeypatch):
-    async def fake_describe_image(prompt, image_b64):
+    async def fake_describe_image(prompt, image_b64, **_kw):
         assert "a code editor open" in prompt
         return '{"comment_worthy": false, "summary": "a code editor, same as before", "note": ""}'
 
@@ -140,7 +140,7 @@ async def test_check_for_comment_not_worthy(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_check_for_comment_llm_unreachable_returns_none(monkeypatch):
-    async def failing_describe_image(prompt, image_b64):
+    async def failing_describe_image(prompt, image_b64, **_kw):
         raise ocr_watch.llm.LLMUnreachableError("no server")
 
     monkeypatch.setattr(ocr_watch.llm, "describe_image", failing_describe_image)
@@ -150,7 +150,7 @@ async def test_check_for_comment_llm_unreachable_returns_none(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_check_for_comment_unparseable_returns_none(monkeypatch):
-    async def fake_describe_image(prompt, image_b64):
+    async def fake_describe_image(prompt, image_b64, **_kw):
         return "sure, nothing much going on I guess"
 
     monkeypatch.setattr(ocr_watch.llm, "describe_image", fake_describe_image)
@@ -277,3 +277,27 @@ def test_defer_check_restarts_the_clock_but_keeps_summary_and_last_comment():
 def test_defer_check_is_a_noop_when_inactive():
     ocr_watch.defer_check()
     assert ocr_watch.get_state().active is False
+
+
+@pytest.mark.asyncio
+async def test_watch_check_sends_the_schema(monkeypatch):
+    seen = {}
+
+    async def fake_describe_image(prompt, image_b64, json_schema=None):
+        seen["schema"] = json_schema
+        return '{"comment_worthy": true, "summary": "a game", "note": "funny"}'
+
+    monkeypatch.setattr(ocr_watch.llm, "describe_image", fake_describe_image)
+    result = await ocr_watch.check_for_comment("", "b64")
+    assert seen["schema"] == ocr_watch.WATCH_SCHEMA and result["comment_worthy"] is True
+    assert set(ocr_watch.WATCH_SCHEMA["required"]) == {"comment_worthy", "summary", "note"}
+
+
+@pytest.mark.asyncio
+async def test_watch_unparseable_output_is_logged_raw(monkeypatch, capsys):
+    async def prose(prompt, image_b64, json_schema=None):
+        return "Nothing much is going on."
+
+    monkeypatch.setattr(ocr_watch.llm, "describe_image", prose)
+    assert await ocr_watch.check_for_comment("", "b64") is None
+    assert "unparseable check output: 'Nothing much is going on.'" in capsys.readouterr().err

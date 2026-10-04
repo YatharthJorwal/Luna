@@ -131,7 +131,7 @@ def test_resolve_pending_frame_noop_when_nothing_waiting():
 async def test_describe_camera_success(monkeypatch):
     ws = _FakeWebSocket()
 
-    async def fake_describe_image(prompt, image_b64):
+    async def fake_describe_image(prompt, image_b64, **_kw):
         assert image_b64 == "fake_frame"
         return "A person sitting at a desk."
 

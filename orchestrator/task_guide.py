@@ -144,6 +144,16 @@ missing information.\
 """
 
 
+# Sent as Ollama's structured-output `format` so the check always comes back as
+# parseable JSON (llm.describe_image falls back to prompt-only if the server
+# rejects it). 15 of 16 checks on the abliterated GGUF "didn't parse" without it.
+CHECK_SCHEMA: dict = {
+    "type": "object",
+    "properties": {"on_task": {"type": "boolean"}, "note": {"type": "string"}},
+    "required": ["on_task", "note"],
+}
+
+
 async def check_task_progress(task_description: str, image_b64: str) -> dict | None:
     """One-shot VLM call comparing a screenshot against the tracked
     task, via llm.describe_image (same entry point vision.py's
@@ -162,10 +172,16 @@ async def check_task_progress(task_description: str, image_b64: str) -> dict | N
         f"{_CHECK_SYSTEM_PROMPT}\n\nCurrent task/step: {task_description!r}"
     )
     try:
-        raw_output = await llm.describe_image(prompt, image_b64)
-    except llm.LLMUnreachableError:
+        raw_output = await llm.describe_image(prompt, image_b64, json_schema=CHECK_SCHEMA)
+    except llm.LLMUnreachableError as exc:
+        print(f"[luna] task guide: vision call failed ({type(exc).__name__}): {exc}", file=sys.stderr)
         return None
-    return _parse_check_result(raw_output)
+    result = _parse_check_result(raw_output)
+    if result is None:
+        # The raw text is the only way to tell "the model wrote prose" from
+        # "the model wrote JSON with the wrong shape" -- it used to be dropped.
+        print(f"[luna] task guide: unparseable check output: {raw_output[:300]!r}", file=sys.stderr)
+    return result
 
 
 def _parse_check_result(raw_output: str) -> dict | None:
