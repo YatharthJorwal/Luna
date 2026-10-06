@@ -6,28 +6,28 @@
 
 ## Do this first
 
-The user is on `hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K` (chat works since the
-system-message fold; looks ~3 s at 787 image tokens; calibration ~0.81). Their
-first real session surfaced a phantom task started by the model's own
-`set_active_task` call, Continuous OCR silently paused by it, 15/16 Task Guide
-checks unparseable, and replies repeating themselves. This bundle: withholds the
-task tool from the model, logs OCR pauses, sends the two image checks as
-structured output (schema) with stricter sampling and raw-output logging, and
-sends `top_p/top_k/presence_penalty` explicitly (the GGUF had none). Sandbox-
-verified only (297 pytest, 13 `npm run test:fe`, `tsc`, `vite build`). Ask
-whether it merged, then collect from `orchestrator.log`:
+The user is on `hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K` (warm-up load 28-75 s,
+chat works, looks ~3.7 s, calibration 0.80). The previous bundle (task tool withheld,
+schema-constrained image checks, explicit sampling) is merged: the `tool-calling:
+offered [...]` line no longer lists `set_active_task`. Their camera test showed two
+captures per request and her misreading a description that said "mug" as "phone".
+This bundle: withholds the look tools after the gate has looked, rewrites the
+persona's tool paragraph (it promised a task tool and said "call the tool every
+time"), makes her name the object first, and adds a `check/verify ... it/that/this`
+follow-up (re-looks the same target). Sandbox-verified only (314 pytest, 13
+`npm run test:fe`, `tsc`, `vite build`). Ask whether it merged, then collect:
 
-1. Any `task guide: unparseable check output:` / `ocr watch: unparseable ...`
-   line (the raw text), and any `rejected the structured-output schema` warning
-   (then the schema isn't working on this model and prompt-only is the floor).
-2. Does Continuous OCR now log `ocr watch: checked -> ...` lines (with no task
-   active), and `paused while Task Guide tracks ...` when one genuinely is?
-3. No `tool-calling: model called ['set_active_task']`. Repetition inside a
-   reply ("[tag] second take") gone or reduced? Compare `model:` stock vs GGUF
-   under the same settings before deciding the GGUF is worse.
-4. Still unconfirmed: reasoning text leaking (`think: false` on this GGUF), mouth
-   at 0.8, OCR quieter at 240 s, "use OCR" not starting a task, "I'm done"
-   stopping one, `nvidia-smi` < 12288 MiB with Minecraft running.
+1. Re-run the camera test ("use camera and see what i am holding", then "check its
+   not a phone"): ONE `look: camera ->` line per request and no `model called
+   ['capture_camera']`? Does her reply name the object the description names?
+2. If she still misreads a description she was given, that is the model: have them
+   switch `model:` to `qwen3.5:9b` and run the same three requests (same settings
+   now, so it's a fair A/B) before deciding to keep the abliterated GGUF.
+3. Any `unparseable check output:` / `rejected the structured-output schema` line,
+   `ocr watch: checked ->` lines (or `paused while Task Guide tracks ...`), and
+   repetition inside replies -- the checks from the previous bundle are still open.
+4. Still unconfirmed: reasoning text leaking, mouth at 0.8, OCR at 240 s, "use OCR"
+   not starting a task, "I'm done" stopping one, `nvidia-smi` < 12288 MiB in Minecraft.
 
 ## State
 
@@ -108,7 +108,7 @@ the likely bottleneck and sets how "live" it can feel.
   the next one -- the user commits on their side too (`Cargo.lock`).
 - The user wants **lean docs**: decisions + why + lessons only, no per-session
   narrative. `CLAUDE.md` stays short. Don't let them re-bloat.
-- Tests: `orchestrator/` pytest (297 passing), `npm run test:fe` (13, pure
+- Tests: `orchestrator/` pytest (314 passing), `npm run test:fe` (13, pure
   frontend logic via esbuild + node:test, no new deps), `npx tsc --noEmit`,
   `npx vite build`. `ws_endpoint`'s message loop has no direct
   tests (long-standing gap), but the ambient-comment path now has app-level

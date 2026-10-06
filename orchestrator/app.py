@@ -453,7 +453,7 @@ async def _run_turn(
     spoken_parts: list[str] = []
     detected_emotion: str | None = None
     tool_messages: list[dict[str, Any]] = []
-    offered_tools = tools.offered_schemas()
+    offered_tools = tools.offered_schemas(already_looked=bool(look_hint))
     try:
         for _ in range(MAX_TOOL_ROUNDS):
             saw_tool_call = False

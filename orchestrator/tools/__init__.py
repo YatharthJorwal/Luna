@@ -121,15 +121,28 @@ async def _read_clipboard_tool(**_ignored: Any) -> str:
     return await asyncio.to_thread(vision.read_clipboard)
 
 
-def offered_schemas() -> list[dict[str, Any]]:
+_LOOK_TOOLS = frozenset({"capture_screen", "capture_camera"})
+
+
+def offered_schemas(already_looked: bool = False) -> list[dict[str, Any]]:
     """The tool schemas the chat model is actually offered. set_active_task is
     withheld unless task_guide.model_can_start_tasks is on: the classifier
     (task_guide.detect_task_change) decides when a task starts or stops, and a
     model that calls the tool on its own started a phantom task from a
-    remembered conversation on a bare "hi"."""
-    if CONFIG.task_guide.model_can_start_tasks:
-        return list(TOOL_SCHEMAS)
-    return [s for s in TOOL_SCHEMAS if s["function"]["name"] != "set_active_task"]
+    remembered conversation on a bare "hi".
+
+    already_looked: the regex gate (look_intent) has already captured the
+    screen or camera this turn and put the description in her context. The
+    screen/camera tools are withheld then, because a model that is told to
+    "call the tool every time" by the persona prompt calls it anyway -- two
+    camera frames for one request, and a second description to contradict the
+    first. (A look the gate didn't catch still goes through the tools.)"""
+    schemas = list(TOOL_SCHEMAS)
+    if not CONFIG.task_guide.model_can_start_tasks:
+        schemas = [s for s in schemas if s["function"]["name"] != "set_active_task"]
+    if already_looked:
+        schemas = [s for s in schemas if s["function"]["name"] not in _LOOK_TOOLS]
+    return schemas
 
 
 async def _set_active_task_tool(active: bool = False, description: str = "", **_ignored: Any) -> str:

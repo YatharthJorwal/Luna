@@ -326,3 +326,20 @@ async def test_a_task_tool_call_is_refused_by_default_and_changes_nothing():
     result = await tools.dispatch_tool_call("set_active_task", {"active": True, "description": "fix the browser"})
     assert "automatically" in result
     assert task_guide.get_state().active is False
+
+
+# --- no second capture after the regex gate already looked ----------------------
+# Real log: one "use camera and see what I'm holding" produced TWO camera frames
+# (the gate's, then the model's own capture_camera call -- the persona prompt
+# told it to call the tool every time) and she then misread both descriptions.
+
+
+def test_look_tools_are_withheld_once_the_gate_has_looked():
+    names = _names(tools.offered_schemas(already_looked=True))
+    assert "capture_camera" not in names and "capture_screen" not in names
+    assert "read_clipboard" in names  # unrelated tools stay
+
+
+def test_look_tools_are_offered_when_the_gate_did_not_look():
+    names = _names(tools.offered_schemas(already_looked=False))
+    assert {"capture_screen", "capture_camera", "read_clipboard"} <= set(names)

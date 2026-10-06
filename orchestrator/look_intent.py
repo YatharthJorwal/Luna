@@ -105,6 +105,21 @@ _FOLLOWUP_RE = re.compile(
 )
 FOLLOWUP_WINDOW_SECONDS = 240
 
+# "check its not a phone", "verify that", "check this" right after she looked:
+# an explicit verification verb aimed at what was just looked at, so it
+# re-looks the SAME target, camera included (a bare "now?" still never reaches
+# for the camera -- only an explicit verb does). Deliberately not bare "look"
+# / "see": "look, it's late" and "see it's fine" are ordinary speech.
+_VERIFY_FOLLOWUP_RE = re.compile(
+    r"""
+    ^\W*(?:(?:ok(?:ay)?|no|so|wait|hey)\W+)?
+    (?:double[-\ ]check|check|verify|confirm)\b
+    [^.?!]{0,40}?\b(?:it['’]?s?|that|this|again|now)\b
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+_VERIFY_FOLLOWUP_MAX_CHARS = 70
+
 _last_target = "screen"
 _last_look_at = 0.0  # time.monotonic() of the last look she acted on
 
@@ -129,13 +144,15 @@ def detect_look_target(user_text: str, now: float | None = None) -> str | None:
         if trailing and not _TRAILING_LOOK_GUARD_RE.search(user_text.strip()[: trailing.start()]):
             return "screen"
     now = time.monotonic() if now is None else now
-    if (
-        _last_target == "screen"
-        and _last_look_at
-        and now - _last_look_at <= FOLLOWUP_WINDOW_SECONDS
-        and _FOLLOWUP_RE.match(user_text.strip())
-    ):
+    recent = bool(_last_look_at) and now - _last_look_at <= FOLLOWUP_WINDOW_SECONDS
+    if recent and _last_target == "screen" and _FOLLOWUP_RE.match(user_text.strip()):
         return "screen"
+    if (
+        recent
+        and len(user_text) <= _VERIFY_FOLLOWUP_MAX_CHARS
+        and _VERIFY_FOLLOWUP_RE.match(user_text.strip())
+    ):
+        return _last_target
     return None
 
 
@@ -186,9 +203,11 @@ async def maybe_look(user_text: str, websocket) -> str | None:
     print(f"[luna] look: {target} -> {description[:300]!r}", file=sys.stderr)
     return (
         f"You just looked {where} right now, because they asked. What you "
-        f"saw: {description} Answer using only this -- do not add details "
-        "it doesn't mention, do not invent readings like a clock time it "
-        "doesn't show, and do not say you looked at any other moment. You "
-        "have already looked this turn, so there is no need to use a "
-        "tool to look again."
+        f"saw: {description} Begin your reply by naming, accurately and in "
+        "your own words, the main thing it shows (what they are holding, or "
+        "what is on screen), then react in character. Answer using only this "
+        "-- do not add details it doesn't mention, do not swap in a more "
+        "likely object, do not invent readings like a clock time it doesn't "
+        "show, and do not say you looked at any other moment. You have "
+        "already looked this turn and cannot look again until they ask."
     )

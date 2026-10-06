@@ -240,3 +240,62 @@ async def test_maybe_look_opens_the_followup_window(monkeypatch):
     monkeypatch.setattr(look_intent.vision, "describe_screen", fake_describe)
     assert await look_intent.maybe_look("look at my screen", websocket=None) is not None
     assert look_intent.detect_look_target("now what is it") == "screen"
+
+
+@pytest.mark.asyncio
+async def test_look_hint_makes_her_name_the_object_first_and_forbids_a_second_look(monkeypatch):
+    async def fake_describe(websocket):
+        return "A person holds a white mug up to their face."
+
+    monkeypatch.setattr(look_intent.camera, "describe_camera", fake_describe)
+    monkeypatch.setattr(look_intent, "_last_look_at", 0.0)
+    hint = await look_intent.maybe_look("use the camera and see what i am holding", websocket=None)
+    assert "A person holds a white mug" in hint
+    assert "Begin your reply by naming" in hint
+    assert "do not swap in a more likely object" in hint
+    assert "cannot look again" in hint
+
+
+# --- "check its not a phone" right after a camera look -----------------------------
+# Real session: after a camera look she said "phone"; the user said "check its
+# not a phone." -- no look happened and she answered "laptop?" from nothing.
+
+
+@pytest.fixture
+def after_a_camera_look(monkeypatch):
+    monkeypatch.setattr(look_intent, "_last_target", "camera")
+    monkeypatch.setattr(look_intent, "_last_look_at", _time.monotonic())
+
+
+@pytest.mark.parametrize(
+    "text", ["check its not a phone.", "check this", "verify that", "ok check it again", "double check that"]
+)
+def test_verify_followups_re_look_the_same_target(after_a_camera_look, text):
+    assert look_intent.detect_look_target(text) == "camera"
+
+
+def test_verify_followups_follow_the_screen_too(after_a_screen_look):
+    assert look_intent.detect_look_target("check its not the wrong tab") == "screen"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "look, it's late",  # bare look is ordinary speech
+        "see it's fine",
+        "check the weather tomorrow",  # no pointer back at what she looked at
+        "check my email when you get a chance, no rush, it can wait until tonight please",  # too long
+        "now I want to build a house",
+    ],
+)
+def test_verify_followups_do_not_swallow_ordinary_speech(after_a_camera_look, text):
+    assert look_intent.detect_look_target(text) is None
+
+
+def test_verify_followups_need_a_recent_look(monkeypatch):
+    monkeypatch.setattr(look_intent, "_last_target", "camera")
+    monkeypatch.setattr(look_intent, "_last_look_at", 1000.0)
+    outside = 1000.0 + look_intent.FOLLOWUP_WINDOW_SECONDS + 1
+    assert look_intent.detect_look_target("check its not a phone", now=outside) is None
+    monkeypatch.setattr(look_intent, "_last_look_at", 0.0)
+    assert look_intent.detect_look_target("check its not a phone") is None

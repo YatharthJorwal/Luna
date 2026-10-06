@@ -72,3 +72,23 @@ def test_system_prompt_tells_her_to_actually_use_the_tools():
 
 def test_system_prompt_no_longer_says_observe_and_advise_only():
     assert "you can only observe and advise" not in SYSTEM_PROMPT.lower()
+
+
+# --- the prompt must match the tools she actually has --------------------------
+# It used to promise a task tool (now withheld: the classifier owns tasks) and
+# to say "call the tool again right then" on every look request, which a
+# tool-happy model obeyed in addition to the look the app had already done.
+
+
+def test_prompt_no_longer_promises_a_task_tool():
+    lowered = SYSTEM_PROMPT.lower()
+    assert "three real tools" in lowered and "four real tools" not in lowered
+    assert "call the task tool" not in lowered
+    assert "one starts or stops tracking a task" not in lowered
+
+
+def test_prompt_says_a_look_is_usually_already_done_for_her():
+    lowered = SYSTEM_PROMPT.lower()
+    assert "already been done for you" in lowered
+    assert "do not call a tool to look again" in lowered
+    assert "call the tool again right then" not in lowered

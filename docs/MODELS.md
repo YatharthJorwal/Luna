@@ -25,6 +25,10 @@ value, not something wired deep into the code.
   sends `top_p`, `top_k` and `presence_penalty` on every request (config
   `llm:`; defaults are the stock tag's), so a model swap doesn't silently
   change how she samples.
+- **Persona prompt vs tools:** the prompt must describe the tools the model is
+  actually offered. A line that forced the stock model to call tools makes a
+  tool-happy model call them redundantly (two camera frames per request); when
+  the app already did the looking, the look tools are withheld that turn.
 - **Tool-calling temperament:** models differ in how eagerly they call tools.
   Luna only offers the read-only ones (screen, clipboard, camera); starting a
   tracked task is decided by code reading what you said, not by the model.
