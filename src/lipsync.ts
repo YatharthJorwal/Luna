@@ -146,6 +146,17 @@ function getAudioContext(): AudioContext {
   if (!sharedAudioCtx) {
     sharedAudioCtx = new AudioContext();
   }
+  // A context created before the page has had any user interaction starts
+  // "suspended", and audio routed through a suspended context is silent --
+  // which is exactly what happened to an unprompted (Continuous OCR / Task
+  // Guide) remark that arrived while the user was in a game and hadn't
+  // touched this window since launch: SoVITS rendered it, the frontend got
+  // it, nothing came out. resume() is a no-op on a running context, so it is
+  // called every time; the warning makes the next occurrence self-diagnosing.
+  if (sharedAudioCtx.state === "suspended") {
+    console.warn("[luna] AudioContext was suspended; resuming before playback");
+    sharedAudioCtx.resume().catch((err) => console.error("[luna] AudioContext resume failed", err));
+  }
   return sharedAudioCtx;
 }
 
