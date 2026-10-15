@@ -2351,3 +2351,9 @@ Log: Continuous OCR decided `comment_worthy=True`, the LLM wrote the line, `gpt_
 **Fix:** `getAudioContext()` calls `resume()` whenever the context is suspended (and logs `AudioContext was suspended` to the console), and the main window starts WebView2 with `--autoplay-policy=no-user-gesture-required` (`additionalBrowserArgs`; the two default Tauri WebView2 flags are repeated because setting the key replaces them). **Unverified on this build:** neither was run -- the sandbox has no webview. Confirm by letting an ambient remark fire without clicking the window. If she is still silent, the DevTools console has the real error.
 
 **Rules this leaves:** a TTS `200` in the orchestrator log proves nothing about playback; check the webview console before blaming the voice server. Anything that speaks without a user gesture (ambient remarks, and Phase 12's live voice) depends on this policy.
+
+## Phase 13 step 1: procedural idle body (breathing, weight shift, head drift)
+
+`src/idle-motion.ts` is pure math (`idleOffsets(t, intensity)` -> small Euler offsets for hips, spine, chest, upperChest, neck, head, both shoulders); `main.ts` looks the normalized bones up once and writes the offsets each frame just before `vrm.update()`. Absolute rotations, not additive deltas, because none of these bones is touched by `applyIdlePose()` (arms only); that changes when a VRMA clip layer arrives. Deliberately tiny (ceiling 0.05 rad, tested over ten minutes) because body motion drives the hair/clothes spring bones and a big sway makes them jitter. Drift is three unrelated sines, not per-frame randomness, so it is deterministic, testable and never twitchy; amplitude eases in over 1.5 s so she doesn't pop on boot. `IDLE_MOTION_INTENSITY` in `boot()` is the only knob (0 = still) until the debug menu in step 6.
+
+**Unverified (no renderer here):** the signs. If she slumps on the inhale, flip `BREATH_SIGN`; if the hair jitters, lower the amplitudes. Judge by eye.

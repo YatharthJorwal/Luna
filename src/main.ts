@@ -7,6 +7,7 @@ import { logVrmReport } from "./vrm-report";
 import { MicInput, blobToBase64 } from "./mic";
 import { CameraInput } from "./camera";
 import { classifyFile, resizeImageToBase64Jpeg, readTextFile } from "./file-upload";
+import { IDLE_BONE_NAMES, applyIdleOffsets, idleOffsets } from "./idle-motion";
 
 // Phase 7: VRM avatar migration -- see docs/DECISIONS.md for the full
 // reasoning. Replaces pixi.js + pixi-live2d5 (a 2D Cubism rig) with
@@ -207,6 +208,17 @@ async function boot(): Promise<void> {
   layout();
   window.addEventListener("resize", layout);
 
+  // Procedural idle body motion (src/idle-motion.ts, Phase 13 step 1):
+  // breathing, weight shift, head drift. Bones are looked up once; the
+  // offsets are written every frame in animate() just before vrm.update().
+  // IDLE_MOTION_INTENSITY is 0..1 (0 = perfectly still) -- the one knob
+  // until the Phase 13 debug menu exists.
+  const IDLE_MOTION_INTENSITY = 1;
+  const idleBones = Object.fromEntries(
+    IDLE_BONE_NAMES.map((name) => [name, vrm.humanoid?.getNormalizedBoneNode(name) ?? null]),
+  );
+  let idleTime = 0;
+
   // A simple blink loop -- VRM doesn't idle-animate on its own the way
   // Hiyori's Live2D rig did with its authored "Idle" motion group; this
   // is the minimum to not look like a frozen mannequin. Randomized
@@ -304,6 +316,8 @@ async function boot(): Promise<void> {
     if (vrm.expressionManager) {
       vrm.expressionManager.setValue("aa", getMouthOpenValue());
     }
+    idleTime += delta;
+    applyIdleOffsets(idleBones, idleOffsets(idleTime, IDLE_MOTION_INTENSITY));
     vrm.update(delta);
     renderer.render(scene, camera);
   }

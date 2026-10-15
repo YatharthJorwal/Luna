@@ -6,7 +6,7 @@
 
 ## Do this first
 
-**Newest, before the list below:** an ambient remark was rendered by SoVITS and delivered but silent -- suspected suspended `AudioContext` / WebView2 autoplay policy. Fix bundled (`lipsync.ts` resume + `additionalBrowserArgs`), unverified. Ask whether she now speaks an unprompted remark without the window being clicked first; if not, get the DevTools console. Phase 12's plan (half-duplex, three bundles, latency log first) is drafted but not approved or started.
+**Newest, before the list below:** an ambient remark was rendered by SoVITS and delivered but silent -- suspected suspended `AudioContext` / WebView2 autoplay policy. Fix bundled (`lipsync.ts` resume + `additionalBrowserArgs`), unverified. Ask whether she now speaks an unprompted remark without the window being clicked first; if not, get the DevTools console. Also bundled: Phase 13 step 1 (`src/idle-motion.ts`, breathing/sway/head drift) -- ask how she looks (sign of the breath, hair jitter, intensity). Phase 12's plan (half-duplex, three bundles, latency log first) is drafted but not approved or started.
 
 The user is on `hf.co/Abiray/Qwen3.5-9B-abliterated-GGUF:Q6_K` (warm-up load 28-75 s,
 chat works, looks ~3.7 s, calibration 0.80). The previous bundle (task tool withheld,
