@@ -9,6 +9,7 @@ import { CameraInput } from "./camera";
 import { classifyFile, resizeImageToBase64Jpeg, readTextFile } from "./file-upload";
 import { IDLE_BONE_NAMES, applyIdleOffsets, idleOffsets } from "./idle-motion";
 import { BlinkController, GazeController, addHeadFollow, mulberry32, type GazeFrame } from "./eyes";
+import { ExpressionLife, blendTarget } from "./expression-life";
 
 // Phase 7: VRM avatar migration -- see docs/DECISIONS.md for the full
 // reasoning. Replaces pixi.js + pixi-live2d5 (a 2D Cubism rig) with
@@ -244,13 +245,18 @@ async function boot(): Promise<void> {
   // Phase 8: gradual expression blending, not a per-line snap (matching
   // docs/ROADMAP.md's own original scoping note for this phase). One
   // named emotion is "current" at a time; every frame, each underlying
-  // VRM preset weight eases toward its target in EMOTION_BLENDS[targetEmotion]
+  // VRM preset weight eases toward its target in the blendTarget() weights for the current mood
   // (or 0, if that preset isn't part of the current blend) rather than
   // jumping there instantly -- reads as a gradual mood shift over a
   // fraction of a second instead of a jarring instant switch. Tracked
   // per VRM preset now (not per app-facing emotion) since "teasing"
   // needs two presets (relaxed + angry) eased independently at once.
-  let targetEmotion: EmotionName = "neutral";
+  // Phase 13 step 3: the mood is no longer a bare target that snaps to
+  // neutral the moment her audio goes idle. ExpressionLife (src/expression-
+  // life.ts) holds a tagged mood while she is busy and for a beat after, then
+  // fades it to neutral; blendTarget() turns its frame into the preset
+  // weights the easing below chases.
+  const life = new ExpressionLife(mulberry32((Math.random() * 0xffffffff) >>> 0));
   const currentPresetWeights: Record<VrmPresetName, number> = {
     happy: 0,
     angry: 0,
@@ -271,15 +277,15 @@ async function boot(): Promise<void> {
     // just because this particular turn didn't produce a usable tag.
     if (!emotion) return;
     if (!(EMOTION_NAMES as readonly string[]).includes(emotion)) return;
-    targetEmotion = emotion as EmotionName;
+    life.set(emotion);
   }
 
-  function updateEmotion(delta: number): void {
+  function updateEmotion(delta: number, busy: boolean): void {
     if (!vrm.expressionManager) return;
     const step = Math.min(1, EMOTION_BLEND_SPEED * delta);
-    const activeBlend = EMOTION_BLENDS[targetEmotion];
+    const targets = blendTarget(EMOTION_BLENDS, life.update(delta, busy), VRM_PRESET_NAMES);
     for (const preset of VRM_PRESET_NAMES) {
-      const target = activeBlend[preset] ?? 0;
+      const target = targets[preset];
       const next = currentPresetWeights[preset] + (target - currentPresetWeights[preset]) * step;
       currentPresetWeights[preset] = next;
       vrm.expressionManager.setValue(preset, next);
@@ -293,7 +299,7 @@ async function boot(): Promise<void> {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
     updateEyes(delta, getSpeechProgress() !== null);
-    updateEmotion(delta);
+    updateEmotion(delta, hud.isBusy());
     // Advances the caption's per-word reveal against the currently
     // playing clip's real elapsed time -- piggybacking on this loop
     // rather than a second rAF/interval, same reasoning as
@@ -316,6 +322,9 @@ interface Hud {
   /** Called once a frame from boot()'s shared render loop -- advances
    * the caption's per-word reveal against the currently playing clip. */
   tick(): void;
+  /** True while a turn is generating or her audio is playing -- the signal
+   * the expression layer holds a mood on (it fades once she is quiet). */
+  isBusy(): boolean;
 }
 
 function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
@@ -711,10 +720,11 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
     onIdle: () => {
       audioIdle = true;
       recomputeTurnActive();
-      // She's actually done talking (not just done generating) -- drop
-      // back to a neutral expression rather than leaving whatever mood
-      // the last line's tag set frozen on her face indefinitely.
-      setTargetEmotion("neutral");
+      // She's actually done talking (not just done generating). This used
+      // to snap the face to neutral right here; the expression layer now
+      // holds the mood for a beat and fades it (Phase 13 step 3), so it
+      // does not freeze on her face and does not vanish the instant the
+      // audio ends either.
     },
   });
   const client = new WsClient({
@@ -1053,6 +1063,7 @@ function setupHud(setTargetEmotion: (emotion?: string) => void): Hud {
 
   return {
     tick: () => tickCaptionProgress(),
+    isBusy: () => !orchestratorDone || !audioIdle,
   };
 }
 

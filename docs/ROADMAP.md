@@ -398,8 +398,8 @@ awaiting on-machine confirmation · ⬜ not started)
   **Measure first:** add per-stage timings to the log (end of speech ->
   transcript -> first LLM token -> first TTS audio) -- GPT-SoVITS is the
   likely bottleneck and decides how "live" it can feel.
-- 🔶 **Phase 13 — Living avatar (shell body presence; steps 1-2 built
-  and sandbox-verified, awaiting an on-machine look; steps 0, 3-6 open).** Today the shell body is: a fixed arms-down pose
+- 🔶 **Phase 13 — Living avatar (shell body presence; steps 1-3 built
+  and sandbox-verified, awaiting an on-machine look; steps 0, 4-6 open).** Today the shell body is: a fixed arms-down pose
   (`applyIdlePose`), a blink loop, six emotion presets eased by
   `updateEmotion`, and `aa` for the mouth. No breathing, no gaze, no idle
   motion, and the last emotion **stays on her face until the next tagged
@@ -430,7 +430,8 @@ awaiting on-machine confirmation · ⬜ not started)
      old fixed blink loop in `main.ts`). *Eyes:* a gaze target with micro-saccades and occasional glances; blink
      variety (double blink, slow blink when relaxed, blink with a gaze shift,
      fewer blinks while speaking).
-  3. *Expression life:* hold-then-decay to a neutral baseline after a reply,
+  3. **BUILT, unconfirmed by eye:** `src/expression-life.ts` (pure logic, 15 tests;
+     extra visemes deliberately not done). *Expression life:* hold-then-decay to a neutral baseline after a reply,
      slow micro-drift, intensity per emotion instead of a fixed weight;
      optional extra visemes (`oh`/`ih`/`ou`) chosen from audio band energy.
   4. *Clip layer:* a **curated** VRMA pool -- first an audition view to mark
