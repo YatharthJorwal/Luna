@@ -8,6 +8,7 @@ import { MicInput, blobToBase64 } from "./mic";
 import { CameraInput } from "./camera";
 import { classifyFile, resizeImageToBase64Jpeg, readTextFile } from "./file-upload";
 import { IDLE_BONE_NAMES, applyIdleOffsets, idleOffsets } from "./idle-motion";
+import { BlinkController, GazeController, addHeadFollow, mulberry32, type GazeFrame } from "./eyes";
 
 // Phase 7: VRM avatar migration -- see docs/DECISIONS.md for the full
 // reasoning. Replaces pixi.js + pixi-live2d5 (a 2D Cubism rig) with
@@ -219,39 +220,25 @@ async function boot(): Promise<void> {
   );
   let idleTime = 0;
 
-  // A simple blink loop -- VRM doesn't idle-animate on its own the way
-  // Hiyori's Live2D rig did with its authored "Idle" motion group; this
-  // is the minimum to not look like a frozen mannequin. Randomized
-  // interval, not a fixed metronome, so it doesn't read as mechanical.
-  let blinkTimer = 0;
-  let nextBlinkAt = 2 + Math.random() * 3;
-  let blinking = false;
-  let blinkElapsed = 0;
-  const BLINK_DURATION_S = 0.18;
+  // Eyes (src/eyes.ts, Phase 13 step 2): a gaze with micro-saccades and
+  // glances written to vrm.lookAt, and a blink with variety (single, double,
+  // slow when relaxed, fewer while she speaks, one with a glance). Replaces
+  // the old fixed-length blink loop. The head's share of a glance is added
+  // in animate(), right after the idle layer, via addHeadFollow().
+  const eyeRng = mulberry32((Math.random() * 0xffffffff) >>> 0);
+  const gaze = new GazeController(eyeRng);
+  const blinker = new BlinkController(eyeRng);
+  let gazeFrame: GazeFrame = { yaw: 0, pitch: 0, headYaw: 0, headPitch: 0 };
 
-  function updateBlink(delta: number): void {
-    if (!vrm.expressionManager) return;
-    if (!blinking) {
-      blinkTimer += delta;
-      if (blinkTimer >= nextBlinkAt) {
-        blinking = true;
-        blinkElapsed = 0;
-        blinkTimer = 0;
-        nextBlinkAt = 2 + Math.random() * 4;
-      }
-      return;
+  function updateEyes(delta: number, speaking: boolean): void {
+    gazeFrame = gaze.update(delta, speaking);
+    if (gaze.consumeBlinkRequest()) blinker.requestBlink();
+    const closure = blinker.update(delta, speaking);
+    vrm.expressionManager?.setValue("blink", closure);
+    if (vrm.lookAt) {
+      vrm.lookAt.yaw = gazeFrame.yaw;
+      vrm.lookAt.pitch = gazeFrame.pitch;
     }
-    blinkElapsed += delta;
-    const t = blinkElapsed / BLINK_DURATION_S;
-    if (t >= 1) {
-      vrm.expressionManager.setValue("blink", 0);
-      blinking = false;
-      return;
-    }
-    // Triangular envelope: closes over the first half, opens over the
-    // second -- cheap and reads fine for something this quick and this
-    // subtle, no need for actual easing curves.
-    vrm.expressionManager.setValue("blink", t < 0.5 ? t * 2 : (1 - t) * 2);
   }
 
   // Phase 8: gradual expression blending, not a per-line snap (matching
@@ -305,7 +292,7 @@ async function boot(): Promise<void> {
   function animate(): void {
     requestAnimationFrame(animate);
     const delta = clock.getDelta();
-    updateBlink(delta);
+    updateEyes(delta, getSpeechProgress() !== null);
     updateEmotion(delta);
     // Advances the caption's per-word reveal against the currently
     // playing clip's real elapsed time -- piggybacking on this loop
@@ -318,6 +305,7 @@ async function boot(): Promise<void> {
     }
     idleTime += delta;
     applyIdleOffsets(idleBones, idleOffsets(idleTime, IDLE_MOTION_INTENSITY));
+    addHeadFollow(idleBones, gazeFrame);
     vrm.update(delta);
     renderer.render(scene, camera);
   }
